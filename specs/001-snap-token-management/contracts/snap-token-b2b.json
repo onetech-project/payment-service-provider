@@ -1,0 +1,170 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "SNAP B2B Access Token API",
+    "description": "Bank Indonesia Standarisasi Nasional Open API Pembayaran (SNAP) B2B Token Management Endpoint",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1.0/access-token/b2b": {
+      "post": {
+        "summary": "Request B2B Access Token",
+        "description": "Generates a SNAP-compliant B2B OAuth access token using RSA-SHA256 asymmetric signature verification.",
+        "operationId": "getB2BAccessToken",
+        "parameters": [
+          {
+            "name": "X-SIGNATURE",
+            "in": "header",
+            "required": true,
+            "description": "Base64 encoded RSA-SHA256 signature calculated over X-CLIENT-KEY|X-TIMESTAMP",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-TIMESTAMP",
+            "in": "header",
+            "required": true,
+            "description": "ISO 8601 extended timestamp string (e.g. 2026-07-22T21:29:07+07:00)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CLIENT-KEY",
+            "in": "header",
+            "required": true,
+            "description": "Unique Client ID assigned to the partner application",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Unique request identifier for idempotency locking and replay caching",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SNAPTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful token generation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SNAPTokenSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request / Missing Required Headers / Timestamp Skew",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SNAPTokenErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized / Invalid Signature / Unknown Client",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SNAPTokenErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SNAPTokenErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SNAPTokenRequest": {
+        "type": "object",
+        "required": ["grantType"],
+        "properties": {
+          "grantType": {
+            "type": "string",
+            "enum": ["client_credentials"],
+            "example": "client_credentials"
+          },
+          "additionalInfo": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "SNAPTokenSuccessResponse": {
+        "type": "object",
+        "required": ["responseCode", "responseMessage", "accessToken", "tokenType", "expiresIn"],
+        "properties": {
+          "responseCode": {
+            "type": "string",
+            "example": "2007300"
+          },
+          "responseMessage": {
+            "type": "string",
+            "example": "Successful"
+          },
+          "accessToken": {
+            "type": "string",
+            "example": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+          },
+          "tokenType": {
+            "type": "string",
+            "example": "Bearer"
+          },
+          "expiresIn": {
+            "type": "string",
+            "example": "900"
+          },
+          "additionalInfo": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "SNAPTokenErrorResponse": {
+        "type": "object",
+        "required": ["responseCode", "responseMessage"],
+        "properties": {
+          "responseCode": {
+            "type": "string",
+            "example": "4017300"
+          },
+          "responseMessage": {
+            "type": "string",
+            "example": "Unauthorized. Invalid Signature"
+          }
+        }
+      }
+    }
+  }
+}

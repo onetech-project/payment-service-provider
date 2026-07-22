@@ -1,0 +1,37 @@
+# Binaries & Build Outputs
+/bin/
+/dist/
+*.exe
+*.exe;
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+server
+
+# Dependencies
+vendor/
+
+# Test & Coverage
+*.cover
+*.coverage
+coverage.txt
+coverage.out
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.crt
+
+# IDE & OS Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

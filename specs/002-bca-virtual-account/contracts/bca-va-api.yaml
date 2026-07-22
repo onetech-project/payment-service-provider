@@ -1,0 +1,582 @@
+openapi: 3.0.3
+info:
+  title: BCA Virtual Account Biller API
+  description: |
+    SNAP-compliant API for BCA Virtual Account biller integration.
+    This API receives inbound requests from BCA for VA inquiry,
+    payment notification, and status inquiry.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://sandbox.bca.co.id
+    description: BCA Sandbox
+
+paths:
+  /v1.0/transfer-va/inquiry:
+    post:
+      summary: VA Bill Inquiry
+      description: |
+        Receive VA inquiry request from BCA for bill presentment.
+        Returns bill details, customer name, and total amount.
+      tags: [Virtual Account]
+      headers:
+        X-TIMESTAMP:
+          required: true
+          schema:
+            type: string
+            format: date-time
+          description: ISO-8601 timestamp
+        X-CLIENT-KEY:
+          required: true
+          schema:
+            type: string
+          description: Client identifier
+        X-SIGNATURE:
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA512 signature
+        CHANNEL-ID:
+          required: true
+          schema:
+            type: string
+            minLength: 5
+            maxLength: 5
+          description: "Channel identifier (95231 for VA)"
+        X-PARTNER-ID:
+          required: true
+          schema:
+            type: string
+            maxLength: 32
+          description: Partner company code
+        X-EXTERNAL-ID:
+          required: true
+          schema:
+            type: string
+            maxLength: 36
+          description: Unique reference number per day
+        Idempotency-Key:
+          required: true
+          schema:
+            type: string
+          description: Idempotency key for duplicate prevention
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VAInquiryRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VAInquiryResponse'
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Invalid Bill/Virtual Account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict (duplicate X-EXTERNAL-ID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1.0/transfer-va/payment:
+    post:
+      summary: VA Payment Notification
+      description: |
+        Receive payment notification from BCA.
+        Acknowledges payment and updates transaction status.
+      tags: [Virtual Account]
+      headers:
+        X-TIMESTAMP:
+          required: true
+          schema:
+            type: string
+            format: date-time
+        X-CLIENT-KEY:
+          required: true
+          schema:
+            type: string
+        X-SIGNATURE:
+          required: true
+          schema:
+            type: string
+        CHANNEL-ID:
+          required: true
+          schema:
+            type: string
+            minLength: 5
+            maxLength: 5
+        X-PARTNER-ID:
+          required: true
+          schema:
+            type: string
+            maxLength: 32
+        X-EXTERNAL-ID:
+          required: true
+          schema:
+            type: string
+            maxLength: 36
+        Idempotency-Key:
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VAPaymentRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VAPaymentResponse'
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1.0/transfer-va/status:
+    post:
+      summary: VA Payment Status Inquiry
+      description: |
+        Check payment status of a VA transaction.
+        Used for reconciliation and dispute resolution.
+      tags: [Virtual Account]
+      headers:
+        X-TIMESTAMP:
+          required: true
+          schema:
+            type: string
+            format: date-time
+        X-CLIENT-KEY:
+          required: true
+          schema:
+            type: string
+        X-SIGNATURE:
+          required: true
+          schema:
+            type: string
+        CHANNEL-ID:
+          required: true
+          schema:
+            type: string
+            minLength: 5
+            maxLength: 5
+        X-PARTNER-ID:
+          required: true
+          schema:
+            type: string
+            maxLength: 32
+        X-EXTERNAL-ID:
+          required: true
+          schema:
+            type: string
+            maxLength: 36
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VAStatusRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VAStatusResponse'
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    VAInquiryRequest:
+      type: object
+      required:
+        - partnerServiceId
+        - customerNo
+        - virtualAccountNo
+        - inquiryRequestId
+      properties:
+        partnerServiceId:
+          type: string
+          maxLength: 8
+          description: Company code, 8 digit left padding space
+        customerNo:
+          type: string
+          maxLength: 20
+          description: Unique customer number
+        virtualAccountNo:
+          type: string
+          maxLength: 28
+          description: partnerServiceId + customerNo
+        trxDateInit:
+          type: string
+          format: date-time
+          description: Transaction initiation timestamp
+        channelCode:
+          type: integer
+          description: "ISO 18245 channel code (6010=Teller, 6011=eBanking)"
+        inquiryRequestId:
+          type: string
+          maxLength: 128
+          description: Unique inquiry identifier from BCA
+        additionalInfo:
+          type: object
+          description: Optional additional information
+
+    VAInquiryResponse:
+      type: object
+      required:
+        - responseCode
+        - responseMessage
+      properties:
+        responseCode:
+          type: string
+          minLength: 7
+          maxLength: 7
+          description: "Response code format: AAABBCC"
+        responseMessage:
+          type: string
+          maxLength: 150
+        virtualAccountData:
+          $ref: '#/components/schemas/VAAccountData'
+
+    VAAccountData:
+      type: object
+      properties:
+        inquiryStatus:
+          type: string
+          minLength: 2
+          maxLength: 2
+          description: "00=Success, 01=Failed"
+        inquiryReason:
+          $ref: '#/components/schemas/BilingualText'
+        partnerServiceId:
+          type: string
+        customerNo:
+          type: string
+        virtualAccountNo:
+          type: string
+        virtualAccountName:
+          type: string
+          maxLength: 255
+        inquiryRequestId:
+          type: string
+        totalAmount:
+          $ref: '#/components/schemas/Amount'
+        subCompany:
+          type: string
+          maxLength: 5
+        billDetails:
+          type: array
+          maxItems: 24
+          items:
+            $ref: '#/components/schemas/BillDetail'
+        freeTexts:
+          type: array
+          maxItems: 9
+          items:
+            $ref: '#/components/schemas/BilingualText'
+        virtualAccountTrxType:
+          type: string
+          maxLength: 1
+        feeAmount:
+          $ref: '#/components/schemas/Amount'
+        additionalInfo:
+          type: object
+
+    VAPaymentRequest:
+      type: object
+      required:
+        - partnerServiceId
+        - customerNo
+        - virtualAccountNo
+        - inquiryRequestId
+        - paymentRequestId
+        - paidAmount
+        - totalAmount
+        - transactionDate
+      properties:
+        partnerServiceId:
+          type: string
+        customerNo:
+          type: string
+        virtualAccountNo:
+          type: string
+        inquiryRequestId:
+          type: string
+        paymentRequestId:
+          type: string
+          maxLength: 30
+        paidAmount:
+          $ref: '#/components/schemas/Amount'
+        paidBills:
+          type: string
+          maxLength: 6
+          description: Hexadecimal flag of paid bills
+        totalAmount:
+          $ref: '#/components/schemas/Amount'
+        trxDateTime:
+          type: string
+          format: date-time
+        transactionDate:
+          type: string
+          format: date-time
+        referenceNo:
+          type: string
+          maxLength: 11
+        paymentType:
+          type: string
+          maxLength: 1
+        flagAdvise:
+          type: string
+          maxLength: 1
+        billDetails:
+          type: array
+          maxItems: 24
+          items:
+            $ref: '#/components/schemas/VAPaymentBillDetail'
+        freeTexts:
+          type: array
+          maxItems: 9
+          items:
+            $ref: '#/components/schemas/BilingualText'
+        additionalInfo:
+          type: object
+
+    VAPaymentResponse:
+      type: object
+      required:
+        - responseCode
+        - responseMessage
+      properties:
+        responseCode:
+          type: string
+        responseMessage:
+          type: string
+        virtualAccountData:
+          type: object
+          properties:
+            paymentFlagStatus:
+              type: string
+              minLength: 2
+              maxLength: 2
+              description: "00=Success, 01=Reject, 02=Timeout, 03=Pending"
+            paymentFlagReason:
+              $ref: '#/components/schemas/BilingualText'
+
+    VAStatusRequest:
+      type: object
+      required:
+        - partnerServiceId
+        - customerNo
+        - virtualAccountNo
+        - inquiryRequestId
+      properties:
+        partnerServiceId:
+          type: string
+        customerNo:
+          type: string
+        virtualAccountNo:
+          type: string
+        inquiryRequestId:
+          type: string
+        additionalInfo:
+          type: object
+
+    VAStatusResponse:
+      type: object
+      required:
+        - responseCode
+        - responseMessage
+      properties:
+        responseCode:
+          type: string
+        responseMessage:
+          type: string
+        virtualAccountData:
+          type: object
+          properties:
+            paymentFlagStatus:
+              type: string
+            paymentFlagReason:
+              $ref: '#/components/schemas/BilingualText'
+            partnerServiceId:
+              type: string
+            customerNo:
+              type: string
+            virtualAccountNo:
+              type: string
+            inquiryRequestId:
+              type: string
+            paymentRequestId:
+              type: string
+            paidAmount:
+              $ref: '#/components/schemas/Amount'
+            paidBills:
+              type: string
+            totalAmount:
+              $ref: '#/components/schemas/Amount'
+            trxDateTime:
+              type: string
+              format: date-time
+            transactionDate:
+              type: string
+              format: date-time
+            referenceNo:
+              type: string
+            paymentType:
+              type: string
+            billDetails:
+              type: array
+              items:
+                type: object
+            freeTexts:
+              type: array
+              items:
+                $ref: '#/components/schemas/BilingualText'
+            additionalInfo:
+              type: object
+
+    VAPaymentBillDetail:
+      type: object
+      required:
+        - billNo
+        - billDescription
+        - billSubCompany
+        - billAmount
+        - billReferenceNo
+        - status
+        - reason
+      properties:
+        billCode:
+          type: string
+          maxLength: 2
+        billNo:
+          type: string
+          maxLength: 18
+        billName:
+          type: string
+          maxLength: 20
+        billShortName:
+          type: string
+          maxLength: 10
+        billDescription:
+          $ref: '#/components/schemas/BilingualText'
+        billSubCompany:
+          type: string
+          maxLength: 5
+        billAmount:
+          $ref: '#/components/schemas/Amount'
+        additionalInfo:
+          type: object
+        billReferenceNo:
+          type: string
+          maxLength: 11
+        status:
+          type: string
+          minLength: 2
+          maxLength: 2
+        reason:
+          $ref: '#/components/schemas/BilingualText'
+
+    BillDetail:
+      type: object
+      properties:
+        billNo:
+          type: string
+          maxLength: 18
+        billDescription:
+          $ref: '#/components/schemas/BilingualText'
+        billSubCompany:
+          type: string
+          maxLength: 5
+        billAmount:
+          $ref: '#/components/schemas/Amount'
+        additionalInfo:
+          type: object
+
+    Amount:
+      type: object
+      required:
+        - value
+        - currency
+      properties:
+        value:
+          type: string
+          description: "ISO 4217 amount with 2 decimals"
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          description: "IDR, USD, SGD"
+
+    BilingualText:
+      type: object
+      properties:
+        english:
+          type: string
+          maxLength: 64
+        indonesia:
+          type: string
+          maxLength: 64
+
+    ErrorResponse:
+      type: object
+      required:
+        - responseCode
+        - responseMessage
+      properties:
+        responseCode:
+          type: string
+        responseMessage:
+          type: string

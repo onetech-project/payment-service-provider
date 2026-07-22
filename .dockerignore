@@ -1,0 +1,14 @@
+.git
+.gitignore
+.dockerignore
+README.md
+docs/
+specs/
+*.md
+.env
+.env.*
+!.env.example
+bin/
+tmp/
+*.pem
+*.key
