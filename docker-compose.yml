@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   app:
     build:
@@ -36,6 +34,15 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+
+  migrate:
+    image: migrate/migrate:v4.15.2
+    command: ["-path", "/migrations", "-database", "postgres://postgres:postgres@host.docker.internal:5432/payment_gateway?sslmode=disable", "up"]
+    volumes:
+      - ./db/migrations:/migrations
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 
 volumes:
   postgres_data:

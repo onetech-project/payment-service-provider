@@ -68,3 +68,31 @@ func (u *ClientUsecase) RegisterClient(ctx context.Context, client *domain.Clien
 func (u *ClientUsecase) RevokeClientKey(ctx context.Context, clientID, keyID string) error {
 	return u.clientRepo.RevokeClientKey(ctx, clientID, keyID)
 }
+
+// AddClientKey registers an additional active public key for an existing
+// client, e.g. for key rotation, without re-creating the client_app.
+func (u *ClientUsecase) AddClientKey(ctx context.Context, key *domain.ClientKey) error {
+	if key.ClientID == "" || key.KeyID == "" || key.PublicKeyPEM == "" {
+		return errors.New("client_id, key_id and public_key_pem are required")
+	}
+
+	if key.ID == "" {
+		key.ID = uuid.New().String()
+	}
+	key.IsActive = true
+	key.CreatedAt = time.Now()
+	key.UpdatedAt = time.Now()
+
+	if err := u.clientRepo.CreateClientKey(ctx, key); err != nil {
+		return fmt.Errorf("failed to add client key: %w", err)
+	}
+
+	if u.keyCache != nil {
+		_ = u.keyCache.SetClientPublicKey(ctx, key.ClientID, key.PublicKeyPEM)
+	}
+
+	return nil
+}
+
+// Ensure ClientUsecase implements domain.ClientUsecase
+var _ domain.ClientUsecase = (*ClientUsecase)(nil)

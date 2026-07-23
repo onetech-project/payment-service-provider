@@ -63,7 +63,7 @@ func (l *VendorConfigLoader) Load(vendor, channel string) (*VendorConfig, error)
 		Vendor:             vendor,
 		Channel:            channel,
 		APIEndpoints:       make(map[string]string),
-		RequiredHeaders:    []string{"X-TIMESTAMP", "X-CLIENT-KEY", "X-SIGNATURE"},
+		RequiredHeaders:    []string{"X-TIMESTAMP", "X-SIGNATURE"},
 		ResponseCodeFormat: "AAABBCC",
 		Defaults:           make(map[string]string),
 		RequestTimeout:     30,

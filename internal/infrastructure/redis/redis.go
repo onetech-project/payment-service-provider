@@ -12,14 +12,18 @@ type Client struct {
 	rdb *redis.Client
 }
 
-func NewRedisClient(addr, password string, db int) (*Client, error) {
+// NewRedisClient dials Redis and pings it with connectTimeout to fail fast on
+// misconfiguration. connectTimeout is caller-supplied (sourced from env, e.g.
+// REDIS_CONNECT_TIMEOUT_SECONDS) rather than a hardcoded constant, since the
+// right value depends on the deployment's network latency.
+func NewRedisClient(addr, password string, db int, connectTimeout time.Duration) (*Client, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     addr,
 		Password: password,
 		DB:       db,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {

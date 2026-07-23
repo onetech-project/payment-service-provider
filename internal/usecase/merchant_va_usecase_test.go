@@ -57,6 +57,11 @@ func (m *MockMerchantVARepository) GetVABillDetails(ctx context.Context, transac
 	return args.Get(0).([]domain.BillDetail), args.Error(1)
 }
 
+func (m *MockMerchantVARepository) SaveBillDetails(ctx context.Context, transactionID string, bills []domain.BillDetail) error {
+	args := m.Called(ctx, transactionID, bills)
+	return args.Error(0)
+}
+
 func (m *MockMerchantVARepository) UpdateVAStatus(ctx context.Context, virtualAccountNo string, status string) error {
 	args := m.Called(ctx, virtualAccountNo, status)
 	return args.Error(0)
@@ -80,15 +85,20 @@ func TestMerchantVAUsecase_CreateVA_Success(t *testing.T) {
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:    "088899",
 		CustomerNo:          "12345678901234567890",
+		VirtualAccountNo:    "08889912345678901234567890",
 		VirtualAccountName:  "Jokul Doe",
 		TrxID:               "trx-001",
 		TotalAmount:         amount,
 		VirtualAccountTrxType: "C",
-		NotificationURL:     "https://example.com/webhook",
+		// notificationUrl is not a spec field; per ASPI VAUpsertRequest it's
+		// carried in additionalInfo.dbUrlProcess (aspi-open-api-va.yaml:317-320).
+		AdditionalInfo: map[string]interface{}{"dbUrlProcess": "https://example.com/webhook"},
 	}
 
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
-	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
+		return r.NotificationURL == "https://example.com/webhook"
+	})).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
 
@@ -109,9 +119,9 @@ func TestMerchantVAUsecase_CreateVA_MissingTrxId(t *testing.T) {
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
 		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "08889912345678901234567890",
 		VirtualAccountName: "Jokul Doe",
 		// TrxID missing
-		NotificationURL: "https://example.com/webhook",
 	}
 
 	resp, err := uc.CreateVA(context.Background(), req)
@@ -132,10 +142,10 @@ func TestMerchantVAUsecase_CreateVA_InvalidTrxType(t *testing.T) {
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:      "088899",
 		CustomerNo:            "12345678901234567890",
+		VirtualAccountNo:      "08889912345678901234567890",
 		VirtualAccountName:    "Jokul Doe",
 		TrxID:                 "trx-002",
 		VirtualAccountTrxType: "Z", // Invalid
-		NotificationURL:       "https://example.com/webhook",
 	}
 
 	resp, err := uc.CreateVA(context.Background(), req)
@@ -147,7 +157,7 @@ func TestMerchantVAUsecase_CreateVA_InvalidTrxType(t *testing.T) {
 	assert.Equal(t, "4002700", domainErr.SNAPCode)
 }
 
-func TestMerchantVAUsecase_CreateVA_Idempotent(t *testing.T) {
+func TestMerchantVAUsecase_CreateVA_PendingTransaction_Conflicts(t *testing.T) {
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo)
 
@@ -156,7 +166,7 @@ func TestMerchantVAUsecase_CreateVA_Idempotent(t *testing.T) {
 		PartnerServiceID: "088899",
 		CustomerNo:       "12345678901234567890",
 		VirtualAccountNo: "08889912345678901234567890",
-		Status:           "00", // Already paid (terminal)
+		Status:           "03", // Still pending / unpaid — an active transaction
 	}
 
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(existing, nil)
@@ -164,9 +174,9 @@ func TestMerchantVAUsecase_CreateVA_Idempotent(t *testing.T) {
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
 		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "08889912345678901234567890",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-003",
-		NotificationURL:    "https://example.com/webhook",
 	}
 
 	resp, err := uc.CreateVA(context.Background(), req)
@@ -178,25 +188,60 @@ func TestMerchantVAUsecase_CreateVA_Idempotent(t *testing.T) {
 	assert.Equal(t, "4092700", domainErr.SNAPCode)
 }
 
-func TestMerchantVAUsecase_CreateVA_MissingNotificationURL(t *testing.T) {
+func TestMerchantVAUsecase_CreateVA_ReusesVANumberAfterPaidTransaction(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo)
+
+	existing := &domain.VAInquiryRecord{
+		ID:               "existing-id",
+		PartnerServiceID: "088899",
+		CustomerNo:       "12345678901234567890",
+		VirtualAccountNo: "08889912345678901234567890",
+		Status:           "00", // Previous transaction already paid — number is free to reuse
+	}
+
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(existing, nil)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "088899",
+		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "08889912345678901234567890",
+		VirtualAccountName: "Jokul Doe",
+		TrxID:              "trx-new-cycle",
+	}
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestMerchantVAUsecase_CreateVA_NotificationURLOptional(t *testing.T) {
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo)
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
 		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "08889912345678901234567890",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-004",
-		// NotificationURL missing
+		// NotificationURL intentionally omitted: not part of ASPI VAUpsertRequest
+		// (required: virtualAccountName, trxId only), so a spec-exact payload
+		// without it must be accepted, not rejected.
 	}
+
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
 
-	assert.Error(t, err)
-	assert.Nil(t, resp)
-	var domainErr *domain.DomainError
-	assert.ErrorAs(t, err, &domainErr)
-	assert.Equal(t, "4002701", domainErr.SNAPCode)
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "2002700", resp.ResponseCode)
 }
 
 func TestMerchantVAUsecase_CreateVA_WithBillDetails(t *testing.T) {
@@ -210,12 +255,12 @@ func TestMerchantVAUsecase_CreateVA_WithBillDetails(t *testing.T) {
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:      "088899",
 		CustomerNo:            "12345678901234567890",
+		VirtualAccountNo:      "08889912345678901234567890",
 		VirtualAccountName:    "Jokul Doe",
 		TrxID:                 "trx-005",
 		TotalAmount:           amount,
 		VirtualAccountTrxType: "C",
 		ExpiredDate:           &expiry,
-		NotificationURL:       "https://example.com/webhook",
 		BillDetails: []domain.BillDetail{
 			{
 				BillCode:  "01",
@@ -228,6 +273,7 @@ func TestMerchantVAUsecase_CreateVA_WithBillDetails(t *testing.T) {
 
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
 	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+	mockRepo.On("SaveBillDetails", mock.Anything, mock.Anything, req.BillDetails).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
 
@@ -236,6 +282,34 @@ func TestMerchantVAUsecase_CreateVA_WithBillDetails(t *testing.T) {
 	assert.Len(t, resp.VirtualAccountData.BillDetails, 1)
 	assert.NotNil(t, resp.VirtualAccountData.ExpiredDate)
 	mockRepo.AssertExpectations(t)
+}
+
+func TestMerchantVAUsecase_CreateVA_BillDetailsSaveFails(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo)
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "088899",
+		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "08889912345678901234567890",
+		VirtualAccountName: "Jokul Doe",
+		TrxID:              "trx-006",
+		BillDetails: []domain.BillDetail{
+			{BillNo: "INV-002"},
+		},
+	}
+
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+	mockRepo.On("SaveBillDetails", mock.Anything, mock.Anything, req.BillDetails).Return(assert.AnError)
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "5002700", domainErr.SNAPCode)
 }
 
 // --- ListVA Tests ---

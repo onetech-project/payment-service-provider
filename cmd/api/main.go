@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"backbone-new/internal/adapter/delivery/http/handler"
 	customMiddleware "backbone-new/internal/adapter/delivery/http/middleware"
 	"backbone-new/internal/adapter/delivery/worker"
+	"backbone-new/internal/domain"
 	"backbone-new/internal/infrastructure/config"
 	"backbone-new/internal/infrastructure/crypto"
 	"backbone-new/internal/infrastructure/database"
@@ -59,6 +61,18 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+// getEnvDurationSeconds reads an integer-seconds env var into a time.Duration,
+// falling back to defaultSeconds when unset or invalid.
+func getEnvDurationSeconds(key string, defaultSeconds int) time.Duration {
+	seconds := defaultSeconds
+	if val := os.Getenv(key); val != "" {
+		if parsed, err := strconv.Atoi(val); err == nil {
+			seconds = parsed
+		}
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func main() {
 	ctx := context.Background()
 
@@ -92,10 +106,20 @@ func main() {
 	// 3. Redis Connection
 	redisAddr := getEnvOrDefault("REDIS_ADDR", "localhost:6379")
 	redisPassword := getEnvOrDefault("REDIS_PASSWORD", "")
-	redisClient, err := redis.NewRedisClient(redisAddr, redisPassword, 0)
+	redisConnectTimeout := getEnvDurationSeconds("REDIS_CONNECT_TIMEOUT_SECONDS", 1)
+	redisClient, err := redis.NewRedisClient(redisAddr, redisPassword, 0, redisConnectTimeout)
 	if err != nil {
 		log.Fatalf("Fatal: Redis connection required for Idempotency and Queue: %v", err)
 	}
+
+	// Idempotency TTLs are operational tuning knobs, not constants: lockTTL
+	// bounds how long a duplicate concurrent request is held off while the
+	// original is in flight; cacheTTL is how long a completed response is
+	// replayed for a repeated Idempotency-Key. Default cacheTTL is 24h — a
+	// previous hardcoded 1s effectively made replay useless beyond the same
+	// instant.
+	idempotencyLockTTL := getEnvDurationSeconds("IDEMPOTENCY_LOCK_TTL_SECONDS", 30)
+	idempotencyCacheTTL := getEnvDurationSeconds("IDEMPOTENCY_CACHE_TTL_SECONDS", 86400)
 
 	// 4. Crypto & JWT Setup
 	privPEM, pubPEM, err := generateDefaultRSAKeys()
@@ -108,6 +132,7 @@ func main() {
 	}
 
 	rsaVerifier := crypto.NewRSAVerifier()
+	rsaSigner := crypto.NewRSASigner()
 	var clientRepo *database.ClientRepository
 	if pgPool != nil {
 		clientRepo = database.NewClientRepository(pgPool)
@@ -117,17 +142,14 @@ func main() {
 	tokenUsecase := usecase.NewTokenUsecase(clientRepo, rsaVerifier, jwtIssuer)
 	tokenHandler := handler.NewTokenHandler(tokenUsecase)
 
-	// VA Usecase & Handler
-	var vaRepo *database.VARepository
-	if pgPool != nil {
-		vaRepo = database.NewVARepository(pgPool)
-	}
-	vaUsecase := usecase.NewVAUsecase(vaRepo)
-	vaHandler := handler.NewVAHandler(vaUsecase)
+	signatureUsecase := usecase.NewSignatureUsecase(rsaSigner)
+	signatureHandler := handler.NewSignatureHandler(signatureUsecase)
 
-	// Merchant VA Usecase & Handler
-	merchantVAUsecase := usecase.NewMerchantVAUsecase(vaRepo)
-	merchantVAHandler := handler.NewMerchantVAHandler(merchantVAUsecase)
+	// Client onboarding (admin) Usecase & Handler
+	clientKeyCache := redis.NewClientKeyCache(redisClient)
+	clientUsecase := usecase.NewClientUsecase(clientRepo, clientKeyCache)
+	clientHandler := handler.NewClientHandler(clientUsecase)
+	adminAPIKey := getEnvOrDefault("ADMIN_API_KEY", "")
 
 	// Asynq Client for async notifications
 	asynqClient, err := queue.NewClient(redisAddr, redisPassword, 0)
@@ -136,6 +158,22 @@ func main() {
 	} else {
 		defer func() { _ = asynqClient.Close() }()
 	}
+
+	// VA Usecase & Handler
+	var vaRepo *database.VARepository
+	if pgPool != nil {
+		vaRepo = database.NewVARepository(pgPool)
+	}
+	var notifier domain.NotificationEnqueuer
+	if asynqClient != nil {
+		notifier = asynqClient
+	}
+	vaUsecase := usecase.NewVAUsecase(vaRepo, notifier)
+	vaHandler := handler.NewVAHandler(vaUsecase)
+
+	// Merchant VA Usecase & Handler
+	merchantVAUsecase := usecase.NewMerchantVAUsecase(vaRepo)
+	merchantVAHandler := handler.NewMerchantVAHandler(merchantVAUsecase)
 
 	// Asynq Worker for payment notifications
 	notificationSecret := getEnvOrDefault("NOTIFICATION_SECRET", "default-secret")
@@ -175,12 +213,27 @@ func main() {
 
 	// SNAP Token Endpoint with Idempotency Middleware
 	snapGroup := e.Group("/v1.0")
-	snapGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient))
+	snapGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
 	snapGroup.POST("/access-token/b2b", tokenHandler.GetB2BAccessToken)
+
+	// Admin: client onboarding (register client_apps / client_keys)
+	adminGroup := e.Group("/admin")
+	adminGroup.Use(customMiddleware.AdminAuthMiddleware(adminAPIKey))
+	adminGroup.POST("/clients", clientHandler.RegisterClient)
+	adminGroup.POST("/clients/:clientId/keys", clientHandler.AddClientKey)
+	adminGroup.DELETE("/clients/:clientId/keys/:keyId", clientHandler.RevokeClientKey)
+	if adminAPIKey == "" {
+		log.Println("Warning: ADMIN_API_KEY not set — /admin/* endpoints are disabled")
+	}
+
+	// SNAP Security utility endpoints (signature helpers, no idempotency required)
+	utilGroup := e.Group("/api/v1/utilities")
+	utilGroup.POST("/signature-auth", signatureHandler.GenerateAccessTokenSignature)
+	utilGroup.POST("/signature-service", signatureHandler.GenerateServiceSignature)
 
 	// Register vendor-specific routes (unified under /v1.0/transfer-va/*)
 	transferVAGroup := e.Group("/v1.0/transfer-va")
-	transferVAGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient))
+	transferVAGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
 
 	// Existing SNAP VA endpoints (inquiry, payment, status)
 	for _, vc := range vendorConfigs {

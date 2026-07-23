@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"backbone-new/internal/domain"
 
@@ -93,7 +92,6 @@ func TestVAHandler_Inquiry_MissingFields(t *testing.T) {
 
 func TestVAHandler_Payment_Success(t *testing.T) {
 	e := echo.New()
-	txDate := time.Now()
 	req := domain.VAPaymentRequest{
 		PartnerServiceID: " 12345",
 		CustomerNo:       "123456789012345678",
@@ -102,7 +100,6 @@ func TestVAHandler_Payment_Success(t *testing.T) {
 		PaymentRequestID: "202607221000001234500001",
 		PaidAmount:       &domain.Amount{Value: "100000.00", Currency: "IDR"},
 		TotalAmount:      &domain.Amount{Value: "100000.00", Currency: "IDR"},
-		TransactionDate:  &txDate,
 	}
 
 	body, _ := json.Marshal(req)

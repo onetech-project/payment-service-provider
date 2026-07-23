@@ -8,6 +8,8 @@ import (
 var (
 	ErrClientNotFound      = errors.New("client not found")
 	ErrClientRevoked       = errors.New("client is revoked or inactive")
+	ErrClientAlreadyExists = errors.New("client already exists")
+	ErrClientKeyInvalid    = errors.New("invalid public key")
 	ErrInvalidSignature    = errors.New("invalid signature")
 	ErrInvalidTimestamp    = errors.New("invalid or expired timestamp")
 	ErrMissingHeader       = errors.New("missing required SNAP header")

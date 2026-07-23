@@ -52,10 +52,11 @@ func TestMerchantVAHandler_CreateVA_Success(t *testing.T) {
 	req := domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
 		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "08889912345678901234567890",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-001",
 		TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
-		NotificationURL:    "https://example.com/webhook",
+		AdditionalInfo:     map[string]interface{}{"dbUrlProcess": "https://example.com/webhook"},
 	}
 
 	body, _ := json.Marshal(req)
@@ -109,9 +110,9 @@ func TestMerchantVAHandler_CreateVA_UsecaseError(t *testing.T) {
 	req := domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
 		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "08889912345678901234567890",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-err",
-		NotificationURL:    "https://example.com/webhook",
 	}
 
 	body, _ := json.Marshal(req)

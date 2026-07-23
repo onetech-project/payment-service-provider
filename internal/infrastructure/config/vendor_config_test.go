@@ -23,6 +23,9 @@ func TestVendorConfigLoader_Load_Defaults(t *testing.T) {
 	assert.Equal(t, "X-Correlation-ID", config.CorrelationHeader)
 	assert.NotNil(t, config.RequiredHeaders)
 	assert.Contains(t, config.RequiredHeaders, "X-TIMESTAMP")
+	// Per ASPI spec, X-CLIENT-KEY is only used on the access-token endpoint,
+	// never on transfer-va transaction endpoints, so it must not be a default.
+	assert.NotContains(t, config.RequiredHeaders, "X-CLIENT-KEY")
 }
 
 func TestVendorConfigLoader_Load_FromFile(t *testing.T) {

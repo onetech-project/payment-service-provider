@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,11 +54,23 @@ func TestVAInquiryRequest(t *testing.T) {
 		VirtualAccountNo: " 12345123456789012345678",
 		InquiryRequestID: "202607221000001234500001",
 		ChannelCode:      6011,
+		Amount:           &Amount{Value: "100000.00", Currency: "IDR"},
 	}
 
 	assert.Equal(t, " 12345", req.PartnerServiceID)
 	assert.Equal(t, "123456789012345678", req.CustomerNo)
 	assert.Equal(t, 6011, req.ChannelCode)
+	assert.Equal(t, "100000.00", req.Amount.Value)
+}
+
+func TestVAInquiryRequest_UnmarshalsTxnDateInit(t *testing.T) {
+	body := []byte(`{"txnDateInit": "2026-07-23T10:00:00+07:00"}`)
+
+	var req VAInquiryRequest
+	err := json.Unmarshal(body, &req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, req.TrxDateInit)
 }
 
 func TestVAInquiryResponse(t *testing.T) {

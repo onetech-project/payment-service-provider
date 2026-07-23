@@ -12,7 +12,8 @@ type VAInquiryRequest struct {
 	PartnerServiceID string                 `json:"partnerServiceId"`
 	CustomerNo       string                 `json:"customerNo"`
 	VirtualAccountNo string                 `json:"virtualAccountNo"`
-	TrxDateInit      *time.Time             `json:"trxDateInit,omitempty"`
+	TrxDateInit      *time.Time             `json:"txnDateInit,omitempty"`
+	Amount           *Amount                `json:"amount"`
 	ChannelCode      int                    `json:"channelCode,omitempty"`
 	InquiryRequestID string                 `json:"inquiryRequestId"`
 	AdditionalInfo   map[string]interface{} `json:"additionalInfo,omitempty"`
@@ -54,9 +55,8 @@ type VAPaymentRequest struct {
 	PaymentRequestID string                 `json:"paymentRequestId"`
 	PaidAmount       *Amount                `json:"paidAmount"`
 	PaidBills        string                 `json:"paidBills,omitempty"`
-	TotalAmount      *Amount                `json:"totalAmount"`
+	TotalAmount      *Amount                `json:"totalAmount,omitempty"`
 	TrxDateTime      *time.Time             `json:"trxDateTime,omitempty"`
-	TransactionDate  *time.Time             `json:"transactionDate"`
 	ReferenceNo      string                 `json:"referenceNo,omitempty"`
 	PaymentType      string                 `json:"paymentType,omitempty"`
 	FlagAdvise       string                 `json:"flagAdvise,omitempty"`
@@ -87,8 +87,18 @@ type VAPaymentResponse struct {
 	VirtualAccountData *VAPaymentStatus `json:"virtualAccountData,omitempty"`
 }
 
-// VAPaymentStatus contains payment flag status
+// VAPaymentStatus contains payment flag status and echoes back the
+// identity/amount fields from PaymentResponse.virtualAccountData per ASPI spec.
 type VAPaymentStatus struct {
+	PartnerServiceID  string         `json:"partnerServiceId"`
+	CustomerNo        string         `json:"customerNo"`
+	VirtualAccountNo  string         `json:"virtualAccountNo"`
+	TrxID             string         `json:"trxId,omitempty"`
+	PaymentRequestID  string         `json:"paymentRequestId"`
+	PaidAmount        *Amount        `json:"paidAmount"`
+	TotalAmount       *Amount        `json:"totalAmount,omitempty"`
+	TrxDateTime       *time.Time     `json:"trxDateTime,omitempty"`
+	ReferenceNo       string         `json:"referenceNo,omitempty"`
 	PaymentFlagStatus string         `json:"paymentFlagStatus"`
 	PaymentFlagReason *BilingualText `json:"paymentFlagReason"`
 }
@@ -191,6 +201,7 @@ type VARepository interface {
 	// Merchant dashboard methods
 	ListVA(ctx context.Context, filter *VAListFilter) ([]VAListItem, int, error)
 	GetVABillDetails(ctx context.Context, transactionID string) ([]BillDetail, error)
+	SaveBillDetails(ctx context.Context, transactionID string, bills []BillDetail) error
 	UpdateVAStatus(ctx context.Context, virtualAccountNo string, status string) error
 	GetVAByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*VAInquiryRecord, error)
 }
@@ -200,8 +211,11 @@ type VAInquiryRecord struct {
 	ID               string
 	PartnerServiceID string
 	CustomerNo       string
+	CustomerName     string
 	VirtualAccountNo string
 	InquiryRequestID string
+	TrxID            string
+	NotificationURL  string
 	Status           string
 	TotalAmount      string
 	Currency         string
@@ -214,8 +228,11 @@ type VAPaymentRecord struct {
 	ID               string
 	PartnerServiceID string
 	CustomerNo       string
+	CustomerName     string
 	VirtualAccountNo string
 	InquiryRequestID string
+	TrxID            string
+	NotificationURL  string
 	PaymentRequestID string
 	PaidAmount       string
 	Currency         string
@@ -232,6 +249,12 @@ type VAPaymentRecord struct {
 type VAGateway interface {
 	Inquiry(ctx context.Context, req *VAInquiryRequest) (*VAInquiryResponse, error)
 	PaymentStatus(ctx context.Context, req *VAStatusRequest) (*VAStatusResponse, error)
+}
+
+// NotificationEnqueuer schedules an async callback to the merchant's
+// notificationUrl after a payment is received.
+type NotificationEnqueuer interface {
+	EnqueuePaymentNotification(ctx context.Context, payload *PaymentNotificationPayload) error
 }
 
 // VA Usecase Interface
@@ -256,7 +279,7 @@ type MerchantVAUsecase interface {
 type MerchantCreateVARequest struct {
 	PartnerServiceID    string                 `json:"partnerServiceId"`
 	CustomerNo          string                 `json:"customerNo"`
-	VirtualAccountNo    string                 `json:"virtualAccountNo,omitempty"`
+	VirtualAccountNo    string                 `json:"virtualAccountNo"`
 	VirtualAccountName  string                 `json:"virtualAccountName"`
 	VirtualAccountEmail string                 `json:"virtualAccountEmail,omitempty"`
 	VirtualAccountPhone string                 `json:"virtualAccountPhone,omitempty"`
@@ -267,8 +290,11 @@ type MerchantCreateVARequest struct {
 	VirtualAccountTrxType string               `json:"virtualAccountTrxType,omitempty"`
 	FeeAmount           *Amount                `json:"feeAmount,omitempty"`
 	ExpiredDate         *time.Time             `json:"expiredDate,omitempty"`
+	// AdditionalInfo carries proprietary extensions per ASPI VAUpsertRequest's
+	// additionalInfo.dbUrlProcess slot (aspi-open-api-va.yaml:317-320) — the
+	// merchant payment callback URL is passed here as additionalInfo.dbUrlProcess,
+	// not as a top-level field (there is no such field in the spec).
 	AdditionalInfo      map[string]interface{} `json:"additionalInfo,omitempty"`
-	NotificationURL     string                 `json:"notificationUrl"`
 }
 
 // MerchantCreateVAResponse maps to ASPI VAUpsertResponse

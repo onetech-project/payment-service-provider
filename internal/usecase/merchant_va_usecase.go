@@ -21,18 +21,19 @@ func NewMerchantVAUsecase(repo domain.VARepository) *MerchantVAUsecase {
 
 // CreateVA handles VA creation per ASPI VAUpsertRequest (Service Code 27)
 func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCreateVARequest) (*domain.MerchantCreateVAResponse, error) {
-	// Validate required fields per ASPI
+	// Validate required fields per ASPI VAIdentity (partnerServiceId,
+	// customerNo, virtualAccountNo are all mandatory client-supplied input).
 	if req.PartnerServiceID == "" || req.CustomerNo == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [partnerServiceId/customerNo]", nil)
+	}
+	if req.VirtualAccountNo == "" {
+		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [virtualAccountNo]", nil)
 	}
 	if req.VirtualAccountName == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [virtualAccountName]", nil)
 	}
 	if req.TrxID == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [trxId]", nil)
-	}
-	if req.NotificationURL == "" {
-		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [notificationUrl]", nil)
 	}
 
 	// Validate virtualAccountTrxType if provided
@@ -43,17 +44,20 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		}
 	}
 
-	// Generate VA number: partnerServiceId + customerNo
-	vaNo := req.PartnerServiceID + req.CustomerNo
+	// Use the client-supplied virtualAccountNo per ASPI VAIdentity (maxLength 28)
+	vaNo := req.VirtualAccountNo
 	if len(vaNo) > 28 {
 		return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
 	}
 
-	// Check idempotency via trxId lookup
+	// A virtualAccountNo is reusable across transaction cycles — only a
+	// currently PENDING ("03", i.e. created but not yet paid) transaction on
+	// it blocks a new create-va call. Once that transaction reaches a
+	// terminal state (paid "00", expired "02", deleted "04"), the same VA
+	// number is free to start a brand new transaction.
 	existing, _ := u.repo.GetVAByVirtualAccountNo(ctx, vaNo)
-	if existing != nil && existing.Status != "03" {
-		// VA already exists in terminal state
-		return nil, domain.NewDomainError("4092700", "Conflict: VA already exists", nil)
+	if existing != nil && existing.Status == "03" {
+		return nil, domain.NewDomainError("4092700", "Conflict: VA already has an active pending transaction", nil)
 	}
 
 	// Save transaction
@@ -61,8 +65,11 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	record := &domain.VAInquiryRecord{
 		PartnerServiceID: req.PartnerServiceID,
 		CustomerNo:       req.CustomerNo,
+		CustomerName:     req.VirtualAccountName,
 		VirtualAccountNo: vaNo,
 		InquiryRequestID: req.TrxID,
+		TrxID:            req.TrxID,
+		NotificationURL:  notificationURLFromAdditionalInfo(req.AdditionalInfo),
 		Status:           "03",
 		TotalAmount:      "0",
 		Currency:         "IDR",
@@ -78,11 +85,9 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		return nil, domain.NewDomainError("5002700", "Internal Server Error", err)
 	}
 
-	// Save bill details
 	if len(req.BillDetails) > 0 {
-		for _, bill := range req.BillDetails {
-			billDetail := bill
-			_ = billDetail // Bill details saved via transaction
+		if err := u.repo.SaveBillDetails(ctx, record.ID, req.BillDetails); err != nil {
+			return nil, domain.NewDomainError("5002700", "Internal Server Error", err)
 		}
 	}
 
@@ -199,6 +204,20 @@ func (u *MerchantVAUsecase) DeleteVA(ctx context.Context, req *domain.MerchantDe
 			AdditionalInfo:   req.AdditionalInfo,
 		},
 	}, nil
+}
+
+// notificationURLFromAdditionalInfo extracts the merchant payment callback URL
+// from additionalInfo.dbUrlProcess — the extension slot ASPI's VAUpsertRequest
+// schema itself defines (aspi-open-api-va.yaml:317-320) for proprietary data
+// like this, since notificationUrl is not a top-level spec field.
+func notificationURLFromAdditionalInfo(additionalInfo map[string]interface{}) string {
+	if additionalInfo == nil {
+		return ""
+	}
+	if v, ok := additionalInfo["dbUrlProcess"].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // Ensure MerchantVAUsecase implements domain.MerchantVAUsecase

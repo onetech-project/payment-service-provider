@@ -106,6 +106,30 @@ func TestSNAPAuthMiddleware_MissingExternalID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestSNAPAuthMiddleware_DefaultHeaders_NoClientKeyRequired(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+	req.Header.Set("X-TIMESTAMP", "2026-07-22T10:00:00+07:00")
+	req.Header.Set("X-SIGNATURE", "test")
+	req.Header.Set("X-EXTERNAL-ID", "123456")
+	// Deliberately no X-CLIENT-KEY: per ASPI spec it's only required on the
+	// access-token endpoint, not on transfer-va transaction endpoints.
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	vendorConfig := &config.VendorConfig{} // no RequiredHeaders set -> default applies
+
+	middleware := SNAPAuthMiddleware(vendorConfig)
+	handler := middleware(func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestIsValidISO8601(t *testing.T) {
 	tests := []struct {
 		input    string

@@ -31,7 +31,13 @@ func (w *bodyInterceptor) Write(b []byte) (int, error) {
 	return w.Response.Write(b)
 }
 
-func IdempotencyMiddleware(redisClient *redis.Client) echo.MiddlewareFunc {
+// IdempotencyMiddleware enforces Idempotency-Key handling for mutating
+// requests. lockTTL bounds how long a concurrent duplicate request is held
+// off while the original is in flight; cacheTTL is how long the completed
+// response is replayed for a repeated key. Both are caller-supplied (sourced
+// from env, e.g. IDEMPOTENCY_LOCK_TTL_SECONDS / IDEMPOTENCY_CACHE_TTL_SECONDS)
+// rather than hardcoded, since they're operational tuning knobs.
+func IdempotencyMiddleware(redisClient *redis.Client, lockTTL, cacheTTL time.Duration) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			req := c.Request()
@@ -83,7 +89,7 @@ func IdempotencyMiddleware(redisClient *redis.Client) echo.MiddlewareFunc {
 			}
 
 			// Acquire lock
-			locked, err := redisClient.AcquireLock(ctx, idempotencyKey, 30*time.Second)
+			locked, err := redisClient.AcquireLock(ctx, idempotencyKey, lockTTL)
 			if err != nil || !locked {
 				return c.JSON(http.StatusConflict, map[string]string{
 					"responseCode":    "4097300",
@@ -111,7 +117,7 @@ func IdempotencyMiddleware(redisClient *redis.Client) echo.MiddlewareFunc {
 					PayloadHash: payloadHash,
 				}
 				if jsonBytes, err := json.Marshal(cached); err == nil {
-					_ = redisClient.SetResponseCache(ctx, idempotencyKey, jsonBytes, 24*time.Hour)
+					_ = redisClient.SetResponseCache(ctx, idempotencyKey, jsonBytes, cacheTTL)
 				}
 			}
 

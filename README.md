@@ -197,11 +197,15 @@ Migrations are located in `db/migrations/` and are applied automatically on star
 
 - `000001_create_client_apps`: Client application registry
 - `000002_create_client_keys`: Client RSA public keys
-- `000003_create_va_transactions`: Virtual Account transactions
+- `000003_create_va_transactions`: Virtual Account transactions + bill details
+- `000004_add_va_fields`: SNAP-compliant columns on `va_transactions`/`va_bill_details` (customer name/email/phone, `trx_id`, `notification_url`, amount/label columns, etc.)
+- `000005_add_va_bill_details_missing_fields`: `bill_code`/`bill_name`/`bill_short_name` on `va_bill_details` (required for bill-detail persistence to actually work)
 
 ## Vendor Integration (Virtual Account)
 
-The system supports configurable vendor integrations via `.env.<vendor>.<channel>` files.
+The system supports configurable vendor integrations via `.env.<vendor>.<channel>` files. All ASPI SNAP Virtual Account endpoints are registered under a single unified path — `/v1.0/transfer-va/*` — regardless of which vendor config is active; there is no per-vendor path prefix.
+
+Full field-level ASPI compliance details (request/response schemas, header requirements) are in [`aspi-open-api-va.yaml`](./aspi-open-api-va.yaml) and [`specs/004-snap-va-field-compliance/`](./specs/004-snap-va-field-compliance/).
 
 ### Adding a New Vendor
 
@@ -221,15 +225,24 @@ VENDOR_CHANNEL_ID=95231
 VENDOR_PARTNER_ID=your_partner_id
 ```
 
-3. Restart the server - routes are auto-registered at `/v1.0/<vendor>/<channel>/`
+3. Restart the server — the config is picked up from `.env.<vendor>.<channel>` at startup.
 
-### Vendor API Endpoints
+### Vendor-Facing API Endpoints (Service Code 24-27, 31)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/v1.0/<vendor>/<channel>/transfer-va/inquiry` | VA Bill Inquiry |
-| POST | `/v1.0/<vendor>/<channel>/transfer-va/payment` | VA Payment Notification |
-| POST | `/v1.0/<vendor>/<channel>/transfer-va/status` | VA Payment Status |
+| Method | Path | Service Code | Description |
+|--------|------|---------------|-------------|
+| POST | `/v1.0/transfer-va/inquiry` | 24 | VA bill inquiry (vendor → PSP) |
+| POST | `/v1.0/transfer-va/payment` | 25 | VA payment notification (vendor → PSP); triggers an async merchant callback |
+| POST | `/v1.0/transfer-va/status` | 26 | VA payment status inquiry (vendor → PSP) |
+| POST | `/v1.0/transfer-va/create-va` | 27 | Create a Virtual Account (merchant-facing) |
+| POST | `/v1.0/transfer-va/list` | — | List/filter VA transactions (merchant dashboard convenience API, not an ASPI endpoint) |
+| DELETE | `/v1.0/transfer-va/delete-va` | 31 | Delete a still-pending VA (merchant-facing) |
+
+Service Code 28-35 (`update-va`, `update-status`, `inquiry-va`, `inquiry-intrabank`, `payment-intrabank`, `notify-payment-intrabank`, `report`) are defined in the OpenAPI spec but **not yet implemented**.
+
+**Required headers** for `/v1.0/transfer-va/*` per ASPI spec: `X-TIMESTAMP`, `X-SIGNATURE` (both required), plus `X-PARTNER-ID`/`X-EXTERNAL-ID` (required by the API contract) and optionally `CHANNEL-ID` (spec marks it `required: false`). **`X-CLIENT-KEY` is NOT used here** — it only applies to `POST /v1.0/access-token/b2b`.
+
+**VA lifecycle**: a `virtualAccountNo` is reusable across transaction cycles — creating a new VA under a number is only rejected (`409 4092700`) while that number still has a *pending* (unpaid) transaction. Once a transaction is *paid* (`status "00"`), it's immutable: `delete-va` against it is rejected (`405 4053101`), and a second `payment` call against it — even with a brand-new `paymentRequestId` — is rejected (`409 4092500`) rather than silently overwriting the recorded amount/reference. See `scripts/e2e-va-cancel-flow.sh` below for a runnable demonstration of these rules.
 
 ### Configuration Reference
 
@@ -239,8 +252,38 @@ See `.env.vendor.channel.example` for all available configuration options:
 - API endpoints (inquiry, status, payment)
 - Channel configuration (channel ID, partner ID)
 - Request settings (timeout, signature algorithm)
-- SNAP headers (required headers list)
+- SNAP headers (required headers list — defaults to `X-TIMESTAMP,X-SIGNATURE`; add `X-PARTNER-ID`/`X-EXTERNAL-ID`/`CHANNEL-ID` only if your vendor contractually requires them beyond the ASPI defaults)
 - Logging options
+
+## Scripts
+
+`scripts/` contains dev/test tooling for exercising the SNAP VA flows without a real vendor connection. Each script's header comment documents its own flags; the highlights:
+
+| Script | Purpose |
+|--------|---------|
+| `curl-b2b-token.sh` | Get a B2B access token (RSA-signed) |
+| `merchant-create-va.sh` | Create a VA (`-b`/`-d` optionally attach one bill detail) |
+| `merchant-list-va.sh` / `merchant-delete-va.sh` | List / cancel (delete) VAs |
+| `vendor-inquiry-va.sh` | Simulate a vendor VA inquiry |
+| `vendor-payment-va.sh` | Simulate a vendor payment notification (triggers the merchant callback) |
+| `e2e-va-flow.sh` | Runs the happy-path flow in one command: token → create-va → inquiry → payment → **verifies the merchant callback actually arrives** (spins up a throwaway local HTTP listener and prints the received callback payload) |
+| `e2e-va-cancel-flow.sh` | Runs the cancel/immutability flow in one command: create a VA, cancel it while pending (and confirm its number is reusable), then pay a second VA and **prove a paid transaction can no longer be cancelled or re-paid** (asserts the expected `405`/`409` rejections at each step) |
+
+The HMAC-signing scripts (`merchant-create-va.sh`, `vendor-inquiry-va.sh`, `vendor-payment-va.sh`, `e2e-va-flow.sh`, `e2e-va-cancel-flow.sh`) accept `-f <env-file>` to load `VENDOR_CLIENT_SECRET`/`VENDOR_CLIENT_ID`/`VENDOR_PRIVATE_KEY_PATH` straight from a `.env.<vendor>.<channel>` file instead of passing secrets as plain CLI arguments (`merchant-list-va.sh`/`merchant-delete-va.sh` don't sign requests at all, and `curl-b2b-token.sh` takes an RSA key file directly via `-p`). Examples:
+
+```bash
+# Happy path: token -> create-va -> inquiry -> payment -> callback verification
+./scripts/e2e-va-flow.sh -s 12345678 -c 0812345678 -n "Merchant Name" \
+  -i <client_id> -k <private_key.pem> -f .env.bca.va \
+  -a 10000 -b INV-001 -d "Invoice Januari"
+
+# Cancel / paid-immutability checks: cancel-while-pending + reuse, then
+# prove a paid VA rejects both cancellation and a second payment attempt
+./scripts/e2e-va-cancel-flow.sh -s 12345678 -c 0812345678 -n "Merchant Name" \
+  -i <client_id> -k <private_key.pem> -f .env.bca.va -a 10000
+```
+
+See [VA lifecycle](#vendor-facing-api-endpoints-service-code-24-27-31) above for the reuse/immutability rules `e2e-va-cancel-flow.sh` asserts at each step.
 
 ## License
 

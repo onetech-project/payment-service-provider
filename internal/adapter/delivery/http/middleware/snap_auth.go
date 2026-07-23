@@ -16,8 +16,11 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig) echo.MiddlewareFunc {
 			// Get required headers from config
 			requiredHeaders := vendorConfig.RequiredHeaders
 			if len(requiredHeaders) == 0 {
-				// Default SNAP required headers
-				requiredHeaders = []string{"X-TIMESTAMP", "X-CLIENT-KEY", "X-SIGNATURE"}
+				// Default SNAP required headers per ASPI spec for transfer-va
+				// endpoints: X-TIMESTAMP, X-SIGNATURE, X-PARTNER-ID, X-EXTERNAL-ID.
+				// X-CLIENT-KEY is NOT part of this list — it is only used on the
+				// access-token endpoint, never on transaction endpoints.
+				requiredHeaders = []string{"X-TIMESTAMP", "X-SIGNATURE"}
 			}
 
 			// Validate required headers
