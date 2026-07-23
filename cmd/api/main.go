@@ -15,13 +15,16 @@ import (
 
 	"backbone-new/internal/adapter/delivery/http/handler"
 	customMiddleware "backbone-new/internal/adapter/delivery/http/middleware"
+	"backbone-new/internal/adapter/delivery/worker"
 	"backbone-new/internal/infrastructure/config"
 	"backbone-new/internal/infrastructure/crypto"
 	"backbone-new/internal/infrastructure/database"
+	"backbone-new/internal/infrastructure/queue"
 	"backbone-new/internal/infrastructure/redis"
 	"backbone-new/internal/infrastructure/telemetry"
 	"backbone-new/internal/usecase"
 
+	"github.com/hibiken/asynq"
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 )
@@ -122,6 +125,32 @@ func main() {
 	vaUsecase := usecase.NewVAUsecase(vaRepo)
 	vaHandler := handler.NewVAHandler(vaUsecase)
 
+	// Merchant VA Usecase & Handler
+	merchantVAUsecase := usecase.NewMerchantVAUsecase(vaRepo)
+	merchantVAHandler := handler.NewMerchantVAHandler(merchantVAUsecase)
+
+	// Asynq Client for async notifications
+	asynqClient, err := queue.NewClient(redisAddr, redisPassword, 0)
+	if err != nil {
+		log.Printf("Warning: Asynq client initialization failed: %v", err)
+	} else {
+		defer func() { _ = asynqClient.Close() }()
+	}
+
+	// Asynq Worker for payment notifications
+	notificationSecret := getEnvOrDefault("NOTIFICATION_SECRET", "default-secret")
+	paymentWorker := worker.NewPaymentNotificationWorker(notificationSecret)
+	asynqMux := asynq.NewServeMux()
+	worker.RegisterWorker(asynqMux, paymentWorker)
+
+	// Start Asynq worker in background
+	go func() {
+		srv := queue.NewServer(redisAddr, redisPassword, 0)
+		if err := srv.Run(asynqMux); err != nil {
+			log.Printf("Asynq worker error: %v", err)
+		}
+	}()
+
 	// Load vendor configurations
 	configDir := getEnvOrDefault("CONFIG_DIR", ".")
 	configLoader := config.NewVendorConfigLoader(configDir)
@@ -149,32 +178,34 @@ func main() {
 	snapGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient))
 	snapGroup.POST("/access-token/b2b", tokenHandler.GetB2BAccessToken)
 
-	// Register vendor-specific routes
+	// Register vendor-specific routes (unified under /v1.0/transfer-va/*)
+	transferVAGroup := e.Group("/v1.0/transfer-va")
+	transferVAGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient))
+
+	// Existing SNAP VA endpoints (inquiry, payment, status)
 	for _, vc := range vendorConfigs {
-		// Create route group for each vendor/channel
-		vendorGroup := e.Group("/v1.0/" + vc.Vendor + "/" + vc.Channel)
-
-		// Apply SNAP auth middleware with vendor config
+		vendorGroup := transferVAGroup.Group("")
 		vendorGroup.Use(customMiddleware.SNAPAuthMiddleware(vc))
-		vendorGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient))
-
-		// Register VA endpoints
-		vendorGroup.POST("/transfer-va/inquiry", vaHandler.Inquiry)
-		vendorGroup.POST("/transfer-va/payment", vaHandler.Payment)
-		vendorGroup.POST("/transfer-va/status", vaHandler.Status)
-
-		log.Printf("Registered vendor routes: /v1.0/%s/%s", vc.Vendor, vc.Channel)
+		vendorGroup.POST("/inquiry", vaHandler.Inquiry)
+		vendorGroup.POST("/payment", vaHandler.Payment)
+		vendorGroup.POST("/status", vaHandler.Status)
+		log.Printf("Registered vendor routes for: %s/%s", vc.Vendor, vc.Channel)
 	}
 
-	// Default vendor VA routes for backward compatibility
+	// Default routes if no vendor configs
 	if len(vendorConfigs) == 0 {
 		log.Println("No vendor configs found, using default vendor VA routes")
-		vaGroup := e.Group("/v1.0/bca/va")
-		vaGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient))
-		vaGroup.POST("/inquiry", vaHandler.Inquiry)
-		vaGroup.POST("/payment", vaHandler.Payment)
-		vaGroup.POST("/status", vaHandler.Status)
+		transferVAGroup.POST("/inquiry", vaHandler.Inquiry)
+		transferVAGroup.POST("/payment", vaHandler.Payment)
+		transferVAGroup.POST("/status", vaHandler.Status)
 	}
+
+	// Merchant VA Dashboard endpoints (SNAP ASPI compliant)
+	transferVAGroup.POST("/create-va", merchantVAHandler.CreateVA)
+	transferVAGroup.POST("/list", merchantVAHandler.ListVA)
+	transferVAGroup.DELETE("/delete-va", merchantVAHandler.DeleteVA)
+
+	log.Println("Registered merchant VA routes: create-va, list, delete-va")
 
 	port := getEnvOrDefault("PORT", "8080")
 	log.Printf("Starting SNAP Payment Gateway Server on port %s...", port)

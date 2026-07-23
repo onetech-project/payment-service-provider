@@ -27,6 +27,13 @@ var (
 	ErrVAInvalidField     = errors.New("invalid field format")
 	ErrVAUnauthorized     = errors.New("unauthorized")
 	ErrVAInternalError    = errors.New("internal server error")
+
+	// Merchant VA Error Constants
+	ErrMerchantVANotFound      = errors.New("merchant VA not found")
+	ErrMerchantVAAlreadyPaid   = errors.New("merchant VA already paid")
+	ErrMerchantVAAlreadyDeleted = errors.New("merchant VA already deleted")
+	ErrMerchantVAExpired       = errors.New("merchant VA expired")
+	ErrMerchantNotificationFailed = errors.New("merchant notification failed")
 )
 
 type DomainError struct {

@@ -47,6 +47,29 @@ func (m *MockVARepository) UpdatePaymentStatus(ctx context.Context, paymentReque
 	return args.Error(0)
 }
 
+func (m *MockVARepository) ListVA(ctx context.Context, filter *domain.VAListFilter) ([]domain.VAListItem, int, error) {
+	args := m.Called(ctx, filter)
+	return args.Get(0).([]domain.VAListItem), args.Int(1), args.Error(2)
+}
+
+func (m *MockVARepository) GetVABillDetails(ctx context.Context, transactionID string) ([]domain.BillDetail, error) {
+	args := m.Called(ctx, transactionID)
+	return args.Get(0).([]domain.BillDetail), args.Error(1)
+}
+
+func (m *MockVARepository) UpdateVAStatus(ctx context.Context, virtualAccountNo string, status string) error {
+	args := m.Called(ctx, virtualAccountNo, status)
+	return args.Error(0)
+}
+
+func (m *MockVARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.VAInquiryRecord, error) {
+	args := m.Called(ctx, virtualAccountNo)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.VAInquiryRecord), args.Error(1)
+}
+
 func TestVAUsecase_Inquiry_Success(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	usecase := NewVAUsecase(mockRepo)

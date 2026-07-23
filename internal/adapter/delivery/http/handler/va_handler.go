@@ -148,6 +148,8 @@ func mapSNAPCodeToHTTP(snapCode string) int {
 		return http.StatusForbidden
 	case "404":
 		return http.StatusNotFound
+	case "405":
+		return http.StatusMethodNotAllowed
 	case "409":
 		return http.StatusConflict
 	case "422":

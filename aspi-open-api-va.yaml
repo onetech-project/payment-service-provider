@@ -1,0 +1,974 @@
+openapi: 3.0.3
+info:
+  title: ASPI SNAP - Transfer Kredit Virtual Account API
+  description: >
+    OpenAPI spec untuk layanan Virtual Account (SNAP BI) sesuai ASPI API Dev Portal
+    (transfer-kredit/virtual-account). Disusun berdasarkan payload pada bagian
+    "Code Snippets" di dokumentasi resmi.
+  version: "1.0.0"
+servers:
+  - url: https://api.example-pjp.co.id/snap/v1.0
+    description: "Ganti dengan base URL PJP masing-masing (path resmi: .../{version}/transfer-va/...)"
+
+security:
+  - B2BAuth: []
+    CustomerAuth: []
+
+tags:
+  - name: Virtual Account
+    description: Service Code 24-35 - Transfer Kredit Virtual Account
+
+components:
+  securitySchemes:
+    B2BAuth:
+      type: http
+      scheme: bearer
+      description: Authorization header (B2B token)
+    CustomerAuth:
+      type: apiKey
+      in: header
+      name: Authorization-Customer
+      description: Authorization-Customer header (customer token, bila diperlukan)
+
+  parameters:
+    XTimestamp:
+      name: X-TIMESTAMP
+      in: header
+      required: true
+      schema: { type: string, format: date-time }
+      example: "2020-12-21T14:56:11+07:00"
+    XSignature:
+      name: X-SIGNATURE
+      in: header
+      required: true
+      schema: { type: string }
+    XOrigin:
+      name: X-ORIGIN
+      in: header
+      required: false
+      schema: { type: string }
+      example: www.hostname.com
+    XPartnerId:
+      name: X-PARTNER-ID
+      in: header
+      required: true
+      schema: { type: string }
+    XExternalId:
+      name: X-EXTERNAL-ID
+      in: header
+      required: true
+      schema: { type: string }
+    XIpAddress:
+      name: X-IP-ADDRESS
+      in: header
+      required: false
+      schema: { type: string }
+    XDeviceId:
+      name: X-DEVICE-ID
+      in: header
+      required: false
+      schema: { type: string }
+    XLatitude:
+      name: X-LATITUDE
+      in: header
+      required: false
+      schema: { type: string }
+    XLongitude:
+      name: X-LONGITUDE
+      in: header
+      required: false
+      schema: { type: string }
+    ChannelId:
+      name: CHANNEL-ID
+      in: header
+      required: false
+      schema: { type: string }
+
+  schemas:
+    Amount:
+      type: object
+      required: [value, currency]
+      properties:
+        value: { type: string, example: "12345678.00" }
+        currency: { type: string, example: "IDR" }
+
+    MultiLangText:
+      type: object
+      properties:
+        english: { type: string }
+        indonesia: { type: string }
+
+    FreeText:
+      type: object
+      properties:
+        english: { type: string }
+        indonesia: { type: string }
+
+    AdditionalInfo:
+      type: object
+      additionalProperties: true
+      example: { deviceId: "12345679237", channel: "mobilephone"}
+
+    BillDetail:
+      type: object
+      properties:
+        billCode: { type: string }
+        billNo: { type: string }
+        billName: { type: string }
+        billShortName: { type: string }
+        billDescription: { $ref: '#/components/schemas/MultiLangText' }
+        billSubCompany: { type: string }
+        billAmount: { $ref: '#/components/schemas/Amount' }
+        billAmountLabel: { type: string }
+        billAmountValue: { type: string }
+        billReferenceNo: { type: string }
+        billerReferenceId: { type: string }
+        status: { type: string }
+        reason: { $ref: '#/components/schemas/MultiLangText' }
+        additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    ResponseStatus:
+      type: object
+      required: [responseCode, responseMessage]
+      properties:
+        responseCode: { type: string, maxLength: 7, example: "2002400" }
+        responseMessage: { type: string, maxLength: 150, example: "Success" }
+
+    VAIdentity:
+      type: object
+      required: [partnerServiceId, customerNo, virtualAccountNo]
+      properties:
+        partnerServiceId: { type: string, maxLength: 8 }
+        customerNo: { type: string, maxLength: 20 }
+        virtualAccountNo: { type: string, maxLength: 28 }
+
+    # ---------- Inquiry (Service Code 24) ----------
+    InquiryRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          required: [inquiryRequestId, amount]
+          properties:
+            txnDateInit: { type: string, format: date-time }
+            channelCode: { type: integer }
+            language: { type: string, maxLength: 2 }
+            amount: { $ref: '#/components/schemas/Amount' }
+            hashedSourceAccountNo: { type: string, maxLength: 32 }
+            sourceBankCode: { type: string, maxLength: 11 }
+            passApp: { type: string, maxLength: 64 }
+            inquiryRequestId: { type: string, maxLength: 128 }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    InquiryResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountData:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    inquiryStatus: { type: string }
+                    inquiryReason: { $ref: '#/components/schemas/MultiLangText' }
+                    virtualAccountName: { type: string }
+                    virtualAccountEmail: { type: string }
+                    virtualAccountPhone: { type: string }
+                    inquiryRequestId: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    subCompany: { type: string }
+                    billDetails:
+                      type: array
+                      items: { $ref: '#/components/schemas/BillDetail' }
+                    freeTexts:
+                      type: array
+                      items: { $ref: '#/components/schemas/FreeText' }
+                    virtualAccountTrxType: { type: string, enum: [C, O, I, M, L, N, X] }
+                    feeAmount: { $ref: '#/components/schemas/Amount' }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    # ---------- Payment (Service Code 25) ----------
+    PaymentRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          required: [paymentRequestId, paidAmount]
+          properties:
+            virtualAccountName: { type: string }
+            virtualAccountEmail: { type: string }
+            virtualAccountPhone: { type: string }
+            trxId: { type: string, maxLength: 64 }
+            paymentRequestId: { type: string, maxLength: 128 }
+            channelCode: { type: integer }
+            hashedSourceAccountNo: { type: string }
+            sourceBankCode: { type: string }
+            paidAmount: { $ref: '#/components/schemas/Amount' }
+            cumulativePaymentAmount: { $ref: '#/components/schemas/Amount' }
+            paidBills: { type: string, maxLength: 6 }
+            totalAmount: { $ref: '#/components/schemas/Amount' }
+            trxDateTime: { type: string }
+            referenceNo: { type: string }
+            journalNum: { type: string }
+            paymentType: { type: string }
+            flagAdvise: { type: string }
+            subCompany: { type: string }
+            billDetails:
+              type: array
+              items: { $ref: '#/components/schemas/BillDetail' }
+            freeTexts:
+              type: array
+              items: { $ref: '#/components/schemas/FreeText' }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    PaymentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountData:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    paymentFlagReason: { $ref: '#/components/schemas/MultiLangText' }
+                    virtualAccountName: { type: string }
+                    virtualAccountEmail: { type: string }
+                    virtualAccountPhone: { type: string }
+                    trxId: { type: string }
+                    paymentRequestId: { type: string }
+                    paidAmount: { $ref: '#/components/schemas/Amount' }
+                    paidBills: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    trxDateTime: { type: string }
+                    referenceNo: { type: string }
+                    journalNum: { type: string }
+                    paymentType: { type: string }
+                    flagAdvise: { type: string }
+                    paymentFlagStatus: { type: string }
+                    billDetails:
+                      type: array
+                      items: { $ref: '#/components/schemas/BillDetail' }
+                    freeTexts:
+                      type: array
+                      items: { $ref: '#/components/schemas/FreeText' }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    # ---------- Inquiry Status (Service Code 26) ----------
+    StatusRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          properties:
+            inquiryRequestId: { type: string }
+            paymentRequestId: { type: string }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    StatusResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountData:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    paymentFlagReason: { $ref: '#/components/schemas/MultiLangText' }
+                    inquiryRequestId: { type: string }
+                    paymentRequestId: { type: string }
+                    paidAmount: { $ref: '#/components/schemas/Amount' }
+                    paidBills: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    trxDateTime: { type: string }
+                    transactionDate: { type: string }
+                    referenceNo: { type: string }
+                    paymentType: { type: string }
+                    flagAdvise: { type: string }
+                    paymentFlagStatus: { type: string }
+                    billDetails:
+                      type: array
+                      items: { $ref: '#/components/schemas/BillDetail' }
+                    freeTexts:
+                      type: array
+                      items: { $ref: '#/components/schemas/FreeText' }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    # ---------- Create / Update VA (Service Code 27, 28) ----------
+    VAUpsertRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          required: [virtualAccountName, trxId]
+          properties:
+            virtualAccountName: { type: string }
+            virtualAccountEmail: { type: string }
+            virtualAccountPhone: { type: string }
+            trxId: { type: string, maxLength: 64 }
+            totalAmount: { $ref: '#/components/schemas/Amount' }
+            billDetails:
+              type: array
+              items: { $ref: '#/components/schemas/BillDetail' }
+            freeTexts:
+              type: array
+              items: { $ref: '#/components/schemas/FreeText' }
+            virtualAccountTrxType: { type: string, enum: [C, O, I, M, L, N, X] }
+            feeAmount: { $ref: '#/components/schemas/Amount' }
+            expiredDate: { type: string, format: date-time }
+            additionalInfo: { 
+              $ref: '#/components/schemas/AdditionalInfo',
+              dbUrlProcess: { type: string },
+            }
+
+    VAUpsertResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountData:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    virtualAccountName: { type: string }
+                    virtualAccountEmail: { type: string }
+                    virtualAccountPhone: { type: string }
+                    trxId: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    billDetails:
+                      type: array
+                      items: { $ref: '#/components/schemas/BillDetail' }
+                    freeTexts:
+                      type: array
+                      items: { $ref: '#/components/schemas/FreeText' }
+                    virtualAccountTrxType: { type: string }
+                    feeAmount: { $ref: '#/components/schemas/Amount' }
+                    expiredDate: { type: string }
+                    lastUpdateDate: { type: string }
+                    paymentDate: { type: string }
+                    additionalInfo: { 
+                      $ref: '#/components/schemas/AdditionalInfo',
+                      dbUrlProcess: { type: string },
+                    }
+
+    # ---------- Update Status VA (Service Code 29) ----------
+    UpdateStatusRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          required: [trxId, paidStatus]
+          properties:
+            trxId: { type: string }
+            paidStatus: { type: string, enum: [Y, N] }
+
+    UpdateStatusResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountData:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    virtualAccountName: { type: string }
+                    virtualAccountEmail: { type: string }
+                    virtualAccountPhone: { type: string }
+                    trxId: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    virtualAccountTrxType: { type: string }
+                    feeAmount: { $ref: '#/components/schemas/Amount' }
+                    expiredDate: { type: string }
+                    lastUpdateDate: { type: string }
+                    paymentDate: { type: string }
+                    additionalInfo: { 
+                      $ref: '#/components/schemas/AdditionalInfo',
+                      dbUrlProcess: { type: string },
+                    }
+
+    # ---------- Inquiry VA detail (Service Code 30) ----------
+    InquiryVARequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          properties:
+            trxId: { type: string }
+
+    InquiryVAResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountData:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    virtualAccountName: { type: string }
+                    virtualAccountEmail: { type: string }
+                    virtualAccountPhone: { type: string }
+                    trxId: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    billDetails:
+                      type: array
+                      items: { $ref: '#/components/schemas/BillDetail' }
+                    freeTexts:
+                      type: array
+                      items: { $ref: '#/components/schemas/FreeText' }
+                    virtualAccountTrxType: { type: string }
+                    feeAmount: { $ref: '#/components/schemas/Amount' }
+                    expiredDate: { type: string }
+                    lastUpdateDate: { type: string }
+                    paymentDate: { type: string }
+                    additionalInfo: { 
+                      $ref: '#/components/schemas/AdditionalInfo',
+                      dbUrlProcess: { type: string },
+                    }
+
+    # ---------- Delete VA (Service Code 31) ----------
+    DeleteVARequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          properties:
+            trxId: { type: string }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    DeleteVAResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountData:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    trxId: { type: string }
+                    additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    # ---------- Inquiry Payment to VA from Intrabank (Service Code 32) ----------
+    InquiryIntrabankRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          required: [partnerReferenceNo, amount]
+          properties:
+            partnerReferenceNo: { type: string }
+            trxDateTime: { type: string }
+            channelCode: { type: integer }
+            language: { type: string }
+            amount: { $ref: '#/components/schemas/Amount' }
+            sourceAccountNo: { type: string }
+            sourceAccountType: { type: string, enum: [D, S] }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    InquiryIntrabankResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountdata:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    inquiryStatus: { type: string }
+                    inquiryReason: { $ref: '#/components/schemas/MultiLangText' }
+                    partnerReferenceNo: { type: string }
+                    virtualAccountName: { type: string }
+                    virtualAccountEmail: { type: string }
+                    virtualAccountPhone: { type: string }
+                    sourceAccountNo: { type: string }
+                    sourceAccountType: { type: string }
+                    inquiryRequestId: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    billDetails:
+                      type: array
+                      items: { $ref: '#/components/schemas/BillDetail' }
+                    freeTexts:
+                      type: array
+                      items: { $ref: '#/components/schemas/FreeText' }
+                    virtualAccountTrxType: { type: string }
+                    feeAmount: { $ref: '#/components/schemas/Amount' }
+                    productName: { type: string }
+                    additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    # ---------- Payment to VA from Intrabank (Service Code 33) ----------
+    PaymentIntrabankRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          required: [partnerReferenceNo, paidAmount]
+          properties:
+            referenceNo: { type: string }
+            virtualAccountName: { type: string }
+            virtualAccountEmail: { type: string }
+            virtualAccountPhone: { type: string }
+            sourceAccountNo: { type: string }
+            sourceAccountType: { type: string, enum: [D, S] }
+            inquiryRequestId: { type: string }
+            partnerReferenceNo: { type: string }
+            paidAmount: { $ref: '#/components/schemas/Amount' }
+            cumulativePaymentAmount: { $ref: '#/components/schemas/Amount' }
+            paidBills: { type: string }
+            totalAmount: { $ref: '#/components/schemas/Amount' }
+            trxDateTime: { type: string }
+            journalNum: { type: string }
+            paymentType: { type: string }
+            flagAdvise: { type: string }
+            paymentStatus: { type: string }
+            billDetails:
+              type: array
+              items: { $ref: '#/components/schemas/BillDetail' }
+            freeTexts:
+              type: array
+              items: { $ref: '#/components/schemas/FreeText' }
+            feeAmount: { $ref: '#/components/schemas/Amount' }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    PaymentIntrabankResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountdata:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    paymentFlagReason: { $ref: '#/components/schemas/MultiLangText' }
+                    virtualAccountName: { type: string }
+                    virtualAccountEmail: { type: string }
+                    virtualAccountPhone: { type: string }
+                    sourceAccountNo: { type: string }
+                    sourceAccountType: { type: string }
+                    inquiryRequestId: { type: string }
+                    paymentRequestId: { type: string }
+                    partnerReferenceNo: { type: string }
+                    referenceNo: { type: string }
+                    paidAmount: { $ref: '#/components/schemas/Amount' }
+                    paidBills: { type: string }
+                    totalAmount: { $ref: '#/components/schemas/Amount' }
+                    trxDateTime: { type: string }
+                    journalNum: { type: string }
+                    paymentType: { type: string }
+                    flagAdvise: { type: string }
+                    billDetails:
+                      type: array
+                      items: { $ref: '#/components/schemas/BillDetail' }
+                    freeTexts:
+                      type: array
+                      items: { $ref: '#/components/schemas/FreeText' }
+                    feeAmount: { $ref: '#/components/schemas/Amount' }
+                    productName: { type: string }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    # ---------- Notification for Payment to VA from Intrabank (Service Code 34) ----------
+    NotifyPaymentIntrabankRequest:
+      allOf:
+        - $ref: '#/components/schemas/VAIdentity'
+        - type: object
+          properties:
+            inquiryRequestId: { type: string }
+            paymentRequestId: { type: string }
+            partnerReferenceNo: { type: string }
+            trxDateTime: { type: string }
+            paymentStatus: { type: string }
+            paymentFlagReason: { $ref: '#/components/schemas/MultiLangText' }
+            additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    NotifyPaymentIntrabankResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountdata:
+              allOf:
+                - $ref: '#/components/schemas/VAIdentity'
+                - type: object
+                  properties:
+                    paymentFlagReason: { $ref: '#/components/schemas/MultiLangText' }
+                    inquiryRequestId: { type: string }
+                    paymentRequestId: { type: string }
+                    partnerReferenceNo: { type: string }
+                    trxDateTime: { type: string }
+                    paymentStatus: { type: string }
+                    additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    # ---------- Get Report (Service Code 35) ----------
+    ReportRequest:
+      type: object
+      required: [partnerServiceId]
+      properties:
+        partnerServiceId: { type: string, maxLength: 8 }
+        startDate: { type: string, format: date, example: "2020-12-31" }
+        startTime: { type: string, example: "14:56:11+07:00" }
+        endDate: { type: string, format: date, example: "2021-12-31" }
+        endTime: { type: string, example: "14:56:11+07:00" }
+        additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+    ReportResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResponseStatus'
+        - type: object
+          properties:
+            virtualAccountdata:
+              type: array
+              items:
+                allOf:
+                  - $ref: '#/components/schemas/VAIdentity'
+                  - type: object
+                    properties:
+                      paymentFlagReason: { $ref: '#/components/schemas/MultiLangText' }
+                      virtualAccountName: { type: string }
+                      virtualAccountEmail: { type: string }
+                      virtualAccountPhone: { type: string }
+                      sourceAccountNo: { type: string }
+                      sourceAccountType: { type: string }
+                      trxId: { type: string }
+                      inquiryRequestId: { type: string }
+                      paymentRequestId: { type: string }
+                      paidAmount: { $ref: '#/components/schemas/Amount' }
+                      paidBills: { type: string }
+                      totalAmount: { $ref: '#/components/schemas/Amount' }
+                      trxDateTime: { type: string }
+                      referenceNo: { type: string }
+                      journalNum: { type: string }
+                      paymentType: { type: string }
+                      flagAdvise: { type: string }
+                      billDetails:
+                        type: array
+                        items: { $ref: '#/components/schemas/BillDetail' }
+                      freeTexts:
+                        type: array
+                        items: { $ref: '#/components/schemas/FreeText' }
+                      additionalInfo: { $ref: '#/components/schemas/AdditionalInfo' }
+
+paths:
+  /transfer-va/inquiry:
+    post:
+      tags: [Virtual Account]
+      summary: Inquiry Virtual Account (Service Code 24)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InquiryRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryResponse' }
+
+  /transfer-va/payment:
+    post:
+      tags: [Virtual Account]
+      summary: Payment Virtual Account (Service Code 25)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentResponse' }
+
+  /transfer-va/status:
+    post:
+      tags: [Virtual Account]
+      summary: Inquiry Status Virtual Account (Service Code 26)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusResponse' }
+
+  /transfer-va/create-va:
+    post:
+      tags: [Virtual Account]
+      summary: Create Virtual Account (Service Code 27)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VAUpsertRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VAUpsertResponse' }
+
+  /transfer-va/update-va:
+    put:
+      tags: [Virtual Account]
+      summary: Update Virtual Account (Service Code 28)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VAUpsertRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VAUpsertResponse' }
+
+  /transfer-va/update-status:
+    put:
+      tags: [Virtual Account]
+      summary: Update Status Virtual Account (Service Code 29)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateStatusRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdateStatusResponse' }
+
+  /transfer-va/inquiry-va:
+    post:
+      tags: [Virtual Account]
+      summary: Inquiry Virtual Account detail (Service Code 30)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InquiryVARequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryVAResponse' }
+
+  /transfer-va/delete-va:
+    delete:
+      tags: [Virtual Account]
+      summary: Delete Virtual Account (Service Code 31)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeleteVARequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeleteVAResponse' }
+
+  /transfer-va/inquiry-intrabank:
+    post:
+      tags: [Virtual Account]
+      summary: Inquiry Payment to VA from Intra Bank (Service Code 32)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InquiryIntrabankRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryIntrabankResponse' }
+
+  /transfer-va/payment-intrabank:
+    post:
+      tags: [Virtual Account]
+      summary: Payment to VA from Intra Bank (Service Code 33)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentIntrabankRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntrabankResponse' }
+
+  /transfer-va/notify-payment-intrabank:
+    post:
+      tags: [Virtual Account]
+      summary: Notification for Payment to VA from Intra Bank (Service Code 34)
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotifyPaymentIntrabankRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotifyPaymentIntrabankResponse' }
+
+  /transfer-va/report:
+    post:
+      tags: [Virtual Account]
+      summary: Get Report Virtual Account (Service Code 35)
+      description: >
+        Catatan: tabel "Informasi Umum" pada portal ASPI menyebut method GET,
+        namun contoh pada "Code Snippets" menggunakan POST dengan request body.
+        Spec ini mengikuti Code Snippet (POST) sesuai permintaan.
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/XOrigin'
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XExternalId'
+        - $ref: '#/components/parameters/XIpAddress'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XLatitude'
+        - $ref: '#/components/parameters/XLongitude'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportRequest' }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportResponse' }
