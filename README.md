@@ -101,7 +101,7 @@ Response:
 ### SNAP B2B Access Token
 
 ```
-POST /v1.0/access-token/b2b
+POST /openapi/v1.0/access-token/b2b
 ```
 
 **Required Headers:**
@@ -203,7 +203,7 @@ Migrations are located in `db/migrations/` and are applied automatically on star
 
 ## Vendor Integration (Virtual Account)
 
-The system supports configurable vendor integrations via `.env.<vendor>.<channel>` files. All ASPI SNAP Virtual Account endpoints are registered under a single unified path — `/v1.0/transfer-va/*` — regardless of which vendor config is active; there is no per-vendor path prefix.
+The system supports configurable vendor integrations via `.env.<vendor>.<channel>` files. All ASPI SNAP Virtual Account endpoints are registered under a single unified path — `/openapi/v1.0/transfer-va/*` — regardless of which vendor config is active; there is no per-vendor path prefix.
 
 Full field-level ASPI compliance details (request/response schemas, header requirements) are in [`aspi-open-api-va.yaml`](./aspi-open-api-va.yaml) and [`specs/004-snap-va-field-compliance/`](./specs/004-snap-va-field-compliance/).
 
@@ -231,16 +231,16 @@ VENDOR_PARTNER_ID=your_partner_id
 
 | Method | Path | Service Code | Description |
 |--------|------|---------------|-------------|
-| POST | `/v1.0/transfer-va/inquiry` | 24 | VA bill inquiry (vendor → PSP) |
-| POST | `/v1.0/transfer-va/payment` | 25 | VA payment notification (vendor → PSP); triggers an async merchant callback |
-| POST | `/v1.0/transfer-va/status` | 26 | VA payment status inquiry (vendor → PSP) |
-| POST | `/v1.0/transfer-va/create-va` | 27 | Create a Virtual Account (merchant-facing) |
-| POST | `/v1.0/transfer-va/list` | — | List/filter VA transactions (merchant dashboard convenience API, not an ASPI endpoint) |
-| DELETE | `/v1.0/transfer-va/delete-va` | 31 | Delete a still-pending VA (merchant-facing) |
+| POST | `/openapi/v1.0/transfer-va/inquiry` | 24 | VA bill inquiry (vendor → PSP) |
+| POST | `/openapi/v1.0/transfer-va/payment` | 25 | VA payment notification (vendor → PSP); triggers an async merchant callback |
+| POST | `/openapi/v1.0/transfer-va/status` | 26 | VA payment status inquiry (vendor → PSP) |
+| POST | `/openapi/v1.0/transfer-va/create-va` | 27 | Create a Virtual Account (merchant-facing) |
+| POST | `/openapi/v1.0/transfer-va/list` | — | List/filter VA transactions (merchant dashboard convenience API, not an ASPI endpoint) |
+| DELETE | `/openapi/v1.0/transfer-va/delete-va` | 31 | Delete a still-pending VA (merchant-facing) |
 
 Service Code 28-35 (`update-va`, `update-status`, `inquiry-va`, `inquiry-intrabank`, `payment-intrabank`, `notify-payment-intrabank`, `report`) are defined in the OpenAPI spec but **not yet implemented**.
 
-**Required headers** for `/v1.0/transfer-va/*` per ASPI spec: `X-TIMESTAMP`, `X-SIGNATURE` (both required), plus `X-PARTNER-ID`/`X-EXTERNAL-ID` (required by the API contract) and optionally `CHANNEL-ID` (spec marks it `required: false`). **`X-CLIENT-KEY` is NOT used here** — it only applies to `POST /v1.0/access-token/b2b`.
+**Required headers** for `/openapi/v1.0/transfer-va/*` per ASPI spec: `X-TIMESTAMP`, `X-SIGNATURE` (both required), plus `X-PARTNER-ID`/`X-EXTERNAL-ID` (required by the API contract) and optionally `CHANNEL-ID` (spec marks it `required: false`). **`X-CLIENT-KEY` is NOT used here** — it only applies to `POST /openapi/v1.0/access-token/b2b`.
 
 **VA lifecycle**: a `virtualAccountNo` is reusable across transaction cycles — creating a new VA under a number is only rejected (`409 4092700`) while that number still has a *pending* (unpaid) transaction. Once a transaction is *paid* (`status "00"`), it's immutable: `delete-va` against it is rejected (`405 4053101`), and a second `payment` call against it — even with a brand-new `paymentRequestId` — is rejected (`409 4092500`) rather than silently overwriting the recorded amount/reference. See `scripts/e2e-va-cancel-flow.sh` below for a runnable demonstration of these rules.
 

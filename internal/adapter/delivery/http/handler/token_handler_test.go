@@ -46,7 +46,7 @@ func TestTokenHandler_GetB2BAccessToken(t *testing.T) {
 	timestamp := time.Now().Format(time.RFC3339)
 
 	t.Run("Missing Headers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1.0/access-token/b2b", bytes.NewBuffer(reqBody))
+		req := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/access-token/b2b", bytes.NewBuffer(reqBody))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		rec := httptest.NewRecorder()
 		c := e.NewContext(req, rec)
@@ -61,7 +61,7 @@ func TestTokenHandler_GetB2BAccessToken(t *testing.T) {
 	})
 
 	t.Run("Successful SNAP Token Request", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1.0/access-token/b2b", bytes.NewBuffer(reqBody))
+		req := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/access-token/b2b", bytes.NewBuffer(reqBody))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		req.Header.Set("X-CLIENT-KEY", "client-001")
 		req.Header.Set("X-TIMESTAMP", timestamp)

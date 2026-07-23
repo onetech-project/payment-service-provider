@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Merchant-side: POST /v1.0/transfer-va/create-va (Service Code 27)
+# Merchant-side: POST /openapi/v1.0/transfer-va/create-va (Service Code 27)
 # Creates a new Virtual Account. virtualAccountNo is client-supplied per ASPI
 # VAIdentity (not server-generated). The payment callback URL is a proprietary
 # extension — there is no top-level notificationUrl field in VAUpsertRequest —
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 BASE_URL="http://localhost:8080"
-ENDPOINT="/v1.0/transfer-va/create-va"
+ENDPOINT="/openapi/v1.0/transfer-va/create-va"
 PARTNER_SERVICE_ID=""
 CUSTOMER_NO=""
 VA_NAME=""

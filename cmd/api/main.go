@@ -212,7 +212,7 @@ func main() {
 	})
 
 	// SNAP Token Endpoint with Idempotency Middleware
-	snapGroup := e.Group("/v1.0")
+	snapGroup := e.Group("/openapi/v1.0")
 	snapGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
 	snapGroup.POST("/access-token/b2b", tokenHandler.GetB2BAccessToken)
 
@@ -231,8 +231,8 @@ func main() {
 	utilGroup.POST("/signature-auth", signatureHandler.GenerateAccessTokenSignature)
 	utilGroup.POST("/signature-service", signatureHandler.GenerateServiceSignature)
 
-	// Register vendor-specific routes (unified under /v1.0/transfer-va/*)
-	transferVAGroup := e.Group("/v1.0/transfer-va")
+	// Register vendor-specific routes (unified under /openapi/v1.0/transfer-va/*)
+	transferVAGroup := e.Group("/openapi/v1.0/transfer-va")
 	transferVAGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
 
 	// Existing SNAP VA endpoints (inquiry, payment, status)

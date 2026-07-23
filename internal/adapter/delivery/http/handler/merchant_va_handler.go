@@ -19,7 +19,7 @@ func NewMerchantVAHandler(merchantVAUsecase domain.MerchantVAUsecase) *MerchantV
 	return &MerchantVAHandler{merchantVAUsecase: merchantVAUsecase}
 }
 
-// CreateVA handles POST /v1.0/transfer-va/create-va
+// CreateVA handles POST /openapi/v1.0/transfer-va/create-va
 func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 	var req domain.MerchantCreateVARequest
 	if err := c.Bind(&req); err != nil {
@@ -59,7 +59,7 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-// ListVA handles POST /v1.0/transfer-va/list
+// ListVA handles POST /openapi/v1.0/transfer-va/list
 func (h *MerchantVAHandler) ListVA(c echo.Context) error {
 	var req domain.MerchantListVARequest
 	if err := c.Bind(&req); err != nil {
@@ -89,7 +89,7 @@ func (h *MerchantVAHandler) ListVA(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-// DeleteVA handles DELETE /v1.0/transfer-va/delete-va
+// DeleteVA handles DELETE /openapi/v1.0/transfer-va/delete-va
 func (h *MerchantVAHandler) DeleteVA(c echo.Context) error {
 	var req domain.MerchantDeleteVARequest
 	if err := c.Bind(&req); err != nil {

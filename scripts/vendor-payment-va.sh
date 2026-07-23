@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Vendor-side: POST /v1.0/transfer-va/payment
+# Vendor-side: POST /openapi/v1.0/transfer-va/payment
 # Simulates the switching vendor notifying this PSP that a customer paid a
 # VA. On success, the PSP looks up the notificationUrl registered via
 # merchant-create-va.sh and asynchronously calls the merchant back
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 BASE_URL="http://localhost:8080"
-ENDPOINT="/v1.0/transfer-va/payment"
+ENDPOINT="/openapi/v1.0/transfer-va/payment"
 PARTNER_SERVICE_ID=""
 CUSTOMER_NO=""
 VA_NO=""

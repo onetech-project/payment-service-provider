@@ -5,14 +5,14 @@
 # nor have its payment silently overwritten.
 #
 # Chains together, in order:
-#   1. curl-b2b-token.sh      POST /v1.0/access-token/b2b        (get accessToken)
-#   2. merchant-create-va.sh  POST /v1.0/transfer-va/create-va   (VA #1: to be cancelled)
-#   3. merchant-delete-va.sh  DELETE /v1.0/transfer-va/delete-va (cancel VA #1 while pending -> expect success)
+#   1. curl-b2b-token.sh      POST /openapi/v1.0/access-token/b2b        (get accessToken)
+#   2. merchant-create-va.sh  POST /openapi/v1.0/transfer-va/create-va   (VA #1: to be cancelled)
+#   3. merchant-delete-va.sh  DELETE /openapi/v1.0/transfer-va/delete-va (cancel VA #1 while pending -> expect success)
 #   4. merchant-create-va.sh  (re-create VA #1's number -> expect success: a cancelled/deleted
 #      number is free to reuse, same as a paid one)
-#   5. merchant-create-va.sh  POST /v1.0/transfer-va/create-va   (VA #2: to be paid)
-#   6. vendor-payment-va.sh   POST /v1.0/transfer-va/payment     (pay VA #2 -> status becomes "00")
-#   7. merchant-delete-va.sh  DELETE /v1.0/transfer-va/delete-va (try cancelling VA #2 -> expect
+#   5. merchant-create-va.sh  POST /openapi/v1.0/transfer-va/create-va   (VA #2: to be paid)
+#   6. vendor-payment-va.sh   POST /openapi/v1.0/transfer-va/payment     (pay VA #2 -> status becomes "00")
+#   7. merchant-delete-va.sh  DELETE /openapi/v1.0/transfer-va/delete-va (try cancelling VA #2 -> expect
 #      REJECTION 4053101: a paid transaction cannot be cancelled)
 #   8. vendor-payment-va.sh   (try paying VA #2 again with a NEW paymentRequestId -> expect
 #      REJECTION 4092500: a paid transaction cannot be overwritten by a second payment)
@@ -122,7 +122,7 @@ expect_code() {
 }
 
 echo "=================================================================="
-echo "Step 1/8: POST /v1.0/access-token/b2b"
+echo "Step 1/8: POST /openapi/v1.0/access-token/b2b"
 echo "=================================================================="
 TOKEN_RESPONSE="$("$SCRIPT_DIR/curl-b2b-token.sh" -i "$CLIENT_ID" -p "$PRIVATE_KEY_PATH" -u "$BASE_URL")"
 ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken // empty')"

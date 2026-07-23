@@ -45,7 +45,7 @@ func TestVAHandler_Inquiry_Success(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/inquiry", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/inquiry", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -76,7 +76,7 @@ func TestVAHandler_Inquiry_MissingFields(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/inquiry", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/inquiry", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -103,7 +103,7 @@ func TestVAHandler_Payment_Success(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/payment", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -136,7 +136,7 @@ func TestVAHandler_Status_Success(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/status", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/status", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)

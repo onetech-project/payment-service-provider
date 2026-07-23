@@ -4,10 +4,10 @@
 # and show the merchant payment callback arriving.
 #
 # Chains together, in order:
-#   1. curl-b2b-token.sh      POST /v1.0/access-token/b2b        (get accessToken)
-#   2. merchant-create-va.sh  POST /v1.0/transfer-va/create-va   (create the VA, using the token)
-#   3. vendor-inquiry-va.sh   POST /v1.0/transfer-va/inquiry     (inquire the VA, using the token)
-#   4. vendor-payment-va.sh   POST /v1.0/transfer-va/payment     (pay the VA, using the token)
+#   1. curl-b2b-token.sh      POST /openapi/v1.0/access-token/b2b        (get accessToken)
+#   2. merchant-create-va.sh  POST /openapi/v1.0/transfer-va/create-va   (create the VA, using the token)
+#   3. vendor-inquiry-va.sh   POST /openapi/v1.0/transfer-va/inquiry     (inquire the VA, using the token)
+#   4. vendor-payment-va.sh   POST /openapi/v1.0/transfer-va/payment     (pay the VA, using the token)
 #   5. (local callback listener) shows the async merchant notification
 #      (internal/usecase/va_usecase.go notifyMerchantWithVA -> Asynq queue ->
 #      payment_notification_worker) actually being delivered.
@@ -178,7 +178,7 @@ fi
 echo
 
 echo "=================================================================="
-echo "Step 1/5: POST /v1.0/access-token/b2b"
+echo "Step 1/5: POST /openapi/v1.0/access-token/b2b"
 echo "=================================================================="
 TOKEN_RESPONSE="$("$SCRIPT_DIR/curl-b2b-token.sh" -i "$CLIENT_ID" -p "$PRIVATE_KEY_PATH" -u "$BASE_URL")"
 echo "$TOKEN_RESPONSE" | jq .
@@ -192,7 +192,7 @@ echo "==> accessToken acquired: ${ACCESS_TOKEN:0:12}..."
 echo
 
 echo "=================================================================="
-echo "Step 2/5: POST /v1.0/transfer-va/create-va"
+echo "Step 2/5: POST /openapi/v1.0/transfer-va/create-va"
 echo "=================================================================="
 CREATE_VA_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -n "$VA_NAME" -a "$AMOUNT" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")
 [[ -n "$VA_NO" ]] && CREATE_VA_ARGS+=(-v "$VA_NO")
@@ -222,14 +222,14 @@ echo "==> virtualAccountNo: ${VA_NO}"
 echo
 
 echo "=================================================================="
-echo "Step 3/5: POST /v1.0/transfer-va/inquiry"
+echo "Step 3/5: POST /openapi/v1.0/transfer-va/inquiry"
 echo "=================================================================="
 INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE" | jq .
 echo
 
 echo "=================================================================="
-echo "Step 4/5: POST /v1.0/transfer-va/payment"
+echo "Step 4/5: POST /openapi/v1.0/transfer-va/payment"
 echo "=================================================================="
 PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
 echo "$PAYMENT_RESPONSE" | jq .

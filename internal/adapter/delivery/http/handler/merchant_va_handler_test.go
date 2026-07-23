@@ -60,7 +60,7 @@ func TestMerchantVAHandler_CreateVA_Success(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -91,7 +91,7 @@ func TestMerchantVAHandler_CreateVA_MissingFields(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -116,7 +116,7 @@ func TestMerchantVAHandler_CreateVA_UsecaseError(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -142,7 +142,7 @@ func TestMerchantVAHandler_ListVA_Success(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodPost, "/v1.0/transfer-va/list", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/list", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -174,7 +174,7 @@ func TestMerchantVAHandler_DeleteVA_Success(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodDelete, "/v1.0/transfer-va/delete-va", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodDelete, "/openapi/v1.0/transfer-va/delete-va", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -201,7 +201,7 @@ func TestMerchantVAHandler_DeleteVA_MissingFields(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodDelete, "/v1.0/transfer-va/delete-va", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodDelete, "/openapi/v1.0/transfer-va/delete-va", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
@@ -225,7 +225,7 @@ func TestMerchantVAHandler_DeleteVA_AlreadyPaid(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest(http.MethodDelete, "/v1.0/transfer-va/delete-va", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodDelete, "/openapi/v1.0/transfer-va/delete-va", bytes.NewReader(body))
 	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)

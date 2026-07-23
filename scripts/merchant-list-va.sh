@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Merchant-side: POST /v1.0/transfer-va/list
+# Merchant-side: POST /openapi/openapi/v1.0/transfer-va/list
 # There's no separate single-VA "inquiry" endpoint on the merchant side in
-# this codebase (inquiry/payment/status under /v1.0/transfer-va are the
+# this codebase (inquiry/payment/status under /openapi/v1.0/transfer-va are the
 # vendor-facing SNAP callbacks — see vendor-inquiry-va.sh). This is the
 # merchant-facing equivalent: list/check VA status, optionally filtered down
 # to one virtualAccountNo.
@@ -43,10 +43,10 @@ BODY=$(cat <<JSON
 JSON
 )
 
-echo "==> POST ${BASE_URL}/v1.0/transfer-va/list"
+echo "==> POST ${BASE_URL}/openapi/openapi/v1.0/transfer-va/list"
 echo
 
-curl -sS -X POST "${BASE_URL}/v1.0/transfer-va/list" \
+curl -sS -X POST "${BASE_URL}/openapi/openapi/v1.0/transfer-va/list" \
 	-H "Content-Type: application/json" \
 	-H "Idempotency-Key: $(uuidgen)" \
 	-d "${BODY}" \

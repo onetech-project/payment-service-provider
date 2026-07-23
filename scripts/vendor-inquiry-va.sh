@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Vendor-side: POST /v1.0/transfer-va/inquiry
+# Vendor-side: POST /openapi/v1.0/transfer-va/inquiry
 # Simulates the switching vendor calling this PSP to inquire a VA/bill before
 # the customer pays. Protected by SNAPAuthMiddleware (per-vendor config, see
 # .env.<vendor>.<channel>), which by default requires X-TIMESTAMP/X-SIGNATURE
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 BASE_URL="http://localhost:8080"
-ENDPOINT="/v1.0/transfer-va/inquiry"
+ENDPOINT="/openapi/v1.0/transfer-va/inquiry"
 PARTNER_SERVICE_ID=""
 CUSTOMER_NO=""
 VA_NO=""

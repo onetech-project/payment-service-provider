@@ -62,7 +62,7 @@ type AddClientKeyRequest struct {
 
 // ClientUsecase implements client onboarding: registering client_apps and
 // their client_keys used to verify the asymmetric X-SIGNATURE on
-// /v1.0/access-token/b2b.
+// /openapi/v1.0/access-token/b2b.
 type ClientUsecase interface {
 	RegisterClient(ctx context.Context, client *ClientApp, key *ClientKey) error
 	AddClientKey(ctx context.Context, key *ClientKey) error

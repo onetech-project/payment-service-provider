@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Generates X-TIMESTAMP + X-SIGNATURE and calls POST /v1.0/access-token/b2b.
+# Generates X-TIMESTAMP + X-SIGNATURE and calls POST /openapi/v1.0/access-token/b2b.
 #
 # Usage:
 #   ./scripts/curl-b2b-token.sh -i <client_id> -p <private_key.pem> [-u <base-url>]
@@ -49,7 +49,7 @@ echo "==> X-SIGNATURE: $SIGNATURE" >&2
 echo "==> X-CLIENT-KEY: $CLIENT_ID" >&2
 echo >&2
 
-curl -sS -X POST "${BASE_URL}/v1.0/access-token/b2b" \
+curl -sS -X POST "${BASE_URL}/openapi/v1.0/access-token/b2b" \
 	-H "Content-Type: application/json" \
 	-H "X-CLIENT-KEY: ${CLIENT_ID}" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \

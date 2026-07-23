@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Merchant-side: DELETE /v1.0/transfer-va/delete-va
+# Merchant-side: DELETE /openapi/v1.0/transfer-va/delete-va
 #
 # Usage:
 #   ./scripts/merchant-delete-va.sh -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> [-t <trxId>] [-u <base-url>]
@@ -44,11 +44,11 @@ JSON
 
 # Diagnostics go to stderr so stdout stays clean JSON — this lets the script
 # be chained/captured by other scripts (see e2e-va-cancel-flow.sh).
-echo "==> DELETE ${BASE_URL}/v1.0/transfer-va/delete-va" >&2
+echo "==> DELETE ${BASE_URL}/openapi/v1.0/transfer-va/delete-va" >&2
 echo "==> virtualAccountNo: ${VA_NO}" >&2
 echo >&2
 
-curl -sS -X DELETE "${BASE_URL}/v1.0/transfer-va/delete-va" \
+curl -sS -X DELETE "${BASE_URL}/openapi/v1.0/transfer-va/delete-va" \
 	-H "Content-Type: application/json" \
 	-H "Idempotency-Key: $(uuidgen)" \
 	-d "${BODY}" \

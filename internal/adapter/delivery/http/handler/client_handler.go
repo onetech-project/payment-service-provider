@@ -15,7 +15,7 @@ import (
 
 // ClientHandler exposes admin endpoints to onboard B2B clients: registering
 // client_apps and the client_keys used to verify the asymmetric SNAP
-// X-SIGNATURE on /v1.0/access-token/b2b. Mount behind an auth middleware
+// X-SIGNATURE on /openapi/v1.0/access-token/b2b. Mount behind an auth middleware
 // (e.g. AdminAuthMiddleware) — this is a trust-anchor management API.
 type ClientHandler struct {
 	clientUsecase domain.ClientUsecase
