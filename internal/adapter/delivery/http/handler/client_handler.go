@@ -34,6 +34,19 @@ type clientResponse struct {
 
 // RegisterClient handles POST /admin/clients: creates a new client_app and,
 // if publicKeyPem is supplied, its first client_key in the same call.
+// RegisterClient godoc
+// @Tags Admin Client Management
+// @Summary Register a new B2B client
+// @Description Creates a new client_app trust-anchor record and, if publicKeyPem is supplied, its first client_key in the same call. State-changing: creates persistent client onboarding records.
+// @Security AdminToken
+// @Param X-Admin-API-Key header string true "Static admin API key (ADMIN_API_KEY)"
+// @Param request body domain.RegisterClientRequest true "Client registration payload"
+// @Success 201 {object} clientResponse
+// @Failure 400 {object} clientResponse "Invalid payload, missing clientId/clientName/keyId, or invalid publicKeyPem"
+// @Failure 401 {object} map[string]string "Unauthorized. Invalid or missing X-Admin-API-Key header"
+// @Failure 500 {object} clientResponse "Internal Server Error"
+// @Failure 503 {object} map[string]string "Admin API disabled (ADMIN_API_KEY not set)"
+// @Router /admin/clients [post]
 func (h *ClientHandler) RegisterClient(c echo.Context) error {
 	var req domain.RegisterClientRequest
 	if err := c.Bind(&req); err != nil {
@@ -79,6 +92,20 @@ func (h *ClientHandler) RegisterClient(c echo.Context) error {
 
 // AddClientKey handles POST /admin/clients/:clientId/keys: registers an
 // additional active public key for an existing client (e.g. key rotation).
+// AddClientKey godoc
+// @Tags Admin Client Management
+// @Summary Add a client key
+// @Description Registers an additional active public key for an existing client (e.g. key rotation). State-changing: creates a persistent client_key record.
+// @Security AdminToken
+// @Param X-Admin-API-Key header string true "Static admin API key (ADMIN_API_KEY)"
+// @Param clientId path string true "Client identifier"
+// @Param request body domain.AddClientKeyRequest true "Client key payload"
+// @Success 201 {object} clientResponse
+// @Failure 400 {object} clientResponse "Missing clientId, missing keyId/publicKeyPem, or invalid publicKeyPem"
+// @Failure 401 {object} map[string]string "Unauthorized. Invalid or missing X-Admin-API-Key header"
+// @Failure 500 {object} clientResponse "Internal Server Error"
+// @Failure 503 {object} map[string]string "Admin API disabled (ADMIN_API_KEY not set)"
+// @Router /admin/clients/{clientId}/keys [post]
 func (h *ClientHandler) AddClientKey(c echo.Context) error {
 	clientID := c.Param("clientId")
 	if clientID == "" {
@@ -119,6 +146,20 @@ func (h *ClientHandler) AddClientKey(c echo.Context) error {
 }
 
 // RevokeClientKey handles DELETE /admin/clients/:clientId/keys/:keyId.
+// RevokeClientKey godoc
+// @Tags Admin Client Management
+// @Summary Revoke a client key
+// @Description Revokes (deactivates) a client's public key so it can no longer be used to verify signatures. State-changing: updates a persistent client_key record.
+// @Security AdminToken
+// @Param X-Admin-API-Key header string true "Static admin API key (ADMIN_API_KEY)"
+// @Param clientId path string true "Client identifier"
+// @Param keyId path string true "Key identifier to revoke"
+// @Success 200 {object} clientResponse
+// @Failure 400 {object} clientResponse "Missing clientId or keyId path parameters"
+// @Failure 401 {object} map[string]string "Unauthorized. Invalid or missing X-Admin-API-Key header"
+// @Failure 500 {object} clientResponse "Internal Server Error"
+// @Failure 503 {object} map[string]string "Admin API disabled (ADMIN_API_KEY not set)"
+// @Router /admin/clients/{clientId}/keys/{keyId} [delete]
 func (h *ClientHandler) RevokeClientKey(c echo.Context) error {
 	clientID := c.Param("clientId")
 	keyID := c.Param("keyId")

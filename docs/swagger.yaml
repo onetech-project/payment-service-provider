@@ -1,0 +1,1384 @@
+basePath: /
+definitions:
+  domain.AddClientKeyRequest:
+    properties:
+      algorithm:
+        type: string
+      keyId:
+        type: string
+      publicKeyPem:
+        type: string
+    type: object
+  domain.Amount:
+    properties:
+      currency:
+        type: string
+      value:
+        type: string
+    type: object
+  domain.BilingualText:
+    properties:
+      english:
+        type: string
+      indonesia:
+        type: string
+    type: object
+  domain.BillDetail:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billAmount:
+        $ref: '#/definitions/domain.Amount'
+      billAmountLabel:
+        type: string
+      billAmountValue:
+        type: string
+      billCode:
+        type: string
+      billDescription:
+        $ref: '#/definitions/domain.BilingualText'
+      billName:
+        type: string
+      billNo:
+        type: string
+      billReferenceNo:
+        type: string
+      billShortName:
+        type: string
+      billSubCompany:
+        type: string
+      billerReferenceId:
+        type: string
+      reason:
+        $ref: '#/definitions/domain.BilingualText'
+      status:
+        type: string
+    type: object
+  domain.ClientApp:
+    properties:
+      client_id:
+        type: string
+      client_name:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      status:
+        $ref: '#/definitions/domain.ClientStatus'
+      updated_at:
+        type: string
+    type: object
+  domain.ClientKey:
+    properties:
+      algorithm:
+        type: string
+      client_id:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      is_active:
+        type: boolean
+      key_id:
+        type: string
+      public_key_pem:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  domain.ClientStatus:
+    enum:
+    - ACTIVE
+    - REVOKED
+    - SUSPENDED
+    type: string
+    x-enum-varnames:
+    - ClientStatusActive
+    - ClientStatusRevoked
+    - ClientStatusSuspended
+  domain.MerchantCreateVARequest:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        description: |-
+          AdditionalInfo carries proprietary extensions per ASPI VAUpsertRequest's
+          additionalInfo.dbUrlProcess slot (aspi-open-api-va.yaml:317-320) — the
+          merchant payment callback URL is passed here as additionalInfo.dbUrlProcess,
+          not as a top-level field (there is no such field in the spec).
+        type: object
+      billDetails:
+        items:
+          $ref: '#/definitions/domain.BillDetail'
+        type: array
+      customerNo:
+        type: string
+      expiredDate:
+        type: string
+      feeAmount:
+        $ref: '#/definitions/domain.Amount'
+      freeTexts:
+        items:
+          $ref: '#/definitions/domain.BilingualText'
+        type: array
+      partnerServiceId:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      trxId:
+        type: string
+      virtualAccountEmail:
+        type: string
+      virtualAccountName:
+        type: string
+      virtualAccountNo:
+        type: string
+      virtualAccountPhone:
+        type: string
+      virtualAccountTrxType:
+        type: string
+    type: object
+  domain.MerchantCreateVAResponse:
+    properties:
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      virtualAccountData:
+        $ref: '#/definitions/domain.MerchantVAData'
+    type: object
+  domain.MerchantDeleteVAData:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      customerNo:
+        type: string
+      partnerServiceId:
+        type: string
+      trxId:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.MerchantDeleteVARequest:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      customerNo:
+        type: string
+      partnerServiceId:
+        type: string
+      trxId:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.MerchantDeleteVAResponse:
+    properties:
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      virtualAccountData:
+        $ref: '#/definitions/domain.MerchantDeleteVAData'
+    type: object
+  domain.MerchantListVARequest:
+    properties:
+      fromDate:
+        type: string
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      partnerServiceId:
+        type: string
+      status:
+        type: string
+      toDate:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.MerchantListVAResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/domain.VAListItem'
+        type: array
+      pagination:
+        $ref: '#/definitions/domain.Pagination'
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+    type: object
+  domain.MerchantVAData:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billDetails:
+        items:
+          $ref: '#/definitions/domain.BillDetail'
+        type: array
+      customerNo:
+        type: string
+      expiredDate:
+        type: string
+      feeAmount:
+        $ref: '#/definitions/domain.Amount'
+      freeTexts:
+        items:
+          $ref: '#/definitions/domain.BilingualText'
+        type: array
+      lastUpdateDate:
+        type: string
+      partnerServiceId:
+        type: string
+      paymentDate:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      trxId:
+        type: string
+      virtualAccountEmail:
+        type: string
+      virtualAccountName:
+        type: string
+      virtualAccountNo:
+        type: string
+      virtualAccountPhone:
+        type: string
+      virtualAccountTrxType:
+        type: string
+    type: object
+  domain.Pagination:
+    properties:
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      totalPages:
+        type: integer
+      totalRows:
+        type: integer
+    type: object
+  domain.RegisterClientRequest:
+    properties:
+      algorithm:
+        type: string
+      clientId:
+        type: string
+      clientName:
+        type: string
+      keyId:
+        type: string
+      publicKeyPem:
+        type: string
+    type: object
+  domain.SNAPTokenRequest:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      grantType:
+        type: string
+    type: object
+  domain.SNAPTokenResponse:
+    properties:
+      accessToken:
+        type: string
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      expiresIn:
+        type: string
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      tokenType:
+        type: string
+    type: object
+  domain.SignatureAuthResponse:
+    properties:
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      signature:
+        type: string
+    type: object
+  domain.SignatureServiceResponse:
+    properties:
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      signature:
+        type: string
+    type: object
+  domain.VAAccountData:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billDetails:
+        items:
+          $ref: '#/definitions/domain.BillDetail'
+        type: array
+      customerNo:
+        type: string
+      feeAmount:
+        $ref: '#/definitions/domain.Amount'
+      freeTexts:
+        items:
+          $ref: '#/definitions/domain.BilingualText'
+        type: array
+      inquiryReason:
+        $ref: '#/definitions/domain.BilingualText'
+      inquiryRequestId:
+        type: string
+      inquiryStatus:
+        type: string
+      partnerServiceId:
+        type: string
+      subCompany:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      virtualAccountName:
+        type: string
+      virtualAccountNo:
+        type: string
+      virtualAccountTrxType:
+        type: string
+    type: object
+  domain.VAInquiryRequest:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      amount:
+        $ref: '#/definitions/domain.Amount'
+      channelCode:
+        type: integer
+      customerNo:
+        type: string
+      inquiryRequestId:
+        type: string
+      partnerServiceId:
+        type: string
+      txnDateInit:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.VAInquiryResponse:
+    properties:
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      virtualAccountData:
+        $ref: '#/definitions/domain.VAAccountData'
+    type: object
+  domain.VAListItem:
+    properties:
+      createdAt:
+        type: string
+      customerName:
+        type: string
+      customerNo:
+        type: string
+      expiredDate:
+        type: string
+      paidAmount:
+        $ref: '#/definitions/domain.Amount'
+      status:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      transactionDate:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.VAPaymentBillDetail:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billAmount:
+        $ref: '#/definitions/domain.Amount'
+      billCode:
+        type: string
+      billDescription:
+        $ref: '#/definitions/domain.BilingualText'
+      billName:
+        type: string
+      billNo:
+        type: string
+      billReferenceNo:
+        type: string
+      billShortName:
+        type: string
+      billSubCompany:
+        type: string
+      reason:
+        $ref: '#/definitions/domain.BilingualText'
+      status:
+        type: string
+    type: object
+  domain.VAPaymentRequest:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billDetails:
+        items:
+          $ref: '#/definitions/domain.VAPaymentBillDetail'
+        type: array
+      customerNo:
+        type: string
+      flagAdvise:
+        type: string
+      freeTexts:
+        items:
+          $ref: '#/definitions/domain.BilingualText'
+        type: array
+      inquiryRequestId:
+        type: string
+      paidAmount:
+        $ref: '#/definitions/domain.Amount'
+      paidBills:
+        type: string
+      partnerServiceId:
+        type: string
+      paymentRequestId:
+        type: string
+      paymentType:
+        type: string
+      referenceNo:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      trxDateTime:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.VAPaymentResponse:
+    properties:
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      virtualAccountData:
+        $ref: '#/definitions/domain.VAPaymentStatus'
+    type: object
+  domain.VAPaymentStatus:
+    properties:
+      customerNo:
+        type: string
+      paidAmount:
+        $ref: '#/definitions/domain.Amount'
+      partnerServiceId:
+        type: string
+      paymentFlagReason:
+        $ref: '#/definitions/domain.BilingualText'
+      paymentFlagStatus:
+        type: string
+      paymentRequestId:
+        type: string
+      referenceNo:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      trxDateTime:
+        type: string
+      trxId:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.VAStatusBillDetail:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billAmount:
+        $ref: '#/definitions/domain.Amount'
+      billCode:
+        type: string
+      billDescription:
+        $ref: '#/definitions/domain.BilingualText'
+      billName:
+        type: string
+      billNo:
+        type: string
+      billReferenceNo:
+        type: string
+      billShortName:
+        type: string
+      billSubCompany:
+        type: string
+      reason:
+        $ref: '#/definitions/domain.BilingualText'
+      status:
+        type: string
+    type: object
+  domain.VAStatusData:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billDetails:
+        items:
+          $ref: '#/definitions/domain.VAStatusBillDetail'
+        type: array
+      customerNo:
+        type: string
+      freeTexts:
+        items:
+          $ref: '#/definitions/domain.BilingualText'
+        type: array
+      inquiryRequestId:
+        type: string
+      paidAmount:
+        $ref: '#/definitions/domain.Amount'
+      paidBills:
+        type: string
+      partnerServiceId:
+        type: string
+      paymentFlagReason:
+        $ref: '#/definitions/domain.BilingualText'
+      paymentFlagStatus:
+        type: string
+      paymentRequestId:
+        type: string
+      paymentType:
+        type: string
+      referenceNo:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      transactionDate:
+        type: string
+      trxDateTime:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.VAStatusRequest:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      customerNo:
+        type: string
+      inquiryRequestId:
+        type: string
+      partnerServiceId:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  domain.VAStatusResponse:
+    properties:
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+      virtualAccountData:
+        $ref: '#/definitions/domain.VAStatusData'
+    type: object
+  handler.clientResponse:
+    properties:
+      client:
+        $ref: '#/definitions/domain.ClientApp'
+      key:
+        $ref: '#/definitions/domain.ClientKey'
+      message:
+        type: string
+      status:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: |-
+    Generic SNAP/ASPI-compliant payment gateway API: B2B access
+    token issuance, admin client onboarding, signature-generation
+    utilities, and Virtual Account (transfer-VA) transaction and
+    merchant-dashboard endpoints.
+  title: SNAP Payment Integration Gateway API
+  version: "1.0"
+paths:
+  /admin/clients:
+    post:
+      description: 'Creates a new client_app trust-anchor record and, if publicKeyPem
+        is supplied, its first client_key in the same call. State-changing: creates
+        persistent client onboarding records.'
+      parameters:
+      - description: Static admin API key (ADMIN_API_KEY)
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Client registration payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.RegisterClientRequest'
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "400":
+          description: Invalid payload, missing clientId/clientName/keyId, or invalid
+            publicKeyPem
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "401":
+          description: Unauthorized. Invalid or missing X-Admin-API-Key header
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "503":
+          description: Admin API disabled (ADMIN_API_KEY not set)
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - AdminToken: []
+      summary: Register a new B2B client
+      tags:
+      - Admin Client Management
+  /admin/clients/{clientId}/keys:
+    post:
+      description: 'Registers an additional active public key for an existing client
+        (e.g. key rotation). State-changing: creates a persistent client_key record.'
+      parameters:
+      - description: Static admin API key (ADMIN_API_KEY)
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Client identifier
+        in: path
+        name: clientId
+        required: true
+        type: string
+      - description: Client key payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.AddClientKeyRequest'
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "400":
+          description: Missing clientId, missing keyId/publicKeyPem, or invalid publicKeyPem
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "401":
+          description: Unauthorized. Invalid or missing X-Admin-API-Key header
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "503":
+          description: Admin API disabled (ADMIN_API_KEY not set)
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - AdminToken: []
+      summary: Add a client key
+      tags:
+      - Admin Client Management
+  /admin/clients/{clientId}/keys/{keyId}:
+    delete:
+      description: 'Revokes (deactivates) a client''s public key so it can no longer
+        be used to verify signatures. State-changing: updates a persistent client_key
+        record.'
+      parameters:
+      - description: Static admin API key (ADMIN_API_KEY)
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Client identifier
+        in: path
+        name: clientId
+        required: true
+        type: string
+      - description: Key identifier to revoke
+        in: path
+        name: keyId
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "400":
+          description: Missing clientId or keyId path parameters
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "401":
+          description: Unauthorized. Invalid or missing X-Admin-API-Key header
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "503":
+          description: Admin API disabled (ADMIN_API_KEY not set)
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - AdminToken: []
+      summary: Revoke a client key
+      tags:
+      - Admin Client Management
+  /api/v1/utilities/signature-auth:
+    post:
+      description: Generates the SHA256withRSA signature required as X-SIGNATURE when
+        calling POST /openapi/v1.0/access-token/b2b.
+      parameters:
+      - description: Client identifier
+        in: header
+        name: X-CLIENT-KEY
+        required: true
+        type: string
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: RSA private key (PEM) used to sign the string-to-sign
+        in: header
+        name: Private_Key
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.SignatureAuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/domain.SignatureAuthResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/domain.SignatureAuthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.SignatureAuthResponse'
+      summary: Generate the asymmetric access-token signature
+      tags:
+      - Signature Utilities
+  /api/v1/utilities/signature-service:
+    post:
+      description: Generates the HMAC-SHA512 signature required as X-SIGNATURE when
+        calling SNAP-protected transaction endpoints (transfer-VA, merchant VA dashboard)
+        with an issued access token.
+      parameters:
+      - description: Client secret shared with the partner
+        in: header
+        name: X-CLIENT-SECRET
+        required: true
+        type: string
+      - description: HTTP method of the target request, e.g. POST
+        in: header
+        name: HttpMethod
+        required: true
+        type: string
+      - description: Relative path of the target request, e.g. /openapi/v1.0/transfer-va/inquiry
+        in: header
+        name: EndpointUrl
+        required: true
+        type: string
+      - description: Bearer access token issued by POST /openapi/v1.0/access-token/b2b
+        in: header
+        name: AccessToken
+        required: true
+        type: string
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Raw request body of the target request, used verbatim in the
+          string-to-sign
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.SignatureServiceResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/domain.SignatureServiceResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/domain.SignatureServiceResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.SignatureServiceResponse'
+      summary: Generate the symmetric service (transaction) signature
+      tags:
+      - Signature Utilities
+  /health:
+    get:
+      description: Returns 200 with a static status payload if the service process
+        is up. Does not check downstream dependencies (DB/Redis).
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Service health check
+      tags:
+      - Health
+  /openapi/v1.0/access-token/b2b:
+    post:
+      description: Issues a bearer access token for a registered client, after verifying
+        the asymmetric X-SIGNATURE against the client's registered public key. This
+        endpoint ISSUES the token — the caller has no prior bearer token; auth is
+        via the X-CLIENT-KEY/X-TIMESTAMP/X-SIGNATURE headers only. Use POST /api/v1/utilities/signature-auth
+        to compute X-SIGNATURE.
+      parameters:
+      - description: Client identifier issued at onboarding
+        in: header
+        name: X-CLIENT-KEY
+        required: true
+        type: string
+      - description: Request timestamp, ISO 8601 (e.g. 2026-07-24T10:00:00+07:00)
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Asymmetric signature; compute via POST /api/v1/utilities/signature-auth
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Unique key for this request; enforced by IdempotencyMiddleware
+          for all non-GET requests on this route. A repeated key with an identical
+          payload replays the cached response; a repeated key with a different payload
+          is rejected with 422.
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: Token request payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.SNAPTokenRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.SNAPTokenResponse'
+        "400":
+          description: Invalid request payload, missing required SNAP headers, or
+            missing Idempotency-Key
+          schema:
+            $ref: '#/definitions/domain.SNAPTokenResponse'
+        "401":
+          description: Signature verification failed
+          schema:
+            $ref: '#/definitions/domain.SNAPTokenResponse'
+        "409":
+          description: 'Conflict: request already in progress for this Idempotency-Key'
+          schema:
+            $ref: '#/definitions/domain.SNAPTokenResponse'
+        "422":
+          description: Idempotency-Key reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.SNAPTokenResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.SNAPTokenResponse'
+      security:
+      - SnapClientKey: []
+      - SnapTimestamp: []
+      - SnapSignature: []
+      summary: Issue a SNAP B2B access token
+      tags:
+      - Token
+  /openapi/v1.0/transfer-va/create-va:
+    post:
+      description: 'Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest).
+        This performs a real state-changing action: it creates or updates a persistent
+        Virtual Account record.'
+      parameters:
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Unique external ID for this request
+        in: header
+        name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: Unique key for this request; enforced by IdempotencyMiddleware.
+          A repeated key with an identical payload replays the cached response; a
+          repeated key with a different payload is rejected with 422.
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: VA create/update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.MerchantCreateVARequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.MerchantCreateVAResponse'
+        "400":
+          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          schema:
+            $ref: '#/definitions/domain.MerchantCreateVAResponse'
+        "401":
+          description: Unauthorized (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.MerchantCreateVAResponse'
+        "409":
+          description: 'Conflict: request already in progress for this Idempotency-Key'
+          schema:
+            $ref: '#/definitions/domain.MerchantCreateVAResponse'
+        "422":
+          description: Idempotency-Key reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.MerchantCreateVAResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.MerchantCreateVAResponse'
+      security:
+      - SnapTimestamp: []
+      - SnapSignature: []
+      summary: Create or update a Virtual Account
+      tags:
+      - Merchant VA Dashboard
+  /openapi/v1.0/transfer-va/delete-va:
+    delete:
+      description: 'Merchant-initiated deletion of a Virtual Account (ASPI DeleteVARequest).
+        This performs a real state-changing action: it permanently removes/deactivates
+        the Virtual Account record.'
+      parameters:
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Unique external ID for this request
+        in: header
+        name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: Unique key for this request; enforced by IdempotencyMiddleware.
+          A repeated key with an identical payload replays the cached response; a
+          repeated key with a different payload is rejected with 422.
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: VA delete request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.MerchantDeleteVARequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.MerchantDeleteVAResponse'
+        "400":
+          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          schema:
+            $ref: '#/definitions/domain.MerchantDeleteVAResponse'
+        "401":
+          description: Unauthorized (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.MerchantDeleteVAResponse'
+        "409":
+          description: 'Conflict: request already in progress for this Idempotency-Key'
+          schema:
+            $ref: '#/definitions/domain.MerchantDeleteVAResponse'
+        "422":
+          description: Idempotency-Key reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.MerchantDeleteVAResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.MerchantDeleteVAResponse'
+      security:
+      - SnapTimestamp: []
+      - SnapSignature: []
+      summary: Delete a Virtual Account
+      tags:
+      - Merchant VA Dashboard
+  /openapi/v1.0/transfer-va/inquiry:
+    post:
+      description: Vendor-initiated inquiry for Virtual Account bill/customer details
+        prior to payment. Read-only.
+      parameters:
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Unique external ID for this request
+        in: header
+        name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: Unique key for this request; enforced by IdempotencyMiddleware.
+          A repeated key with an identical payload replays the cached response; a
+          repeated key with a different payload is rejected with 422.
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: VA inquiry request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.VAInquiryRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.VAInquiryResponse'
+        "400":
+          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          schema:
+            $ref: '#/definitions/domain.VAInquiryResponse'
+        "401":
+          description: Unauthorized (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.VAInquiryResponse'
+        "404":
+          description: Not Found (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.VAInquiryResponse'
+        "409":
+          description: 'Conflict: request already in progress for this Idempotency-Key'
+          schema:
+            $ref: '#/definitions/domain.VAInquiryResponse'
+        "422":
+          description: Idempotency-Key reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.VAInquiryResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.VAInquiryResponse'
+      security:
+      - SnapTimestamp: []
+      - SnapSignature: []
+      summary: VA bill inquiry
+      tags:
+      - Virtual Account
+  /openapi/v1.0/transfer-va/list:
+    post:
+      description: Merchant-initiated paginated listing of Virtual Account transactions,
+        filterable by date range, status and VA number. Read-only.
+      parameters:
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Unique external ID for this request
+        in: header
+        name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: Unique key for this request; enforced by IdempotencyMiddleware
+          since ListVA is called via POST. A repeated key with an identical payload
+          replays the cached response; a repeated key with a different payload is
+          rejected with 422.
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: VA list filter/pagination request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.MerchantListVARequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.MerchantListVAResponse'
+        "400":
+          description: Invalid Field Format / missing Idempotency-Key
+          schema:
+            $ref: '#/definitions/domain.MerchantListVAResponse'
+        "401":
+          description: Unauthorized (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.MerchantListVAResponse'
+        "409":
+          description: 'Conflict: request already in progress for this Idempotency-Key'
+          schema:
+            $ref: '#/definitions/domain.MerchantListVAResponse'
+        "422":
+          description: Idempotency-Key reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.MerchantListVAResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.MerchantListVAResponse'
+      security:
+      - SnapTimestamp: []
+      - SnapSignature: []
+      summary: List Virtual Account transactions
+      tags:
+      - Merchant VA Dashboard
+  /openapi/v1.0/transfer-va/payment:
+    post:
+      description: 'Vendor-initiated notification that a payment against a Virtual
+        Account has been received. State-changing: records the payment.'
+      parameters:
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Unique external ID for this request
+        in: header
+        name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: Unique key for this request; enforced by IdempotencyMiddleware.
+          A repeated key with an identical payload replays the cached response; a
+          repeated key with a different payload is rejected with 422.
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: VA payment notification
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.VAPaymentRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.VAPaymentResponse'
+        "400":
+          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          schema:
+            $ref: '#/definitions/domain.VAPaymentResponse'
+        "401":
+          description: Unauthorized (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.VAPaymentResponse'
+        "404":
+          description: Not Found (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.VAPaymentResponse'
+        "409":
+          description: Conflict (mapped from downstream error, or in-flight request
+            with same Idempotency-Key)
+          schema:
+            $ref: '#/definitions/domain.VAPaymentResponse'
+        "422":
+          description: Idempotency-Key reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.VAPaymentResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.VAPaymentResponse'
+      security:
+      - SnapTimestamp: []
+      - SnapSignature: []
+      summary: VA payment notification
+      tags:
+      - Virtual Account
+  /openapi/v1.0/transfer-va/status:
+    post:
+      description: Vendor-initiated inquiry of the current payment status of a Virtual
+        Account transaction. Read-only.
+      parameters:
+      - description: Request timestamp, ISO 8601
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Unique external ID for this request
+        in: header
+        name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: Unique key for this request; enforced by IdempotencyMiddleware.
+          A repeated key with an identical payload replays the cached response; a
+          repeated key with a different payload is rejected with 422.
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: VA status request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.VAStatusRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.VAStatusResponse'
+        "400":
+          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          schema:
+            $ref: '#/definitions/domain.VAStatusResponse'
+        "401":
+          description: Unauthorized (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.VAStatusResponse'
+        "404":
+          description: Not Found (mapped from downstream error)
+          schema:
+            $ref: '#/definitions/domain.VAStatusResponse'
+        "409":
+          description: 'Conflict: request already in progress for this Idempotency-Key'
+          schema:
+            $ref: '#/definitions/domain.VAStatusResponse'
+        "422":
+          description: Idempotency-Key reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.VAStatusResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.VAStatusResponse'
+      security:
+      - SnapTimestamp: []
+      - SnapSignature: []
+      summary: VA payment status inquiry
+      tags:
+      - Virtual Account
+securityDefinitions:
+  AdminToken:
+    description: Static admin API key configured via the ADMIN_API_KEY environment
+      variable. Required for all /admin/* endpoints.
+    in: header
+    name: X-Admin-API-Key
+    type: apiKey
+  BearerAuth:
+    description: Bearer access token issued by POST /openapi/v1.0/access-token/b2b,
+      e.g. "Bearer <token>".
+    in: header
+    name: Authorization
+    type: apiKey
+  SnapClientKey:
+    description: Client identifier issued by the admin during onboarding. Required
+      on the B2B access-token endpoint.
+    in: header
+    name: X-CLIENT-KEY
+    type: apiKey
+  SnapSignature:
+    description: Request signature. Compute via POST /api/v1/utilities/signature-auth
+      (asymmetric, access-token endpoint) or POST /api/v1/utilities/signature-service
+      (symmetric, transaction endpoints).
+    in: header
+    name: X-SIGNATURE
+    type: apiKey
+  SnapTimestamp:
+    description: Request timestamp in ISO 8601 format (e.g. 2026-07-24T10:00:00+07:00).
+    in: header
+    name: X-TIMESTAMP
+    type: apiKey
+swagger: "2.0"

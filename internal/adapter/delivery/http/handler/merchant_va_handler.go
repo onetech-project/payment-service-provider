@@ -19,7 +19,24 @@ func NewMerchantVAHandler(merchantVAUsecase domain.MerchantVAUsecase) *MerchantV
 	return &MerchantVAHandler{merchantVAUsecase: merchantVAUsecase}
 }
 
-// CreateVA handles POST /openapi/v1.0/transfer-va/create-va
+// CreateVA godoc
+// @Tags Merchant VA Dashboard
+// @Summary Create or update a Virtual Account
+// @Description Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.
+// @Security SnapTimestamp
+// @Security SnapSignature
+// @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
+// @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
+// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param Idempotency-Key header string true "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422."
+// @Param request body domain.MerchantCreateVARequest true "VA create/update request"
+// @Success 200 {object} domain.MerchantCreateVAResponse
+// @Failure 400 {object} domain.MerchantCreateVAResponse "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key"
+// @Failure 401 {object} domain.MerchantCreateVAResponse "Unauthorized (mapped from downstream error)"
+// @Failure 409 {object} domain.MerchantCreateVAResponse "Conflict: request already in progress for this Idempotency-Key"
+// @Failure 422 {object} domain.MerchantCreateVAResponse "Idempotency-Key reused with a different payload"
+// @Failure 500 {object} domain.MerchantCreateVAResponse "Internal Server Error"
+// @Router /openapi/v1.0/transfer-va/create-va [post]
 func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 	var req domain.MerchantCreateVARequest
 	if err := c.Bind(&req); err != nil {
@@ -59,7 +76,24 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-// ListVA handles POST /openapi/v1.0/transfer-va/list
+// ListVA godoc
+// @Tags Merchant VA Dashboard
+// @Summary List Virtual Account transactions
+// @Description Merchant-initiated paginated listing of Virtual Account transactions, filterable by date range, status and VA number. Read-only.
+// @Security SnapTimestamp
+// @Security SnapSignature
+// @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
+// @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
+// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param Idempotency-Key header string true "Unique key for this request; enforced by IdempotencyMiddleware since ListVA is called via POST. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422."
+// @Param request body domain.MerchantListVARequest true "VA list filter/pagination request"
+// @Success 200 {object} domain.MerchantListVAResponse
+// @Failure 400 {object} domain.MerchantListVAResponse "Invalid Field Format / missing Idempotency-Key"
+// @Failure 401 {object} domain.MerchantListVAResponse "Unauthorized (mapped from downstream error)"
+// @Failure 409 {object} domain.MerchantListVAResponse "Conflict: request already in progress for this Idempotency-Key"
+// @Failure 422 {object} domain.MerchantListVAResponse "Idempotency-Key reused with a different payload"
+// @Failure 500 {object} domain.MerchantListVAResponse "Internal Server Error"
+// @Router /openapi/v1.0/transfer-va/list [post]
 func (h *MerchantVAHandler) ListVA(c echo.Context) error {
 	var req domain.MerchantListVARequest
 	if err := c.Bind(&req); err != nil {
@@ -89,7 +123,24 @@ func (h *MerchantVAHandler) ListVA(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-// DeleteVA handles DELETE /openapi/v1.0/transfer-va/delete-va
+// DeleteVA godoc
+// @Tags Merchant VA Dashboard
+// @Summary Delete a Virtual Account
+// @Description Merchant-initiated deletion of a Virtual Account (ASPI DeleteVARequest). This performs a real state-changing action: it permanently removes/deactivates the Virtual Account record.
+// @Security SnapTimestamp
+// @Security SnapSignature
+// @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
+// @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
+// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param Idempotency-Key header string true "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422."
+// @Param request body domain.MerchantDeleteVARequest true "VA delete request"
+// @Success 200 {object} domain.MerchantDeleteVAResponse
+// @Failure 400 {object} domain.MerchantDeleteVAResponse "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key"
+// @Failure 401 {object} domain.MerchantDeleteVAResponse "Unauthorized (mapped from downstream error)"
+// @Failure 409 {object} domain.MerchantDeleteVAResponse "Conflict: request already in progress for this Idempotency-Key"
+// @Failure 422 {object} domain.MerchantDeleteVAResponse "Idempotency-Key reused with a different payload"
+// @Failure 500 {object} domain.MerchantDeleteVAResponse "Internal Server Error"
+// @Router /openapi/v1.0/transfer-va/delete-va [delete]
 func (h *MerchantVAHandler) DeleteVA(c echo.Context) error {
 	var req domain.MerchantDeleteVARequest
 	if err := c.Bind(&req); err != nil {
