@@ -23,14 +23,15 @@ func NewMerchantVAHandler(merchantVAUsecase domain.MerchantVAUsecase) *MerchantV
 // @Tags Merchant VA Dashboard
 // @Summary Create or update a Virtual Account
 // @Description Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.
+// @Description To register a payment-notification callback URL, set additionalInfo.dbUrlProcess (e.g. {"additionalInfo": {"dbUrlProcess": "https://merchant.example.com/webhook/payment-callback"}}) — per ASPI's VAUpsertRequest, this is the only defined key under additionalInfo; it is not a top-level request field.
 // @Security SnapTimestamp
 // @Security SnapSignature
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
 // @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
 // @Param Idempotency-Key header string true "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422."
-// @Param request body domain.MerchantCreateVARequest true "VA create/update request"
-// @Success 200 {object} domain.MerchantCreateVAResponse
+// @Param request body domain.MerchantCreateVARequest true "VA create/update request. additionalInfo.dbUrlProcess carries the merchant payment-callback URL (see description)."
+// @Success 200 {object} domain.MerchantCreateVAResponse "additionalInfo.dbUrlProcess is echoed back in virtualAccountData.additionalInfo"
 // @Failure 400 {object} domain.MerchantCreateVAResponse "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key"
 // @Failure 401 {object} domain.MerchantCreateVAResponse "Unauthorized (mapped from downstream error)"
 // @Failure 409 {object} domain.MerchantCreateVAResponse "Conflict: request already in progress for this Idempotency-Key"

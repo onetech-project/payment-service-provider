@@ -321,6 +321,8 @@ type MerchantVAData struct {
 	ExpiredDate         *time.Time             `json:"expiredDate,omitempty"`
 	LastUpdateDate      *time.Time             `json:"lastUpdateDate,omitempty"`
 	PaymentDate         *time.Time             `json:"paymentDate,omitempty"`
+	// AdditionalInfo echoes back additionalInfo.dbUrlProcess per ASPI
+	// VAUpsertResponse (aspi-open-api-va.yaml:348-351).
 	AdditionalInfo      map[string]interface{} `json:"additionalInfo,omitempty"`
 }
 

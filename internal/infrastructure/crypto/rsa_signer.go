@@ -5,7 +5,6 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -49,7 +48,9 @@ func parseRSAPrivateKey(raw string) (*rsa.PrivateKey, error) {
 	return privKey, nil
 }
 
-// Sign computes SHA256withRSA(privateKey, stringToSign) and returns it hex-encoded.
+// Sign computes SHA256withRSA(privateKey, stringToSign) and returns it
+// base64-encoded, matching the encoding RSAVerifier.VerifySignature expects
+// and the SNAP spec's signature convention.
 func (s *RSASigner) Sign(rawPrivateKey, stringToSign string) (string, error) {
 	privKey, err := parseRSAPrivateKey(rawPrivateKey)
 	if err != nil {
@@ -62,5 +63,5 @@ func (s *RSASigner) Sign(rawPrivateKey, stringToSign string) (string, error) {
 		return "", fmt.Errorf("rsa signing failed: %w", err)
 	}
 
-	return hex.EncodeToString(sig), nil
+	return base64.StdEncoding.EncodeToString(sig), nil
 }

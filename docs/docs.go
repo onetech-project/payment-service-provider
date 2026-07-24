@@ -503,7 +503,7 @@ const docTemplate = `{
                         "SnapSignature": []
                     }
                 ],
-                "description": "Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.",
+                "description": "Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.\nTo register a payment-notification callback URL, set additionalInfo.dbUrlProcess (e.g. {\"additionalInfo\": {\"dbUrlProcess\": \"https://merchant.example.com/webhook/payment-callback\"}}) — per ASPI's VAUpsertRequest, this is the only defined key under additionalInfo; it is not a top-level request field.",
                 "tags": [
                     "Merchant VA Dashboard"
                 ],
@@ -538,7 +538,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "VA create/update request",
+                        "description": "VA create/update request. additionalInfo.dbUrlProcess carries the merchant payment-callback URL (see description).",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -549,7 +549,7 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "additionalInfo.dbUrlProcess is echoed back in virtualAccountData.additionalInfo",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantCreateVAResponse"
                         }
@@ -1401,6 +1401,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "additionalInfo": {
+                    "description": "AdditionalInfo echoes back additionalInfo.dbUrlProcess per ASPI\nVAUpsertResponse (aspi-open-api-va.yaml:348-351).",
                     "type": "object",
                     "additionalProperties": true
                 },

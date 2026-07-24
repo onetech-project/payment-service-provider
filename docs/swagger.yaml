@@ -220,6 +220,9 @@ definitions:
     properties:
       additionalInfo:
         additionalProperties: true
+        description: |-
+          AdditionalInfo echoes back additionalInfo.dbUrlProcess per ASPI
+          VAUpsertResponse (aspi-open-api-va.yaml:348-351).
         type: object
       billDetails:
         items:
@@ -952,9 +955,9 @@ paths:
       - Token
   /openapi/v1.0/transfer-va/create-va:
     post:
-      description: 'Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest).
-        This performs a real state-changing action: it creates or updates a persistent
-        Virtual Account record.'
+      description: |-
+        Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.
+        To register a payment-notification callback URL, set additionalInfo.dbUrlProcess (e.g. {"additionalInfo": {"dbUrlProcess": "https://merchant.example.com/webhook/payment-callback"}}) — per ASPI's VAUpsertRequest, this is the only defined key under additionalInfo; it is not a top-level request field.
       parameters:
       - description: Request timestamp, ISO 8601
         in: header
@@ -978,7 +981,8 @@ paths:
         name: Idempotency-Key
         required: true
         type: string
-      - description: VA create/update request
+      - description: VA create/update request. additionalInfo.dbUrlProcess carries
+          the merchant payment-callback URL (see description).
         in: body
         name: request
         required: true
@@ -986,7 +990,7 @@ paths:
           $ref: '#/definitions/domain.MerchantCreateVARequest'
       responses:
         "200":
-          description: OK
+          description: additionalInfo.dbUrlProcess is echoed back in virtualAccountData.additionalInfo
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "400":
