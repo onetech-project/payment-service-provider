@@ -2,7 +2,6 @@
 .gitignore
 .dockerignore
 README.md
-docs/
 specs/
 *.md
 .env
