@@ -62,3 +62,56 @@ func TestRSASignAndVerify_RoundTrip(t *testing.T) {
 	err = verifier.VerifySignature(pubKeyPEM, stringToSign, signature)
 	assert.NoError(t, err, "a signature produced by RSASigner.Sign must be accepted by RSAVerifier.VerifySignature")
 }
+
+func TestRSASigner_Sign_PKCS8Key(t *testing.T) {
+	privateKey, _ := generateTestRSAKeypair(t)
+	privKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	require.NoError(t, err)
+	privKeyPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: privKeyBytes,
+	}))
+
+	signer := crypto.NewRSASigner()
+	sig, err := signer.Sign(privKeyPEM, "some-string-to-sign")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sig)
+}
+
+func TestRSASigner_Sign_Base64EncodedDERKey(t *testing.T) {
+	privateKey, _ := generateTestRSAKeypair(t)
+	privKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	b64Key := base64.StdEncoding.EncodeToString(privKeyBytes)
+
+	signer := crypto.NewRSASigner()
+	sig, err := signer.Sign(b64Key, "some-string-to-sign")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sig)
+}
+
+func TestRSASigner_Sign_Base64EncodedPEMKey(t *testing.T) {
+	privateKey, _ := generateTestRSAKeypair(t)
+	privKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	privKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privKeyBytes,
+	})
+	b64Key := base64.StdEncoding.EncodeToString(privKeyPEM)
+
+	signer := crypto.NewRSASigner()
+	sig, err := signer.Sign(b64Key, "some-string-to-sign")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sig)
+}
+
+func TestRSASigner_Sign_NonRSAPKCS8Key(t *testing.T) {
+	// EC key, valid PKCS8 DER but not RSA
+	ecKeyPEM := `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgM5yf3HPRDRR6EfhT
+00ZnSa1RjMG9z3gWqROXpvUs97ehRANCAASIMtFfAmVML21qaI2SnUltqInNFefw
++3bsfWQL0M+UylLhhZWQbnxDGFR2VWj8CKnWWE60WhS1CMaqX61rU6fY
+-----END PRIVATE KEY-----`
+	signer := crypto.NewRSASigner()
+	_, err := signer.Sign(ecKeyPEM, "some-string-to-sign")
+	assert.Error(t, err)
+}

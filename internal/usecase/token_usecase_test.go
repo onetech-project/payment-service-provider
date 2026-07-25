@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -118,5 +119,141 @@ func TestTokenUsecase_GenerateB2BToken(t *testing.T) {
 
 		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "client_credentials")
 		assert.Error(t, err)
+	})
+
+	t.Run("Invalid grantType", func(t *testing.T) {
+		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "wrong_grant")
+		assert.Error(t, err)
+		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrInvalidGrantType)
+	})
+
+	t.Run("Missing clientID", func(t *testing.T) {
+		_, err := uc.GenerateB2BToken(ctx, "", timestamp, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrMissingHeader)
+	})
+
+	t.Run("Missing timestamp", func(t *testing.T) {
+		_, err := uc.GenerateB2BToken(ctx, clientID, "", signature, "client_credentials")
+		assert.Error(t, err)
+		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrMissingHeader)
+	})
+
+	t.Run("Missing signature", func(t *testing.T) {
+		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, "", "client_credentials")
+		assert.Error(t, err)
+		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrMissingHeader)
+	})
+
+	t.Run("Invalid timestamp format", func(t *testing.T) {
+		_, err := uc.GenerateB2BToken(ctx, clientID, "not-a-timestamp", signature, "client_credentials")
+		assert.Error(t, err)
+	})
+
+	t.Run("Timestamp skew too far in future", func(t *testing.T) {
+		futureTS := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
+		_, err := uc.GenerateB2BToken(ctx, clientID, futureTS, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrInvalidTimestamp)
+	})
+
+	t.Run("Timestamp skew too far in past", func(t *testing.T) {
+		pastTS := time.Now().Add(-10 * time.Minute).Format(time.RFC3339)
+		_, err := uc.GenerateB2BToken(ctx, clientID, pastTS, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrInvalidTimestamp)
+	})
+
+	t.Run("GetClientByID returns ErrClientNotFound", func(t *testing.T) {
+		mockRepo.On("GetClientByID", ctx, clientID).Return(nil, domain.ErrClientNotFound).Once()
+		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.Equal(t, "4017300", err.(*domain.DomainError).SNAPCode)
+		mockRepo.AssertExpectations(t)
+	})
+
+	t.Run("GetClientByID returns generic error", func(t *testing.T) {
+		mockRepo.On("GetClientByID", ctx, clientID).Return(nil, errors.New("db down")).Once()
+		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.Equal(t, "5007300", err.(*domain.DomainError).SNAPCode)
+		mockRepo.AssertExpectations(t)
+	})
+
+	t.Run("GetActiveClientPublicKey error", func(t *testing.T) {
+		mockRepo.On("GetClientByID", ctx, clientID).Return(&domain.ClientApp{
+			ClientID: clientID,
+			Status:   domain.ClientStatusActive,
+		}, nil).Once()
+		mockRepo.On("GetActiveClientPublicKey", ctx, clientID).Return("", errors.New("no key")).Once()
+
+		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.Equal(t, "4017300", err.(*domain.DomainError).SNAPCode)
+		mockRepo.AssertExpectations(t)
+	})
+
+	t.Run("VerifySignature error", func(t *testing.T) {
+		mockRepo.On("GetClientByID", ctx, clientID).Return(&domain.ClientApp{
+			ClientID: clientID,
+			Status:   domain.ClientStatusActive,
+		}, nil).Once()
+		mockRepo.On("GetActiveClientPublicKey", ctx, clientID).Return(pubKeyPEM, nil).Once()
+
+		stringToSign := clientID + "|" + timestamp
+		mockVerifier.On("VerifySignature", pubKeyPEM, stringToSign, signature).Return(errors.New("bad sig")).Once()
+
+		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.Equal(t, "4017300", err.(*domain.DomainError).SNAPCode)
+		mockRepo.AssertExpectations(t)
+		mockVerifier.AssertExpectations(t)
+	})
+
+	t.Run("jwtIssuer.GenerateB2BToken error", func(t *testing.T) {
+		mockRepo.On("GetClientByID", ctx, clientID).Return(&domain.ClientApp{
+			ClientID: clientID,
+			Status:   domain.ClientStatusActive,
+		}, nil).Once()
+		mockRepo.On("GetActiveClientPublicKey", ctx, clientID).Return(pubKeyPEM, nil).Once()
+
+		stringToSign := clientID + "|" + timestamp
+		mockVerifier.On("VerifySignature", pubKeyPEM, stringToSign, signature).Return(nil).Once()
+
+		mockIssuer.On("GenerateB2BToken", clientID, 900*time.Second).Return("", "", errors.New("sign fail")).Once()
+
+		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "client_credentials")
+		assert.Error(t, err)
+		assert.Equal(t, "5007300", err.(*domain.DomainError).SNAPCode)
+		mockRepo.AssertExpectations(t)
+		mockVerifier.AssertExpectations(t)
+		mockIssuer.AssertExpectations(t)
+	})
+}
+
+func TestTokenUsecase_ValidateToken(t *testing.T) {
+	mockRepo := new(MockClientRepository)
+	mockVerifier := new(MockRSAVerifier)
+	mockIssuer := new(MockJWTIssuer)
+	uc := usecase.NewTokenUsecase(mockRepo, mockVerifier, mockIssuer)
+	ctx := context.Background()
+
+	t.Run("Success", func(t *testing.T) {
+		claims := &domain.TokenClaims{ClientID: "client-001", JTI: "jti-1"}
+		mockIssuer.On("ValidateToken", "good-token").Return(claims, nil).Once()
+
+		result, err := uc.ValidateToken(ctx, "good-token")
+		assert.NoError(t, err)
+		assert.Equal(t, claims, result)
+		mockIssuer.AssertExpectations(t)
+	})
+
+	t.Run("Error", func(t *testing.T) {
+		mockIssuer.On("ValidateToken", "bad-token").Return(nil, errors.New("invalid token")).Once()
+
+		result, err := uc.ValidateToken(ctx, "bad-token")
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		mockIssuer.AssertExpectations(t)
 	})
 }

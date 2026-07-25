@@ -1,6 +1,8 @@
 package crypto
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -46,6 +48,32 @@ func TestHashSHA256Hex(t *testing.T) {
 
 	assert.NotEmpty(t, hash)
 	assert.Len(t, hash, 64)
+}
+
+func TestHashSHA256Reader(t *testing.T) {
+	hash, err := HashSHA256Reader(strings.NewReader("test data"))
+	assert.NoError(t, err)
+	assert.Equal(t, HashSHA256Hex("test data"), hash)
+}
+
+func TestHashSHA256Reader_Error(t *testing.T) {
+	_, err := HashSHA256Reader(&errorReader{})
+	assert.Error(t, err)
+}
+
+type errorReader struct{}
+
+func (r *errorReader) Read(p []byte) (int, error) {
+	return 0, errors.New("read error")
+}
+
+func TestNewHMACSigner_UnknownAlgorithmDefaultsToSHA512(t *testing.T) {
+	signer := NewHMACSigner("secret", "unknown-algo")
+	sig := signer.SignBase64("test")
+	assert.NotEmpty(t, sig)
+
+	sha512Signer := NewHMACSigner("secret", "HMAC-SHA512")
+	assert.Equal(t, sha512Signer.SignBase64("test"), sig)
 }
 
 func TestHMACSigner_DifferentSecrets(t *testing.T) {
