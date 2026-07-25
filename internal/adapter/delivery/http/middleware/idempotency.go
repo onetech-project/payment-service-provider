@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,10 +10,18 @@ import (
 	"net/http"
 	"time"
 
-	"backbone-new/internal/infrastructure/redis"
-
 	"github.com/labstack/echo/v4"
 )
+
+// IdempotencyStore is the subset of redis.Client's behaviour the idempotency
+// middleware depends on. Defined here (consumer side) so tests can fake it
+// without a live Redis connection.
+type IdempotencyStore interface {
+	GetResponseCache(ctx context.Context, key string) ([]byte, error)
+	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	ReleaseLock(ctx context.Context, key string) error
+	SetResponseCache(ctx context.Context, key string, value []byte, ttl time.Duration) error
+}
 
 type CachedResponse struct {
 	StatusCode  int                 `json:"statusCode"`
@@ -37,7 +46,7 @@ func (w *bodyInterceptor) Write(b []byte) (int, error) {
 // response is replayed for a repeated key. Both are caller-supplied (sourced
 // from env, e.g. IDEMPOTENCY_LOCK_TTL_SECONDS / IDEMPOTENCY_CACHE_TTL_SECONDS)
 // rather than hardcoded, since they're operational tuning knobs.
-func IdempotencyMiddleware(redisClient *redis.Client, lockTTL, cacheTTL time.Duration) echo.MiddlewareFunc {
+func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.Duration) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			req := c.Request()

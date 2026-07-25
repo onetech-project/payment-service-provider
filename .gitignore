@@ -18,6 +18,8 @@ vendor/
 *.coverage
 coverage.txt
 coverage.out
+coverage.html
+coverage.inscope.out
 
 # Environment & Secrets
 .env
