@@ -48,7 +48,7 @@ func mapSignatureError(c echo.Context, err error) error {
 // @Description Generates the SHA256withRSA signature required as X-SIGNATURE when calling POST /openapi/v1.0/access-token/b2b.
 // @Param X-CLIENT-KEY header string true "Client identifier"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
-// @Param Private_Key header string true "RSA private key (PEM) used to sign the string-to-sign"
+// @Param X-PRIVATE-KEY header string true "RSA private key (PEM) used to sign the string-to-sign"
 // @Success 200 {object} domain.SignatureAuthResponse
 // @Failure 400 {object} domain.SignatureAuthResponse "Bad Request"
 // @Failure 401 {object} domain.SignatureAuthResponse "Unauthorized"
@@ -57,7 +57,7 @@ func mapSignatureError(c echo.Context, err error) error {
 func (h *SignatureHandler) GenerateAccessTokenSignature(c echo.Context) error {
 	clientKey := c.Request().Header.Get("X-CLIENT-KEY")
 	timestamp := c.Request().Header.Get("X-TIMESTAMP")
-	privateKey := c.Request().Header.Get("Private_Key")
+	privateKey := c.Request().Header.Get("X-PRIVATE-KEY")
 
 	ctx := c.Request().Context()
 	resp, err := h.signatureUsecase.GenerateAccessTokenSignature(ctx, clientKey, timestamp, privateKey)

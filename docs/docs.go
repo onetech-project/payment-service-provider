@@ -262,7 +262,7 @@ const docTemplate = `{
                     {
                         "type": "string",
                         "description": "RSA private key (PEM) used to sign the string-to-sign",
-                        "name": "Private_Key",
+                        "name": "X-PRIVATE-KEY",
                         "in": "header",
                         "required": true
                     }

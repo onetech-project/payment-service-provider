@@ -22,7 +22,7 @@ func NewSignatureUsecase(signer domain.RSASignatureSigner) *SignatureUsecase {
 
 func (u *SignatureUsecase) GenerateAccessTokenSignature(ctx context.Context, clientKey, timestamp, privateKey string) (*domain.SignatureAuthResponse, error) {
 	if clientKey == "" || timestamp == "" || privateKey == "" {
-		return nil, domain.NewDomainError("4000000", "Bad Request. Missing required fields (X-CLIENT-KEY, X-TIMESTAMP, Private_Key)", domain.ErrMissingHeader)
+		return nil, domain.NewDomainError("4000000", "Bad Request. Missing required fields (X-CLIENT-KEY, X-TIMESTAMP, X-PRIVATE-KEY)", domain.ErrMissingHeader)
 	}
 
 	if _, err := time.Parse(time.RFC3339, timestamp); err != nil {
