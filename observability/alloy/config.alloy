@@ -1,0 +1,39 @@
+// Grafana Alloy config: discovers all Docker containers on this host and
+// ships their stdout/stderr logs to Loki. The app container already logs
+// structured JSON (see internal/adapter/delivery/http/middleware/telemetry.go,
+// gated by LOG_FORMAT=json), so Loki/Grafana can parse fields straight out
+// of the log line without extra pipeline stages here.
+
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+}
+
+// Docker only exposes the container name as "/<name>"; strip the leading
+// slash so the "container" label reads e.g. "app" instead of "/app".
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		target_label  = "service"
+	}
+}
+
+loki.source.docker "default" {
+	host          = "unix:///var/run/docker.sock"
+	targets       = discovery.relabel.containers.output
+	relabel_rules = discovery.relabel.containers.rules
+	forward_to    = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

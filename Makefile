@@ -1,4 +1,4 @@
-.PHONY: swagger test test-cover coverage-html coverage-inscope
+.PHONY: swagger test test-cover coverage-html coverage-inscope observability-up observability-down
 
 # Packages deliberately excluded from the "in-scope" coverage figure: thin
 # infra wrappers (DB/Redis/queue/telemetry) that only call SDKs directly and
@@ -37,3 +37,12 @@ coverage-html: test-cover
 coverage-inscope: test-cover
 	@{ head -1 coverage.out; grep -Ev '$(COVERAGE_EXCLUDE)' coverage.out | tail -n +2; } > coverage.inscope.out
 	@go tool cover -func=coverage.inscope.out | tail -1
+
+# Brings up the full stack (app + deps + Prometheus/Loki/Alloy/Grafana).
+# Grafana: http://localhost:3000 (admin/admin, see docker-compose.yml).
+# Prometheus: http://localhost:9090. App metrics: http://localhost:8080/metrics.
+observability-up:
+	docker compose up -d --build
+
+observability-down:
+	docker compose down
