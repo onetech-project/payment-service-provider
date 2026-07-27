@@ -41,12 +41,17 @@ TIMESTAMP="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 STRING_TO_SIGN="${CLIENT_ID}|${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha256 -sign "$PRIVATE_KEY_PATH" | openssl base64 -A)"
 
+BODY='{"grantType":"client_credentials","additionalInfo":{}}'
+
 # Diagnostics go to stderr so stdout stays clean JSON — this lets the script
 # be chained/captured by other scripts (see e2e-va-flow.sh).
+echo "==> POST ${BASE_URL}/openapi/v1.0/access-token/b2b" >&2
 echo "==> X-TIMESTAMP: $TIMESTAMP" >&2
 echo "==> stringToSign: $STRING_TO_SIGN" >&2
 echo "==> X-SIGNATURE: $SIGNATURE" >&2
 echo "==> X-CLIENT-KEY: $CLIENT_ID" >&2
+echo "==> Request body:" >&2
+echo "$BODY" | (command -v jq >/dev/null && jq . || cat) >&2
 echo >&2
 
 curl -sS -X POST "${BASE_URL}/openapi/v1.0/access-token/b2b" \
@@ -55,5 +60,5 @@ curl -sS -X POST "${BASE_URL}/openapi/v1.0/access-token/b2b" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
 	-H "X-SIGNATURE: ${SIGNATURE}" \
 	-H "Idempotency-Key: $(uuidgen)" \
-	-d '{"grantType":"client_credentials","additionalInfo":{}}' \
+	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)

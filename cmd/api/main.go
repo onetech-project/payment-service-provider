@@ -86,6 +86,18 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+// splitAndTrim splits a comma-separated list (e.g. CORS_ALLOWED_ORIGINS) into
+// trimmed, non-empty entries.
+func splitAndTrim(csv string) []string {
+	var out []string
+	for _, part := range strings.Split(csv, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 // getEnvDurationSeconds reads an integer-seconds env var into a time.Duration,
 // falling back to defaultSeconds when unset or invalid.
 func getEnvDurationSeconds(key string, defaultSeconds int) time.Duration {
@@ -268,6 +280,22 @@ func main() {
 	e.HideBanner = true
 	e.Use(echoMiddleware.Recover())
 	e.Use(customMiddleware.TelemetryMiddleware())
+
+	// CORS: allowed origins are configurable via CORS_ALLOWED_ORIGINS (comma-
+	// separated), so each environment (dev/uat/prod) can whitelist its own
+	// frontend origin(s) without a code change.
+	corsAllowedOrigins := splitAndTrim(getEnvOrDefault("CORS_ALLOWED_ORIGINS", ""))
+	if len(corsAllowedOrigins) > 0 {
+		e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{
+			AllowOrigins: corsAllowedOrigins,
+			AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+			AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization,
+				"X-TIMESTAMP", "X-SIGNATURE", "X-CLIENT-KEY", "X-PARTNER-ID", "X-EXTERNAL-ID", "CHANNEL-ID",
+				"X-Admin-API-Key", "Idempotency-Key"},
+		}))
+	} else {
+		log.Println("Warning: CORS_ALLOWED_ORIGINS not set — CORS is disabled (cross-origin browser requests will be blocked)")
+	}
 
 	// Health check endpoint
 	e.GET("/health", healthCheckHandler)
