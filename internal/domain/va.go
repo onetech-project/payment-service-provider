@@ -219,6 +219,7 @@ type VAInquiryRecord struct {
 	Status           string
 	TotalAmount      string
 	Currency         string
+	ExpiredDate      *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }

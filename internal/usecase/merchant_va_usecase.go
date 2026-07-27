@@ -73,6 +73,7 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		Status:           "03",
 		TotalAmount:      "0",
 		Currency:         "IDR",
+		ExpiredDate:      req.ExpiredDate,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}

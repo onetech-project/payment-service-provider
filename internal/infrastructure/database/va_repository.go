@@ -34,11 +34,12 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 
 	query := `
 		INSERT INTO va_transactions (id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, expired_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (inquiry_request_id) DO UPDATE SET
 			status = EXCLUDED.status,
 			notification_url = EXCLUDED.notification_url,
+			expired_date = EXCLUDED.expired_date,
 			updated_at = EXCLUDED.updated_at
 		RETURNING id`
 
@@ -58,6 +59,7 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 		inquiry.Status,
 		inquiry.TotalAmount,
 		inquiry.Currency,
+		inquiry.ExpiredDate,
 		inquiry.CreatedAt,
 		inquiry.UpdatedAt,
 	).Scan(&inquiry.ID)
