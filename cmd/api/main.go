@@ -190,9 +190,7 @@ func main() {
 	// Idempotency TTLs are operational tuning knobs, not constants: lockTTL
 	// bounds how long a duplicate concurrent request is held off while the
 	// original is in flight; cacheTTL is how long a completed response is
-	// replayed for a repeated Idempotency-Key. Default cacheTTL is 24h — a
-	// previous hardcoded 1s effectively made replay useless beyond the same
-	// instant.
+	// replayed for a repeated X-EXTERNAL-ID.
 	idempotencyLockTTL := getEnvDurationSeconds("IDEMPOTENCY_LOCK_TTL_SECONDS", 30)
 	idempotencyCacheTTL := getEnvDurationSeconds("IDEMPOTENCY_CACHE_TTL_SECONDS", 86400)
 
@@ -281,17 +279,20 @@ func main() {
 	e.Use(echoMiddleware.Recover())
 	e.Use(customMiddleware.TelemetryMiddleware())
 
-	// CORS: allowed origins are configurable via CORS_ALLOWED_ORIGINS (comma-
-	// separated), so each environment (dev/uat/prod) can whitelist its own
-	// frontend origin(s) without a code change.
+	// CORS: allowed origins and headers are configurable via CORS_ALLOWED_ORIGINS
+	// and CORS_ALLOWED_HEADERS (comma-separated), so each environment
+	// (dev/uat/prod) can whitelist its own frontend origin(s) and headers
+	// without a code change.
 	corsAllowedOrigins := splitAndTrim(getEnvOrDefault("CORS_ALLOWED_ORIGINS", ""))
+	defaultCORSHeaders := strings.Join([]string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization,
+		"X-TIMESTAMP", "X-SIGNATURE", "X-CLIENT-KEY", "X-PARTNER-ID", "X-EXTERNAL-ID", "CHANNEL-ID",
+		"X-Admin-API-Key"}, ",")
+	corsAllowedHeaders := splitAndTrim(getEnvOrDefault("CORS_ALLOWED_HEADERS", defaultCORSHeaders))
 	if len(corsAllowedOrigins) > 0 {
 		e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{
 			AllowOrigins: corsAllowedOrigins,
 			AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
-			AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization,
-				"X-TIMESTAMP", "X-SIGNATURE", "X-CLIENT-KEY", "X-PARTNER-ID", "X-EXTERNAL-ID", "CHANNEL-ID",
-				"X-Admin-API-Key", "Idempotency-Key"},
+			AllowHeaders: corsAllowedHeaders,
 		}))
 	} else {
 		log.Println("Warning: CORS_ALLOWED_ORIGINS not set — CORS is disabled (cross-origin browser requests will be blocked)")
@@ -342,9 +343,8 @@ func main() {
 	utilGroup.POST("/signature-service", signatureHandler.GenerateServiceSignature)
 
 	for _, snapBasePath := range snapBasePaths {
-		// SNAP Token Endpoint with Idempotency Middleware
+		// SNAP Token Endpoint
 		snapGroup := e.Group(snapBasePath)
-		snapGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
 		snapGroup.POST("/access-token/b2b", tokenHandler.GetB2BAccessToken)
 
 		// Register vendor-specific routes (unified under {snapBasePath}/transfer-va/*)

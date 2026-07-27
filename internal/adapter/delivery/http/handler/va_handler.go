@@ -28,14 +28,13 @@ func NewVAHandler(vaUsecase domain.VAUsecase) *VAHandler {
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
 // @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
-// @Param Idempotency-Key header string true "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422."
 // @Param request body domain.VAInquiryRequest true "VA inquiry request"
 // @Success 200 {object} domain.VAInquiryResponse
-// @Failure 400 {object} domain.VAInquiryResponse "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key"
+// @Failure 400 {object} domain.VAInquiryResponse "Invalid Field Format / Invalid Mandatory Field"
 // @Failure 401 {object} domain.VAInquiryResponse "Unauthorized (mapped from downstream error)"
 // @Failure 404 {object} domain.VAInquiryResponse "Not Found (mapped from downstream error)"
-// @Failure 409 {object} domain.VAInquiryResponse "Conflict: request already in progress for this Idempotency-Key"
-// @Failure 422 {object} domain.VAInquiryResponse "Idempotency-Key reused with a different payload"
+// @Failure 409 {object} domain.VAInquiryResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
+// @Failure 422 {object} domain.VAInquiryResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.VAInquiryResponse "Internal Server Error"
 // @Router /openapi/v1.0/transfer-va/inquiry [post]
 func (h *VAHandler) Inquiry(c echo.Context) error {
@@ -84,14 +83,13 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
 // @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
-// @Param Idempotency-Key header string true "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422."
 // @Param request body domain.VAPaymentRequest true "VA payment notification"
 // @Success 200 {object} domain.VAPaymentResponse
-// @Failure 400 {object} domain.VAPaymentResponse "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key"
+// @Failure 400 {object} domain.VAPaymentResponse "Invalid Field Format / Invalid Mandatory Field"
 // @Failure 401 {object} domain.VAPaymentResponse "Unauthorized (mapped from downstream error)"
 // @Failure 404 {object} domain.VAPaymentResponse "Not Found (mapped from downstream error)"
-// @Failure 409 {object} domain.VAPaymentResponse "Conflict (mapped from downstream error, or in-flight request with same Idempotency-Key)"
-// @Failure 422 {object} domain.VAPaymentResponse "Idempotency-Key reused with a different payload"
+// @Failure 409 {object} domain.VAPaymentResponse "Conflict (mapped from downstream error, or in-flight request with same X-EXTERNAL-ID)"
+// @Failure 422 {object} domain.VAPaymentResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.VAPaymentResponse "Internal Server Error"
 // @Router /openapi/v1.0/transfer-va/payment [post]
 func (h *VAHandler) Payment(c echo.Context) error {
@@ -141,14 +139,13 @@ func (h *VAHandler) Payment(c echo.Context) error {
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
 // @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
-// @Param Idempotency-Key header string true "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422."
 // @Param request body domain.VAStatusRequest true "VA status request"
 // @Success 200 {object} domain.VAStatusResponse
-// @Failure 400 {object} domain.VAStatusResponse "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key"
+// @Failure 400 {object} domain.VAStatusResponse "Invalid Field Format / Invalid Mandatory Field"
 // @Failure 401 {object} domain.VAStatusResponse "Unauthorized (mapped from downstream error)"
 // @Failure 404 {object} domain.VAStatusResponse "Not Found (mapped from downstream error)"
-// @Failure 409 {object} domain.VAStatusResponse "Conflict: request already in progress for this Idempotency-Key"
-// @Failure 422 {object} domain.VAStatusResponse "Idempotency-Key reused with a different payload"
+// @Failure 409 {object} domain.VAStatusResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
+// @Failure 422 {object} domain.VAStatusResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.VAStatusResponse "Internal Server Error"
 // @Router /openapi/v1.0/transfer-va/status [post]
 func (h *VAHandler) Status(c echo.Context) error {

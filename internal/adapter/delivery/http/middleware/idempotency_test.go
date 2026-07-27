@@ -126,7 +126,7 @@ func TestIdempotencyMiddleware_FirstRequestCachesResponse(t *testing.T) {
 	e := echo.New()
 	body := `{"foo":"bar"}`
 	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
-	req.Header.Set("Idempotency-Key", "key-1")
+	req.Header.Set("X-EXTERNAL-ID", "key-1")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
@@ -158,7 +158,7 @@ func TestIdempotencyMiddleware_ReplaysCachedResponseOnMatchingPayload(t *testing
 
 	// First request populates the cache.
 	req1 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
-	req1.Header.Set("Idempotency-Key", "key-2")
+	req1.Header.Set("X-EXTERNAL-ID", "key-2")
 	rec1 := httptest.NewRecorder()
 	c1 := e.NewContext(req1, rec1)
 	mw := IdempotencyMiddleware(store, time.Second, time.Second)
@@ -173,7 +173,7 @@ func TestIdempotencyMiddleware_ReplaysCachedResponseOnMatchingPayload(t *testing
 	// Second request with the same key and payload should replay the cache
 	// without invoking the handler again.
 	req2 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
-	req2.Header.Set("Idempotency-Key", "key-2")
+	req2.Header.Set("X-EXTERNAL-ID", "key-2")
 	rec2 := httptest.NewRecorder()
 	c2 := e.NewContext(req2, rec2)
 	assert.NoError(t, handler(c2))
@@ -193,13 +193,13 @@ func TestIdempotencyMiddleware_PayloadMismatchReturns422(t *testing.T) {
 	})
 
 	req1 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"foo":"bar"}`))
-	req1.Header.Set("Idempotency-Key", "key-3")
+	req1.Header.Set("X-EXTERNAL-ID", "key-3")
 	rec1 := httptest.NewRecorder()
 	c1 := e.NewContext(req1, rec1)
 	assert.NoError(t, handler(c1))
 
 	req2 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"foo":"different"}`))
-	req2.Header.Set("Idempotency-Key", "key-3")
+	req2.Header.Set("X-EXTERNAL-ID", "key-3")
 	rec2 := httptest.NewRecorder()
 	c2 := e.NewContext(req2, rec2)
 	assert.NoError(t, handler(c2))
@@ -211,7 +211,7 @@ func TestIdempotencyMiddleware_PayloadMismatchReturns422(t *testing.T) {
 func TestIdempotencyMiddleware_LockFailureReturns409(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{}`))
-	req.Header.Set("Idempotency-Key", "key-4")
+	req.Header.Set("X-EXTERNAL-ID", "key-4")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
@@ -234,7 +234,7 @@ func TestIdempotencyMiddleware_LockFailureReturns409(t *testing.T) {
 func TestIdempotencyMiddleware_LockErrorReturns409(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{}`))
-	req.Header.Set("Idempotency-Key", "key-5")
+	req.Header.Set("X-EXTERNAL-ID", "key-5")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
@@ -255,7 +255,7 @@ func TestIdempotencyMiddleware_LockErrorReturns409(t *testing.T) {
 func TestIdempotencyMiddleware_ServerErrorNotCached(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{}`))
-	req.Header.Set("Idempotency-Key", "key-6")
+	req.Header.Set("X-EXTERNAL-ID", "key-6")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
@@ -279,7 +279,7 @@ func TestIdempotencyMiddleware_ServerErrorNotCached(t *testing.T) {
 func TestIdempotencyMiddleware_CorruptCacheEntryFallsThroughToHandler(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{}`))
-	req.Header.Set("Idempotency-Key", "key-7")
+	req.Header.Set("X-EXTERNAL-ID", "key-7")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 

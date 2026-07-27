@@ -906,14 +906,6 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Unique key for this request; enforced by IdempotencyMiddleware
-          for all non-GET requests on this route. A repeated key with an identical
-          payload replays the cached response; a repeated key with a different payload
-          is rejected with 422.
-        in: header
-        name: Idempotency-Key
-        required: true
-        type: string
       - description: Token request payload
         in: body
         name: request
@@ -926,20 +918,11 @@ paths:
           schema:
             $ref: '#/definitions/domain.SNAPTokenResponse'
         "400":
-          description: Invalid request payload, missing required SNAP headers, or
-            missing Idempotency-Key
+          description: Invalid request payload, or missing required SNAP headers
           schema:
             $ref: '#/definitions/domain.SNAPTokenResponse'
         "401":
           description: Signature verification failed
-          schema:
-            $ref: '#/definitions/domain.SNAPTokenResponse'
-        "409":
-          description: 'Conflict: request already in progress for this Idempotency-Key'
-          schema:
-            $ref: '#/definitions/domain.SNAPTokenResponse'
-        "422":
-          description: Idempotency-Key reused with a different payload
           schema:
             $ref: '#/definitions/domain.SNAPTokenResponse'
         "500":
@@ -974,13 +957,6 @@ paths:
         name: X-EXTERNAL-ID
         required: true
         type: string
-      - description: Unique key for this request; enforced by IdempotencyMiddleware.
-          A repeated key with an identical payload replays the cached response; a
-          repeated key with a different payload is rejected with 422.
-        in: header
-        name: Idempotency-Key
-        required: true
-        type: string
       - description: VA create/update request. additionalInfo.dbUrlProcess carries
           the merchant payment-callback URL (see description).
         in: body
@@ -994,7 +970,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "400":
-          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          description: Invalid Field Format / Invalid Mandatory Field
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "401":
@@ -1002,11 +978,11 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "409":
-          description: 'Conflict: request already in progress for this Idempotency-Key'
+          description: 'Conflict: request already in progress for this X-EXTERNAL-ID'
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "422":
-          description: Idempotency-Key reused with a different payload
+          description: X-EXTERNAL-ID reused with a different payload
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "500":
@@ -1040,13 +1016,6 @@ paths:
         name: X-EXTERNAL-ID
         required: true
         type: string
-      - description: Unique key for this request; enforced by IdempotencyMiddleware.
-          A repeated key with an identical payload replays the cached response; a
-          repeated key with a different payload is rejected with 422.
-        in: header
-        name: Idempotency-Key
-        required: true
-        type: string
       - description: VA delete request
         in: body
         name: request
@@ -1059,7 +1028,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "400":
-          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          description: Invalid Field Format / Invalid Mandatory Field
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "401":
@@ -1067,11 +1036,11 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "409":
-          description: 'Conflict: request already in progress for this Idempotency-Key'
+          description: 'Conflict: request already in progress for this X-EXTERNAL-ID'
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "422":
-          description: Idempotency-Key reused with a different payload
+          description: X-EXTERNAL-ID reused with a different payload
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "500":
@@ -1104,13 +1073,6 @@ paths:
         name: X-EXTERNAL-ID
         required: true
         type: string
-      - description: Unique key for this request; enforced by IdempotencyMiddleware.
-          A repeated key with an identical payload replays the cached response; a
-          repeated key with a different payload is rejected with 422.
-        in: header
-        name: Idempotency-Key
-        required: true
-        type: string
       - description: VA inquiry request
         in: body
         name: request
@@ -1123,7 +1085,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "400":
-          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          description: Invalid Field Format / Invalid Mandatory Field
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "401":
@@ -1135,11 +1097,11 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "409":
-          description: 'Conflict: request already in progress for this Idempotency-Key'
+          description: 'Conflict: request already in progress for this X-EXTERNAL-ID'
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "422":
-          description: Idempotency-Key reused with a different payload
+          description: X-EXTERNAL-ID reused with a different payload
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "500":
@@ -1172,14 +1134,6 @@ paths:
         name: X-EXTERNAL-ID
         required: true
         type: string
-      - description: Unique key for this request; enforced by IdempotencyMiddleware
-          since ListVA is called via POST. A repeated key with an identical payload
-          replays the cached response; a repeated key with a different payload is
-          rejected with 422.
-        in: header
-        name: Idempotency-Key
-        required: true
-        type: string
       - description: VA list filter/pagination request
         in: body
         name: request
@@ -1192,7 +1146,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "400":
-          description: Invalid Field Format / missing Idempotency-Key
+          description: Invalid Field Format
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "401":
@@ -1200,11 +1154,11 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "409":
-          description: 'Conflict: request already in progress for this Idempotency-Key'
+          description: 'Conflict: request already in progress for this X-EXTERNAL-ID'
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "422":
-          description: Idempotency-Key reused with a different payload
+          description: X-EXTERNAL-ID reused with a different payload
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "500":
@@ -1237,13 +1191,6 @@ paths:
         name: X-EXTERNAL-ID
         required: true
         type: string
-      - description: Unique key for this request; enforced by IdempotencyMiddleware.
-          A repeated key with an identical payload replays the cached response; a
-          repeated key with a different payload is rejected with 422.
-        in: header
-        name: Idempotency-Key
-        required: true
-        type: string
       - description: VA payment notification
         in: body
         name: request
@@ -1256,7 +1203,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "400":
-          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          description: Invalid Field Format / Invalid Mandatory Field
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "401":
@@ -1269,11 +1216,11 @@ paths:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "409":
           description: Conflict (mapped from downstream error, or in-flight request
-            with same Idempotency-Key)
+            with same X-EXTERNAL-ID)
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "422":
-          description: Idempotency-Key reused with a different payload
+          description: X-EXTERNAL-ID reused with a different payload
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "500":
@@ -1306,13 +1253,6 @@ paths:
         name: X-EXTERNAL-ID
         required: true
         type: string
-      - description: Unique key for this request; enforced by IdempotencyMiddleware.
-          A repeated key with an identical payload replays the cached response; a
-          repeated key with a different payload is rejected with 422.
-        in: header
-        name: Idempotency-Key
-        required: true
-        type: string
       - description: VA status request
         in: body
         name: request
@@ -1325,7 +1265,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAStatusResponse'
         "400":
-          description: Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key
+          description: Invalid Field Format / Invalid Mandatory Field
           schema:
             $ref: '#/definitions/domain.VAStatusResponse'
         "401":
@@ -1337,11 +1277,11 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAStatusResponse'
         "409":
-          description: 'Conflict: request already in progress for this Idempotency-Key'
+          description: 'Conflict: request already in progress for this X-EXTERNAL-ID'
           schema:
             $ref: '#/definitions/domain.VAStatusResponse'
         "422":
-          description: Idempotency-Key reused with a different payload
+          description: X-EXTERNAL-ID reused with a different payload
           schema:
             $ref: '#/definitions/domain.VAStatusResponse'
         "500":

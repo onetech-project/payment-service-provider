@@ -437,13 +437,6 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Unique key for this request; enforced by IdempotencyMiddleware for all non-GET requests on this route. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422.",
-                        "name": "Idempotency-Key",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
                         "description": "Token request payload",
                         "name": "request",
                         "in": "body",
@@ -461,25 +454,13 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid request payload, missing required SNAP headers, or missing Idempotency-Key",
+                        "description": "Invalid request payload, or missing required SNAP headers",
                         "schema": {
                             "$ref": "#/definitions/domain.SNAPTokenResponse"
                         }
                     },
                     "401": {
                         "description": "Signature verification failed",
-                        "schema": {
-                            "$ref": "#/definitions/domain.SNAPTokenResponse"
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict: request already in progress for this Idempotency-Key",
-                        "schema": {
-                            "$ref": "#/definitions/domain.SNAPTokenResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "Idempotency-Key reused with a different payload",
                         "schema": {
                             "$ref": "#/definitions/domain.SNAPTokenResponse"
                         }
@@ -531,13 +512,6 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422.",
-                        "name": "Idempotency-Key",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
                         "description": "VA create/update request. additionalInfo.dbUrlProcess carries the merchant payment-callback URL (see description).",
                         "name": "request",
                         "in": "body",
@@ -555,7 +529,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key",
+                        "description": "Invalid Field Format / Invalid Mandatory Field",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantCreateVAResponse"
                         }
@@ -567,13 +541,13 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Conflict: request already in progress for this Idempotency-Key",
+                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantCreateVAResponse"
                         }
                     },
                     "422": {
-                        "description": "Idempotency-Key reused with a different payload",
+                        "description": "X-EXTERNAL-ID reused with a different payload",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantCreateVAResponse"
                         }
@@ -625,13 +599,6 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422.",
-                        "name": "Idempotency-Key",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
                         "description": "VA delete request",
                         "name": "request",
                         "in": "body",
@@ -649,7 +616,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key",
+                        "description": "Invalid Field Format / Invalid Mandatory Field",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantDeleteVAResponse"
                         }
@@ -661,13 +628,13 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Conflict: request already in progress for this Idempotency-Key",
+                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantDeleteVAResponse"
                         }
                     },
                     "422": {
-                        "description": "Idempotency-Key reused with a different payload",
+                        "description": "X-EXTERNAL-ID reused with a different payload",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantDeleteVAResponse"
                         }
@@ -719,13 +686,6 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422.",
-                        "name": "Idempotency-Key",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
                         "description": "VA inquiry request",
                         "name": "request",
                         "in": "body",
@@ -743,7 +703,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key",
+                        "description": "Invalid Field Format / Invalid Mandatory Field",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
@@ -761,13 +721,13 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Conflict: request already in progress for this Idempotency-Key",
+                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
                     },
                     "422": {
-                        "description": "Idempotency-Key reused with a different payload",
+                        "description": "X-EXTERNAL-ID reused with a different payload",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
@@ -819,13 +779,6 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Unique key for this request; enforced by IdempotencyMiddleware since ListVA is called via POST. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422.",
-                        "name": "Idempotency-Key",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
                         "description": "VA list filter/pagination request",
                         "name": "request",
                         "in": "body",
@@ -843,7 +796,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / missing Idempotency-Key",
+                        "description": "Invalid Field Format",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantListVAResponse"
                         }
@@ -855,13 +808,13 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Conflict: request already in progress for this Idempotency-Key",
+                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantListVAResponse"
                         }
                     },
                     "422": {
-                        "description": "Idempotency-Key reused with a different payload",
+                        "description": "X-EXTERNAL-ID reused with a different payload",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantListVAResponse"
                         }
@@ -913,13 +866,6 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422.",
-                        "name": "Idempotency-Key",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
                         "description": "VA payment notification",
                         "name": "request",
                         "in": "body",
@@ -937,7 +883,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key",
+                        "description": "Invalid Field Format / Invalid Mandatory Field",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
@@ -955,13 +901,13 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Conflict (mapped from downstream error, or in-flight request with same Idempotency-Key)",
+                        "description": "Conflict (mapped from downstream error, or in-flight request with same X-EXTERNAL-ID)",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
                     },
                     "422": {
-                        "description": "Idempotency-Key reused with a different payload",
+                        "description": "X-EXTERNAL-ID reused with a different payload",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
@@ -1013,13 +959,6 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Unique key for this request; enforced by IdempotencyMiddleware. A repeated key with an identical payload replays the cached response; a repeated key with a different payload is rejected with 422.",
-                        "name": "Idempotency-Key",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
                         "description": "VA status request",
                         "name": "request",
                         "in": "body",
@@ -1037,7 +976,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field / missing Idempotency-Key",
+                        "description": "Invalid Field Format / Invalid Mandatory Field",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }
@@ -1055,13 +994,13 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Conflict: request already in progress for this Idempotency-Key",
+                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }
                     },
                     "422": {
-                        "description": "Idempotency-Key reused with a different payload",
+                        "description": "X-EXTERNAL-ID reused with a different payload",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }

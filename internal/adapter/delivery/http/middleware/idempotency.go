@@ -40,12 +40,14 @@ func (w *bodyInterceptor) Write(b []byte) (int, error) {
 	return w.Response.Write(b)
 }
 
-// IdempotencyMiddleware enforces Idempotency-Key handling for mutating
-// requests. lockTTL bounds how long a concurrent duplicate request is held
-// off while the original is in flight; cacheTTL is how long the completed
-// response is replayed for a repeated key. Both are caller-supplied (sourced
-// from env, e.g. IDEMPOTENCY_LOCK_TTL_SECONDS / IDEMPOTENCY_CACHE_TTL_SECONDS)
-// rather than hardcoded, since they're operational tuning knobs.
+// IdempotencyMiddleware enforces idempotency for mutating requests, keyed on
+// the ASPI-standard X-EXTERNAL-ID header (rather than a custom Idempotency-Key
+// header, which isn't part of the SNAP/ASPI contract). lockTTL bounds how
+// long a concurrent duplicate request is held off while the original is in
+// flight; cacheTTL is how long the completed response is replayed for a
+// repeated key. Both are caller-supplied (sourced from env, e.g.
+// IDEMPOTENCY_LOCK_TTL_SECONDS / IDEMPOTENCY_CACHE_TTL_SECONDS) rather than
+// hardcoded, since they're operational tuning knobs.
 func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.Duration) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -56,11 +58,11 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 				return next(c)
 			}
 
-			idempotencyKey := req.Header.Get("Idempotency-Key")
+			idempotencyKey := req.Header.Get("X-EXTERNAL-ID")
 			if idempotencyKey == "" {
 				return c.JSON(http.StatusBadRequest, map[string]string{
 					"responseCode":    "4007300",
-					"responseMessage": "Bad Request. Idempotency-Key header is required.",
+					"responseMessage": "Bad Request. X-EXTERNAL-ID header is required.",
 				})
 			}
 
@@ -83,7 +85,7 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 					if cached.PayloadHash != payloadHash {
 						return c.JSON(http.StatusUnprocessableEntity, map[string]string{
 							"responseCode":    "4227300",
-							"responseMessage": "Unprocessable Entity. Idempotency-Key payload mismatch.",
+							"responseMessage": "Unprocessable Entity. X-EXTERNAL-ID payload mismatch.",
 						})
 					}
 
@@ -102,7 +104,7 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 			if err != nil || !locked {
 				return c.JSON(http.StatusConflict, map[string]string{
 					"responseCode":    "4097300",
-					"responseMessage": "Conflict. Request currently in progress for this Idempotency-Key.",
+					"responseMessage": "Conflict. Request currently in progress for this X-EXTERNAL-ID.",
 				})
 			}
 			defer func() { _ = redisClient.ReleaseLock(ctx, idempotencyKey) }()
