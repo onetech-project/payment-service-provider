@@ -193,13 +193,21 @@ Key components:
 
 ## Database Migrations
 
-Migrations are located in `db/migrations/` and are applied automatically on startup:
+Migrations are located in `db/migrations/` (paired `NNNNNN_description.up.sql`/`.down.sql` files) and are applied using [`migrate/migrate`](https://github.com/golang-migrate/migrate) via the `migrate` service in `docker-compose.yml`:
+
+```bash
+docker compose up -d migrate
+```
 
 - `000001_create_client_apps`: Client application registry
 - `000002_create_client_keys`: Client RSA public keys
 - `000003_create_va_transactions`: Virtual Account transactions + bill details
 - `000004_add_va_fields`: SNAP-compliant columns on `va_transactions`/`va_bill_details` (customer name/email/phone, `trx_id`, `notification_url`, amount/label columns, etc.)
 - `000005_add_va_bill_details_missing_fields`: `bill_code`/`bill_name`/`bill_short_name` on `va_bill_details` (required for bill-detail persistence to actually work)
+- `000006_add_va_type_and_sequences`: VA type classification and sequence support
+- `000007_create_va_payments`: Per-payment ledger for cumulative/variable-bill VAs
+- `000008_create_master_va_type_and_partner_service_ids`: Master VA type + partner service ID lookup tables
+- `000009_create_va_notification_deliveries`: Merchant callback delivery-attempt audit trail (auto and manual resends)
 
 ## Vendor Integration (Virtual Account)
 

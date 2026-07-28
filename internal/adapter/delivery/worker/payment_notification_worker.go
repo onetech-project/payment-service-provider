@@ -46,20 +46,43 @@ func (w *PaymentNotificationWorker) HandlePaymentNotification(ctx context.Contex
 		return fmt.Errorf("notification URL is empty")
 	}
 
+	// EventType defaults to "payment.received" for backward compatibility
+	// with payloads enqueued before feature 007-merchant-expiry-callback
+	// introduced the discriminator field.
+	eventType := payload.EventType
+	if eventType == "" {
+		eventType = domain.NotificationEventPaymentReceived
+	}
+
 	// Build notification payload
-	notification := map[string]interface{}{
-		"eventType": "payment.received",
-		"timestamp": time.Now().Format(time.RFC3339),
-		"data": map[string]interface{}{
-			"virtualAccountNo": payload.VirtualAccountNo,
-			"customerNo":       payload.CustomerNo,
-			"trxId":            payload.TrxID,
-			"paymentRequestId": payload.PaymentRequestID,
-			"paidAmount":       payload.PaidAmount,
-			"trxDateTime":      payload.TrxDateTime,
-			"referenceNo":      payload.ReferenceNo,
-			"status":           "00",
-		},
+	var notification map[string]interface{}
+	if eventType == domain.NotificationEventVAExpired {
+		notification = map[string]interface{}{
+			"eventType": domain.NotificationEventVAExpired,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"data": map[string]interface{}{
+				"virtualAccountNo": payload.VirtualAccountNo,
+				"customerNo":       payload.CustomerNo,
+				"trxId":            payload.TrxID,
+				"expiredAt":        payload.ExpiredAt,
+				"status":           "02",
+			},
+		}
+	} else {
+		notification = map[string]interface{}{
+			"eventType": domain.NotificationEventPaymentReceived,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"data": map[string]interface{}{
+				"virtualAccountNo": payload.VirtualAccountNo,
+				"customerNo":       payload.CustomerNo,
+				"trxId":            payload.TrxID,
+				"paymentRequestId": payload.PaymentRequestID,
+				"paidAmount":       payload.PaidAmount,
+				"trxDateTime":      payload.TrxDateTime,
+				"referenceNo":      payload.ReferenceNo,
+				"status":           "00",
+			},
+		}
 	}
 
 	body, err := json.Marshal(notification)

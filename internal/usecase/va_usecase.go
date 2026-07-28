@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"backbone-new/internal/domain"
@@ -10,14 +11,24 @@ import (
 
 // VAUsecase implements domain.VAUsecase
 type VAUsecase struct {
-	repo     domain.VARepository
-	notifier domain.NotificationEnqueuer
+	repo         domain.VARepository
+	notifier     domain.NotificationEnqueuer
+	deliveryRepo domain.VANotificationDeliveryRepository
 }
 
 // NewVAUsecase creates a new VA usecase. notifier may be nil, in which case
 // merchant payment callbacks are skipped (e.g. when the queue is unavailable).
 func NewVAUsecase(repo domain.VARepository, notifier domain.NotificationEnqueuer) *VAUsecase {
 	return &VAUsecase{repo: repo, notifier: notifier}
+}
+
+// NewVAUsecaseWithDeliveryRepo creates a new VA usecase with expiry-callback
+// audit/dedupe support (feature 007-merchant-expiry-callback). deliveryRepo
+// may be nil, in which case the dedupe check is skipped (best-effort: a
+// missing audit trail must not block the expiry-detection/status-transition
+// behavior itself).
+func NewVAUsecaseWithDeliveryRepo(repo domain.VARepository, notifier domain.NotificationEnqueuer, deliveryRepo domain.VANotificationDeliveryRepository) *VAUsecase {
+	return &VAUsecase{repo: repo, notifier: notifier, deliveryRepo: deliveryRepo}
 }
 
 // Inquiry handles VA inquiry requests from vendor
@@ -56,6 +67,21 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 	// by the vendor's own (possibly brand-new) inquiryRequestId — otherwise
 	// every inquiry against the same VA creates a duplicate, phantom record.
 	if merchantVA, merr := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo); merr == nil && merchantVA != nil {
+		// Expiry detection (feature 007-merchant-expiry-callback, contracts/
+		// inquiry-expired.md): a pending ("03") VA whose expired_date has
+		// passed is expired, detected inline with no background scanner.
+		// Already-expired ("02") VAs must keep returning this same response
+		// on every subsequent inquiry (spec.md User Story 1, Acceptance
+		// Scenario 4) — markExpiredAndNotify no-ops safely when called again
+		// (UpdateVAStatus's WHERE status='03' guard skips the already-"02"
+		// row, so no duplicate callback is sent).
+		isExpired := merchantVA.Status == "02" ||
+			(merchantVA.Status == "03" && merchantVA.ExpiredDate != nil && time.Now().After(*merchantVA.ExpiredDate))
+		if isExpired {
+			u.markExpiredAndNotify(ctx, merchantVA)
+			return nil, domain.NewDomainError("4042419", "Invalid Bill/Virtual Account", domain.ErrVAExpiredInquiry)
+		}
+
 		// Best-effort: bill details are supplementary — a lookup failure
 		// shouldn't fail the whole inquiry, just come back without them.
 		bills, _ := u.repo.GetVABillDetails(ctx, merchantVA.ID)
@@ -173,8 +199,21 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// virtualAccountNo and silently overwrite the completed transaction's
 	// paidAmount/referenceNo/transactionDate via SavePayment's upsert — a paid
 	// transaction must never be mutated after the fact.
-	if merchantVA != nil && merchantVA.Status != "03" {
-		return nil, domain.NewDomainError("4092500", "Conflict: Bill/Virtual Account already paid or inactive", nil)
+	if merchantVA != nil {
+		// Expiry detection (feature 007-merchant-expiry-callback, contracts/
+		// notify-expired.md): an already-expired VA, or a pending ("03") VA
+		// whose expired_date has passed, returns the expired-specific SNAP
+		// response instead of the generic conflict response.
+		isExpired := merchantVA.Status == "02" ||
+			(merchantVA.Status == "03" && merchantVA.ExpiredDate != nil && time.Now().After(*merchantVA.ExpiredDate))
+		if isExpired {
+			u.markExpiredAndNotify(ctx, merchantVA)
+			return nil, domain.NewDomainError("4042519", "Invalid Bill/Virtual Account", domain.ErrVAExpiredPayment)
+		}
+
+		if merchantVA.Status != "03" {
+			return nil, domain.NewDomainError("4092500", "Conflict: Bill/Virtual Account already paid or inactive", nil)
+		}
 	}
 
 	// Variable-bill VAs (vaType 02/05, feature 006-static-dynamic-va) accept
@@ -294,6 +333,71 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	}, nil
 }
 
+// markExpiredAndNotify transitions merchantVA to expired ("02") and, if this
+// call is the one that actually applied the transition (i.e. it wasn't
+// already expired) and the VA has a notification_url, enqueues a single
+// "va.expired" merchant callback. Best-effort: notification delivery must
+// never block or fail the caller's SNAP response (contracts/inquiry-expired.md,
+// contracts/notify-expired.md).
+func (u *VAUsecase) markExpiredAndNotify(ctx context.Context, merchantVA *domain.VAInquiryRecord) {
+	// UpdateVAStatus is scoped to WHERE status = '03', so this is a no-op
+	// (returns domain.ErrMerchantVANotFound) if another concurrent call, or a
+	// concurrent payment, already moved the VA out of "03" — in that case we
+	// must not enqueue a duplicate/incorrect notification.
+	if err := u.repo.UpdateVAStatus(ctx, merchantVA.VirtualAccountNo, "02"); err != nil {
+		return
+	}
+	log.Printf("event=va_expired virtual_account_no=%s event_type=%s", merchantVA.VirtualAccountNo, domain.NotificationEventVAExpired)
+
+	if merchantVA.NotificationURL == "" || u.notifier == nil {
+		return
+	}
+
+	// Dedupe: skip enqueueing if an auto-triggered va.expired notification was
+	// already recorded for this VA (FR-005 belt-and-suspenders, on top of the
+	// UpdateVAStatus guard above).
+	if u.deliveryRepo != nil {
+		exists, err := u.deliveryRepo.ExistsByVirtualAccountNoAndEventType(ctx, merchantVA.VirtualAccountNo, domain.NotificationEventVAExpired, domain.NotificationTriggerAuto)
+		if err == nil && exists {
+			return
+		}
+	}
+
+	expiredAt := ""
+	if merchantVA.ExpiredDate != nil {
+		expiredAt = merchantVA.ExpiredDate.Format(time.RFC3339)
+	}
+
+	payload := &domain.PaymentNotificationPayload{
+		EventType:        domain.NotificationEventVAExpired,
+		PartnerServiceID: merchantVA.PartnerServiceID,
+		CustomerNo:       merchantVA.CustomerNo,
+		VirtualAccountNo: merchantVA.VirtualAccountNo,
+		TrxID:            merchantVA.TrxID,
+		ReferenceNo:      "",
+		NotificationURL:  merchantVA.NotificationURL,
+		ExpiredAt:        expiredAt,
+	}
+
+	deliveryStatus := domain.NotificationDeliveryStatusSuccess
+	errorDetail := ""
+	if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
+		deliveryStatus = domain.NotificationDeliveryStatusFailed
+		errorDetail = err.Error()
+	}
+
+	if u.deliveryRepo != nil {
+		_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
+			VirtualAccountNo: merchantVA.VirtualAccountNo,
+			EventType:        domain.NotificationEventVAExpired,
+			Trigger:          domain.NotificationTriggerAuto,
+			Status:           deliveryStatus,
+			AttemptedAt:      time.Now(),
+			ErrorDetail:      errorDetail,
+		})
+	}
+}
+
 // notifyMerchantWithVA enqueues an async callback carrying the payment
 // details to the merchant's registered notificationUrl. It never returns an
 // error to the caller: notification delivery is best-effort and must not
@@ -309,6 +413,7 @@ func (u *VAUsecase) notifyMerchantWithVA(ctx context.Context, req *domain.VAPaym
 	}
 
 	payload := &domain.PaymentNotificationPayload{
+		EventType:        domain.NotificationEventPaymentReceived,
 		PartnerServiceID: req.PartnerServiceID,
 		CustomerNo:       req.CustomerNo,
 		VirtualAccountNo: req.VirtualAccountNo,
@@ -324,7 +429,23 @@ func (u *VAUsecase) notifyMerchantWithVA(ctx context.Context, req *domain.VAPaym
 		NotificationURL:  notificationURL,
 	}
 
-	_ = u.notifier.EnqueuePaymentNotification(ctx, payload)
+	deliveryStatus := domain.NotificationDeliveryStatusSuccess
+	errorDetail := ""
+	if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
+		deliveryStatus = domain.NotificationDeliveryStatusFailed
+		errorDetail = err.Error()
+	}
+
+	if u.deliveryRepo != nil {
+		_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
+			VirtualAccountNo: req.VirtualAccountNo,
+			EventType:        domain.NotificationEventPaymentReceived,
+			Trigger:          domain.NotificationTriggerAuto,
+			Status:           deliveryStatus,
+			AttemptedAt:      time.Now(),
+			ErrorDetail:      errorDetail,
+		})
+	}
 }
 
 // Status handles VA status inquiry from vendor

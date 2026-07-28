@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"backbone-new/internal/domain"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -94,6 +96,20 @@ func TestVARepository_WithLock_NoLockerRunsUnlocked(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, called)
+}
+
+// T003: VANotificationDeliveryRepository (Create, GetLatestByVirtualAccountNo,
+// ExistsByVirtualAccountNoAndEventType). These methods require a live
+// PostgreSQL connection to exercise the actual SQL (query construction and
+// scanning), consistent with this package's existing convention for
+// SQL-heavy methods (see MockVALocker doc comment above) — they are covered
+// end-to-end by quickstart.md's integration scenarios. Here we verify the
+// compile-time contract: VARepository satisfies both
+// domain.VARepository and domain.VANotificationDeliveryRepository, and that
+// constructing a repository doesn't panic before a real pool is attached.
+func TestVARepository_ImplementsVANotificationDeliveryRepository(t *testing.T) {
+	var _ domain.VANotificationDeliveryRepository = NewVARepository(nil)
+	var _ domain.VARepository = NewVARepository(nil)
 }
 
 func TestParseAmount(t *testing.T) {

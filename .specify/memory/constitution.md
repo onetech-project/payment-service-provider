@@ -1,14 +1,14 @@
 <!--
 Sync Impact Report:
-- Version change: 1.2.0 → 1.3.0
+- Version change: 1.3.0 → 1.3.1
 - List of modified principles:
-  - Added XI: Mandatory Test Coverage > 90%
-- Added sections:
-  - Added Coverage Gate to Quality Gates
-  - Added coverage configuration guidance
+  - IX. Asynchronous Processing & State Management — clarified migration tooling (`migrate/migrate`, `db/migrations/`, `docker compose up -d migrate`); no rule changed, just made concrete.
+- Added sections: None
 - Removed sections: None
+- Modified sections:
+  - Technology & Architecture Constraints > Tech Stack & Tooling — added explicit "Migration Tooling" line.
 - Templates requiring updates:
-  - ✅ .specify/templates/plan-template.md (Checked & aligned)
+  - ✅ .specify/templates/plan-template.md (Checked & aligned — no migration-tooling-specific rules to sync)
   - ✅ .specify/templates/spec-template.md (Checked & aligned)
   - ✅ .specify/templates/tasks-template.md (Checked & aligned)
 - Follow-up TODOs: None
@@ -70,7 +70,7 @@ Sync Impact Report:
   - **Collector (Grafana Alloy)**: Telemetry signals (logs, metrics, traces) MUST be shipped via Grafana Alloy agent to Loki, Prometheus, and Tempo, visualized in unified Grafana dashboards.
 
 ### IX. Asynchronous Processing & State Management (PostgreSQL, Redis, Asynq, Asynqmon)
-- **Persistence (PostgreSQL)**: PostgreSQL MUST be the single source of truth for transactional data (payment transactions, ledger entries, provider configurations). All schema alterations MUST be managed via versioned migration scripts.
+- **Persistence (PostgreSQL)**: PostgreSQL MUST be the single source of truth for transactional data (payment transactions, ledger entries, provider configurations). All schema alterations MUST be managed via versioned migration scripts using **`migrate/migrate`**, stored under `db/migrations/` as paired `NNNNNN_description.up.sql`/`.down.sql` files, and applied via the `migrate` service in `docker-compose.yml` (`docker compose up -d migrate`).
 - **Caching & Queue Engine (Redis & Asynq)**: Redis MUST be utilized for high-speed caching, distributed locks, and as the backing broker for **Asynq** background task queues.
 - **Asynchronous Workflows (Asynq)**: Non-blocking long-running operations (payment webhooks, retry attempts, reconciliation processing, notifications) MUST be executed asynchronously using Asynq queues with explicit retry and dead-letter policies.
 - **Queue Monitoring (Asynqmon)**: **Asynqmon** web dashboard MUST be deployed and exposed securely for real-time inspection, monitoring, and payload management of Asynq queues and tasks.
@@ -100,6 +100,7 @@ Sync Impact Report:
 - **Language**: Go (latest stable version)
 - **Web Framework**: Echo (HTTP delivery layer only)
 - **Primary Database**: PostgreSQL (Relational storage with versioned SQL migrations)
+- **Migration Tooling**: `migrate/migrate` (Dockerized, via the `migrate` service in `docker-compose.yml`; run with `docker compose up -d migrate`; scripts live in `db/migrations/`)
 - **Cache & Message Broker**: Redis (Idempotency storage, distributed locks, queue engine)
 - **Background Task Processing**: Asynq & Asynqmon (Task queue engine and monitoring UI)
 - **Telemetry & Observability**: OpenTelemetry Go SDK, Grafana Alloy (Collector), Grafana Loki (Logs), Prometheus (Metrics), Grafana Tempo (Traces), Grafana (Dashboards)
@@ -152,4 +153,4 @@ internal/
   - **MINOR**: Adding new core principles, infrastructure dependencies, or telemetry/security standards.
   - **PATCH**: Clarifying existing guidance, fixing typos, or updating documentation references.
 
-**Version**: 1.3.0 | **Ratified**: 2026-07-22 | **Last Amended**: 2026-07-22
+**Version**: 1.3.1 | **Ratified**: 2026-07-22 | **Last Amended**: 2026-07-28

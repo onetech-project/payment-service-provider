@@ -37,6 +37,14 @@ var (
 	ErrMerchantVAExpired          = errors.New("merchant VA expired")
 	ErrMerchantNotificationFailed = errors.New("merchant notification failed")
 
+	// Expired VA SNAP Error Constants (feature 007-merchant-expiry-callback)
+	ErrVAExpiredInquiry = errors.New("expired transaction (inquiry)")
+	ErrVAExpiredPayment = errors.New("expired transaction (payment notification)")
+
+	// Resend Callback Error Constants (feature 007-merchant-expiry-callback)
+	ErrResendNoDeliveryRecord  = errors.New("no callback delivery on record for this transaction")
+	ErrResendNoNotificationURL = errors.New("transaction has no registered notification URL")
+
 	// Static/Dynamic VA Error Constants (feature 006-static-dynamic-va)
 	ErrVACustomerNoAlreadyRegistered = errors.New("customerNo already registered for this partnerServiceId")
 )

@@ -32,7 +32,7 @@ func NewVAHandler(vaUsecase domain.VAUsecase) *VAHandler {
 // @Success 200 {object} domain.VAInquiryResponse
 // @Failure 400 {object} domain.VAInquiryResponse "Invalid Field Format / Invalid Mandatory Field"
 // @Failure 401 {object} domain.VAInquiryResponse "Unauthorized (mapped from downstream error)"
-// @Failure 404 {object} domain.VAInquiryResponse "Not Found (mapped from downstream error)"
+// @Failure 404 {object} domain.VAInquiryResponse "Not Found (mapped from downstream error), or 4042419 Expired Transaction (virtualAccountData.inquiryStatus=01, feature 007-merchant-expiry-callback)"
 // @Failure 409 {object} domain.VAInquiryResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
 // @Failure 422 {object} domain.VAInquiryResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.VAInquiryResponse "Internal Server Error"
@@ -60,10 +60,19 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 		var domainErr *domain.DomainError
 		if errors.As(err, &domainErr) {
 			statusCode := mapSNAPCodeToHTTP(domainErr.SNAPCode)
-			return c.JSON(statusCode, domain.VAInquiryResponse{
+			inquiryResp := domain.VAInquiryResponse{
 				ResponseCode:    domainErr.SNAPCode,
 				ResponseMessage: domainErr.Message,
-			})
+			}
+			// Expired-transaction response (contracts/inquiry-expired.md)
+			// carries inquiryStatus/inquiryReason in virtualAccountData.
+			if domainErr.SNAPCode == "4042419" {
+				inquiryResp.VirtualAccountData = &domain.VAAccountData{
+					InquiryStatus: "01",
+					InquiryReason: &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"},
+				}
+			}
+			return c.JSON(statusCode, inquiryResp)
 		}
 		return c.JSON(http.StatusInternalServerError, domain.VAInquiryResponse{
 			ResponseCode:    "5002400",
@@ -87,7 +96,7 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 // @Success 200 {object} domain.VAPaymentResponse
 // @Failure 400 {object} domain.VAPaymentResponse "Invalid Field Format / Invalid Mandatory Field"
 // @Failure 401 {object} domain.VAPaymentResponse "Unauthorized (mapped from downstream error)"
-// @Failure 404 {object} domain.VAPaymentResponse "Not Found (mapped from downstream error)"
+// @Failure 404 {object} domain.VAPaymentResponse "Not Found (mapped from downstream error), or 4042519 Expired Transaction (virtualAccountData.paymentFlagStatus=01, feature 007-merchant-expiry-callback)"
 // @Failure 409 {object} domain.VAPaymentResponse "Conflict (mapped from downstream error, or in-flight request with same X-EXTERNAL-ID)"
 // @Failure 422 {object} domain.VAPaymentResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.VAPaymentResponse "Internal Server Error"
@@ -116,10 +125,19 @@ func (h *VAHandler) Payment(c echo.Context) error {
 		var domainErr *domain.DomainError
 		if errors.As(err, &domainErr) {
 			statusCode := mapSNAPCodeToHTTP(domainErr.SNAPCode)
-			return c.JSON(statusCode, domain.VAPaymentResponse{
+			paymentResp := domain.VAPaymentResponse{
 				ResponseCode:    domainErr.SNAPCode,
 				ResponseMessage: domainErr.Message,
-			})
+			}
+			// Expired-transaction response (contracts/notify-expired.md)
+			// carries paymentFlagStatus/paymentFlagReason in virtualAccountData.
+			if domainErr.SNAPCode == "4042519" {
+				paymentResp.VirtualAccountData = &domain.VAPaymentStatus{
+					PaymentFlagStatus: "01",
+					PaymentFlagReason: &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"},
+				}
+			}
+			return c.JSON(statusCode, paymentResp)
 		}
 		return c.JSON(http.StatusInternalServerError, domain.VAPaymentResponse{
 			ResponseCode:    "5002400",

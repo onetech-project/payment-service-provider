@@ -237,6 +237,62 @@ const docTemplate = `{
                 }
             }
         },
+        "/admin/transactions/{virtualAccountNo}/resend-callback": {
+            "post": {
+                "security": [
+                    {
+                        "AdminAPIKey": []
+                    }
+                ],
+                "description": "Admin-only: redelivers the most recent callback event (payment.received or va.expired) on record for the given virtualAccountNo. Does not mutate transaction state.",
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Resend the most recent merchant callback for a transaction",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Admin API key",
+                        "name": "X-Admin-API-Key",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Virtual account number",
+                        "name": "virtualAccountNo",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.resendCallbackResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.resendCallbackErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Transaction not found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.resendCallbackErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "No callback to resend / no notification URL",
+                        "schema": {
+                            "$ref": "#/definitions/handler.resendCallbackErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/utilities/signature-auth": {
             "post": {
                 "description": "Generates the SHA256withRSA signature required as X-SIGNATURE when calling POST /openapi/v1.0/access-token/b2b.",
@@ -715,7 +771,7 @@ const docTemplate = `{
                         }
                     },
                     "404": {
-                        "description": "Not Found (mapped from downstream error)",
+                        "description": "Not Found (mapped from downstream error), or 4042419 Expired Transaction (virtualAccountData.inquiryStatus=01, feature 007-merchant-expiry-callback)",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
@@ -895,7 +951,7 @@ const docTemplate = `{
                         }
                     },
                     "404": {
-                        "description": "Not Found (mapped from downstream error)",
+                        "description": "Not Found (mapped from downstream error), or 4042519 Expired Transaction (virtualAccountData.paymentFlagStatus=01, feature 007-merchant-expiry-callback)",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
@@ -1926,6 +1982,31 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.resendCallbackErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.resendCallbackResponse": {
+            "type": "object",
+            "properties": {
+                "deliveryStatus": {
+                    "type": "string"
+                },
+                "eventType": {
+                    "type": "string"
+                },
+                "resentAt": {
+                    "type": "string"
+                },
+                "virtualAccountNo": {
                     "type": "string"
                 }
             }

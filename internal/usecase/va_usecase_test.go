@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // MockVARepository is a mock implementation of domain.VARepository
@@ -452,6 +453,254 @@ func TestVAUsecase_Payment_NoNotificationURL_SkipsCallback(t *testing.T) {
 	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification")
 }
 
+// MockVANotificationDeliveryRepository is a mock implementation of
+// domain.VANotificationDeliveryRepository (feature 007-merchant-expiry-callback).
+type MockVANotificationDeliveryRepository struct {
+	mock.Mock
+}
+
+func (m *MockVANotificationDeliveryRepository) Create(ctx context.Context, delivery *domain.NotificationDelivery) error {
+	args := m.Called(ctx, delivery)
+	return args.Error(0)
+}
+
+func (m *MockVANotificationDeliveryRepository) GetLatestByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.NotificationDelivery, error) {
+	args := m.Called(ctx, virtualAccountNo)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.NotificationDelivery), args.Error(1)
+}
+
+func (m *MockVANotificationDeliveryRepository) ExistsByVirtualAccountNoAndEventType(ctx context.Context, virtualAccountNo, eventType, trigger string) (bool, error) {
+	args := m.Called(ctx, virtualAccountNo, eventType, trigger)
+	return args.Bool(0), args.Error(1)
+}
+
+// T008: expired inquiry returns 4042419, transitions status, enqueues one va.expired notification.
+func TestVAUsecase_Inquiry_Expired_ReturnsExpiredResponseAndNotifies(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockNotifier := new(MockNotifier)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	uc := NewVAUsecaseWithDeliveryRepo(mockRepo, mockNotifier, mockDelivery)
+
+	expired := time.Now().Add(-1 * time.Hour)
+	merchantVA := &domain.VAInquiryRecord{
+		VirtualAccountNo: "7000108212221111",
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		Status:           "03",
+		ExpiredDate:      &expired,
+		NotificationURL:  "https://merchant.example.com/callback",
+	}
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: merchantVA.VirtualAccountNo,
+		InquiryRequestID: "INQ-expired-0001",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02").Return(nil)
+	mockDelivery.On("ExistsByVirtualAccountNoAndEventType", mock.Anything, merchantVA.VirtualAccountNo, domain.NotificationEventVAExpired, domain.NotificationTriggerAuto).Return(false, nil)
+	mockNotifier.On("EnqueuePaymentNotification", mock.Anything, mock.MatchedBy(func(p *domain.PaymentNotificationPayload) bool {
+		return p.EventType == domain.NotificationEventVAExpired && p.VirtualAccountNo == merchantVA.VirtualAccountNo
+	})).Return(nil)
+	mockDelivery.On("Create", mock.Anything, mock.MatchedBy(func(d *domain.NotificationDelivery) bool {
+		return d.EventType == domain.NotificationEventVAExpired && d.Trigger == domain.NotificationTriggerAuto && d.Status == domain.NotificationDeliveryStatusSuccess
+	})).Return(nil)
+
+	resp, err := uc.Inquiry(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042419", domainErr.SNAPCode)
+	mockRepo.AssertExpectations(t)
+	mockNotifier.AssertExpectations(t)
+	mockDelivery.AssertExpectations(t)
+}
+
+// T009: expired payment notify returns 4042519, transitions status, enqueues one va.expired notification.
+func TestVAUsecase_Payment_Expired_ReturnsExpiredResponseAndNotifies(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockNotifier := new(MockNotifier)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	uc := NewVAUsecaseWithDeliveryRepo(mockRepo, mockNotifier, mockDelivery)
+
+	expired := time.Now().Add(-1 * time.Hour)
+	merchantVA := &domain.VAInquiryRecord{
+		VirtualAccountNo: "7000108212221111",
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		Status:           "03",
+		ExpiredDate:      &expired,
+		NotificationURL:  "https://merchant.example.com/callback",
+	}
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: merchantVA.VirtualAccountNo,
+		InquiryRequestID: "INQ-expired-0002",
+		PaymentRequestID: "PAY-expired-0002",
+		PaidAmount:       &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02").Return(nil)
+	mockDelivery.On("ExistsByVirtualAccountNoAndEventType", mock.Anything, merchantVA.VirtualAccountNo, domain.NotificationEventVAExpired, domain.NotificationTriggerAuto).Return(false, nil)
+	mockNotifier.On("EnqueuePaymentNotification", mock.Anything, mock.MatchedBy(func(p *domain.PaymentNotificationPayload) bool {
+		return p.EventType == domain.NotificationEventVAExpired
+	})).Return(nil)
+	mockDelivery.On("Create", mock.Anything, mock.Anything).Return(nil)
+
+	resp, err := uc.Payment(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042519", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SavePayment")
+	mockRepo.AssertExpectations(t)
+}
+
+// T010: repeated inquiry/notify calls on an already-expired VA do NOT enqueue
+// a second va.expired notification.
+func TestVAUsecase_Inquiry_AlreadyExpired_DoesNotDuplicateNotification(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockNotifier := new(MockNotifier)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	uc := NewVAUsecaseWithDeliveryRepo(mockRepo, mockNotifier, mockDelivery)
+
+	expired := time.Now().Add(-1 * time.Hour)
+	merchantVA := &domain.VAInquiryRecord{
+		VirtualAccountNo: "7000108212221111",
+		Status:           "02", // already expired by a prior call
+		ExpiredDate:      &expired,
+		NotificationURL:  "https://merchant.example.com/callback",
+	}
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: merchantVA.VirtualAccountNo,
+		InquiryRequestID: "INQ-expired-0003",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	// Status is already "02", so UpdateVAStatus's WHERE status='03' guard
+	// no-ops (returns ErrMerchantVANotFound) — markExpiredAndNotify must stop
+	// there and must NOT enqueue a second notification.
+	mockRepo.On("UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02").Return(domain.ErrMerchantVANotFound)
+
+	// spec.md User Story 1, Acceptance Scenario 4: a later inquiry on an
+	// already-expired VA MUST keep returning the same 4042419 expired
+	// response, not fall through to success — but must not send a duplicate
+	// callback (the UpdateVAStatus no-op above prevents that).
+	resp, err := uc.Inquiry(context.Background(), req)
+
+	assert.Nil(t, resp)
+	require.Error(t, err)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042419", domainErr.SNAPCode)
+	mockRepo.AssertCalled(t, "UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02")
+	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification")
+	mockDelivery.AssertNotCalled(t, "Create")
+}
+
+// T011: a VA with no notification_url still transitions to "02" but no
+// notification is enqueued.
+func TestVAUsecase_Inquiry_Expired_NoNotificationURL_StillTransitionsNoNotify(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockNotifier := new(MockNotifier)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	uc := NewVAUsecaseWithDeliveryRepo(mockRepo, mockNotifier, mockDelivery)
+
+	expired := time.Now().Add(-1 * time.Hour)
+	merchantVA := &domain.VAInquiryRecord{
+		VirtualAccountNo: "7000108212221111",
+		Status:           "03",
+		ExpiredDate:      &expired,
+		NotificationURL:  "", // no callback destination registered
+	}
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: merchantVA.VirtualAccountNo,
+		InquiryRequestID: "INQ-expired-0004",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02").Return(nil)
+
+	resp, err := uc.Inquiry(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042419", domainErr.SNAPCode)
+	mockRepo.AssertExpectations(t)
+	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification")
+	mockDelivery.AssertNotCalled(t, "Create")
+}
+
+// T012: a VA paid concurrently before expiry detection is NOT transitioned to
+// expired and receives no va.expired callback (race precedence per FR-010).
+// Simulated via UpdateVAStatus returning ErrMerchantVANotFound because the
+// WHERE status='03' guard no longer matches (concurrent payment already
+// moved the row to "00").
+func TestVAUsecase_Inquiry_ConcurrentPaymentWinsRace_NoExpiredTransition(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockNotifier := new(MockNotifier)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	uc := NewVAUsecaseWithDeliveryRepo(mockRepo, mockNotifier, mockDelivery)
+
+	expired := time.Now().Add(-1 * time.Hour)
+	merchantVA := &domain.VAInquiryRecord{
+		VirtualAccountNo: "7000108212221111",
+		Status:           "03", // stale read: was pending as of this record's fetch
+		ExpiredDate:      &expired,
+		NotificationURL:  "https://merchant.example.com/callback",
+	}
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: merchantVA.VirtualAccountNo,
+		InquiryRequestID: "INQ-expired-0005",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	// Concurrent payment already flipped status away from "03" — the guarded
+	// UPDATE affects 0 rows.
+	mockRepo.On("UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02").Return(domain.ErrMerchantVANotFound)
+
+	resp, err := uc.Inquiry(context.Background(), req)
+
+	// The expired-response error is still returned to the vendor for THIS
+	// request (the inline check saw an unpaid/expired snapshot), but no
+	// notification is enqueued since the state transition did not apply.
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042419", domainErr.SNAPCode)
+	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification")
+	mockDelivery.AssertNotCalled(t, "Create")
+}
+
 func TestVAUsecase_Payment_AmountMismatch(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	usecase := NewVAUsecase(mockRepo, nil)
@@ -609,7 +858,6 @@ func TestVAUsecase_Status_Success(t *testing.T) {
 	assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
 	mockRepo.AssertExpectations(t)
 }
-
 func TestVAUsecase_Status_Pending(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	usecase := NewVAUsecase(mockRepo, nil)

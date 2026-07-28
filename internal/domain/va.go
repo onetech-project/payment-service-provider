@@ -474,14 +474,20 @@ type MasterDataRepository interface {
 	DeletePartnerServiceID(ctx context.Context, partnerServiceID string) error
 }
 
-// PaymentNotificationPayload maps to ASPI PaymentRequest (Service Code 25)
+// PaymentNotificationPayload maps to ASPI PaymentRequest (Service Code 25),
+// extended (feature 007-merchant-expiry-callback) with an EventType
+// discriminator so the same enqueue/worker/signing path serves both
+// "payment.received" (existing) and "va.expired" (new) events.
 type PaymentNotificationPayload struct {
+	// EventType distinguishes "payment.received" (default, existing
+	// behavior) from "va.expired" (feature 007-merchant-expiry-callback).
+	EventType               string  `json:"eventType,omitempty"`
 	PartnerServiceID        string  `json:"partnerServiceId"`
 	CustomerNo              string  `json:"customerNo"`
 	VirtualAccountNo        string  `json:"virtualAccountNo"`
 	TrxID                   string  `json:"trxId,omitempty"`
 	PaymentRequestID        string  `json:"paymentRequestId"`
-	PaidAmount              *Amount `json:"paidAmount"`
+	PaidAmount              *Amount `json:"paidAmount,omitempty"`
 	CumulativePaymentAmount *Amount `json:"cumulativePaymentAmount,omitempty"`
 	PaidBills               string  `json:"paidBills,omitempty"`
 	TotalAmount             *Amount `json:"totalAmount,omitempty"`
@@ -491,4 +497,58 @@ type PaymentNotificationPayload struct {
 	PaymentType             string  `json:"paymentType,omitempty"`
 	FlagAdvise              string  `json:"flagAdvise,omitempty"`
 	NotificationURL         string  `json:"notificationUrl"`
+	// ExpiredAt carries the expiry timestamp (ISO 8601), populated only for
+	// "va.expired" events (FR-003).
+	ExpiredAt string `json:"expiredAt,omitempty"`
+}
+
+// Notification Delivery Attempt (feature 007-merchant-expiry-callback)
+
+// Event type / trigger constants for va_notification_deliveries and
+// PaymentNotificationPayload.EventType.
+const (
+	NotificationEventPaymentReceived = "payment.received"
+	NotificationEventVAExpired       = "va.expired"
+
+	NotificationTriggerAuto   = "auto"
+	NotificationTriggerManual = "manual"
+
+	NotificationDeliveryStatusSuccess = "success"
+	NotificationDeliveryStatusFailed  = "failed"
+)
+
+// NotificationDelivery represents a single attempt (auto or manual) to
+// deliver a merchant callback event, persisted in va_notification_deliveries
+// for audit (FR-006/FR-018/SC-007) and dedupe (FR-005) purposes.
+type NotificationDelivery struct {
+	ID               string
+	VirtualAccountNo string
+	EventType        string // "payment.received" | "va.expired"
+	Trigger          string // "auto" | "manual"
+	Status           string // "success" | "failed"
+	AttemptedAt      time.Time
+	ErrorDetail      string
+}
+
+// VANotificationDeliveryRepository defines persistence operations for the
+// notification delivery-attempt audit trail.
+type VANotificationDeliveryRepository interface {
+	Create(ctx context.Context, delivery *NotificationDelivery) error
+	GetLatestByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*NotificationDelivery, error)
+	ExistsByVirtualAccountNoAndEventType(ctx context.Context, virtualAccountNo, eventType, trigger string) (bool, error)
+}
+
+// ResendCallbackResult is returned by ResendCallbackUsecase.Resend on
+// success, mapped 1:1 to the resend-callback.md 200 OK response body.
+type ResendCallbackResult struct {
+	VirtualAccountNo string
+	EventType        string
+	ResentAt         time.Time
+	DeliveryStatus   string // "success" | "failed"
+}
+
+// ResendCallbackUsecase defines the admin-only manual callback resend
+// operation (feature 007-merchant-expiry-callback, US2).
+type ResendCallbackUsecase interface {
+	Resend(ctx context.Context, virtualAccountNo string) (*ResendCallbackResult, error)
 }

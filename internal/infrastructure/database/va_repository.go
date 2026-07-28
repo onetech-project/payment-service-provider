@@ -532,7 +532,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
 			inquiry_request_id, trx_id, notification_url, status, total_amount, currency,
-			COALESCE(va_type, ''), created_at, updated_at
+			COALESCE(va_type, ''), expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE virtual_account_no = $1
 		ORDER BY created_at DESC
@@ -552,6 +552,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		&record.TotalAmount,
 		&record.Currency,
 		&record.VAType,
+		&record.ExpiredDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -562,6 +563,91 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		return nil, err
 	}
 	return record, nil
+}
+
+// Notification Delivery Attempt persistence (feature
+// 007-merchant-expiry-callback). Exercised against a live PostgreSQL
+// connection per quickstart.md's integration scenarios, consistent with this
+// file's other SQL-heavy methods (NextCustomerNoSequence,
+// RegisterStaticCustomerNo, SaveVAPayment).
+
+// Create inserts a new notification delivery-attempt audit row.
+func (r *VARepository) Create(ctx context.Context, delivery *domain.NotificationDelivery) error {
+	if delivery.ID == "" {
+		delivery.ID = uuid.New().String()
+	}
+	if delivery.AttemptedAt.IsZero() {
+		delivery.AttemptedAt = time.Now()
+	}
+
+	var errorDetail *string
+	if delivery.ErrorDetail != "" {
+		errorDetail = &delivery.ErrorDetail
+	}
+
+	query := `
+		INSERT INTO va_notification_deliveries (id, virtual_account_no, event_type, trigger, status, attempted_at, error_detail)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+
+	_, err := r.pool.Exec(ctx, query,
+		delivery.ID,
+		delivery.VirtualAccountNo,
+		delivery.EventType,
+		delivery.Trigger,
+		delivery.Status,
+		delivery.AttemptedAt,
+		errorDetail,
+	)
+	return err
+}
+
+// GetLatestByVirtualAccountNo returns the most recent delivery-attempt row
+// (any event type/trigger) for a virtual account number, used by the resend
+// endpoint to determine which event to redeliver (FR-011/FR-015).
+func (r *VARepository) GetLatestByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.NotificationDelivery, error) {
+	query := `
+		SELECT id, virtual_account_no, event_type, trigger, status, attempted_at, COALESCE(error_detail, '')
+		FROM va_notification_deliveries
+		WHERE virtual_account_no = $1
+		ORDER BY attempted_at DESC
+		LIMIT 1`
+
+	record := &domain.NotificationDelivery{}
+	err := r.pool.QueryRow(ctx, query, virtualAccountNo).Scan(
+		&record.ID,
+		&record.VirtualAccountNo,
+		&record.EventType,
+		&record.Trigger,
+		&record.Status,
+		&record.AttemptedAt,
+		&record.ErrorDetail,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// ExistsByVirtualAccountNoAndEventType reports whether a delivery-attempt row
+// already exists for the given virtual account number / event type /
+// trigger combination, used to dedupe auto-triggered "va.expired" callbacks
+// (FR-005).
+func (r *VARepository) ExistsByVirtualAccountNoAndEventType(ctx context.Context, virtualAccountNo, eventType, trigger string) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1 FROM va_notification_deliveries
+			WHERE virtual_account_no = $1 AND event_type = $2 AND trigger = $3
+		)`
+
+	var exists bool
+	err := r.pool.QueryRow(ctx, query, virtualAccountNo, eventType, trigger).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // NextCustomerNoSequence generates the next unique, sequential customerNo for
@@ -695,3 +781,8 @@ func parseAmount(s string) (float64, error) {
 	_, err := fmt.Sscanf(s, "%f", &v)
 	return v, err
 }
+
+// Ensure VARepository implements domain.VARepository and
+// domain.VANotificationDeliveryRepository.
+var _ domain.VARepository = (*VARepository)(nil)
+var _ domain.VANotificationDeliveryRepository = (*VARepository)(nil)

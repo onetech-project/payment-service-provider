@@ -611,6 +611,22 @@ definitions:
       status:
         type: string
     type: object
+  handler.resendCallbackErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  handler.resendCallbackResponse:
+    properties:
+      deliveryStatus:
+        type: string
+      eventType:
+        type: string
+      resentAt:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
 info:
   contact: {}
   description: |-
@@ -771,6 +787,44 @@ paths:
       summary: Revoke a client key
       tags:
       - Admin Client Management
+  /admin/transactions/{virtualAccountNo}/resend-callback:
+    post:
+      description: 'Admin-only: redelivers the most recent callback event (payment.received
+        or va.expired) on record for the given virtualAccountNo. Does not mutate transaction
+        state.'
+      parameters:
+      - description: Admin API key
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Virtual account number
+        in: path
+        name: virtualAccountNo
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.resendCallbackResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.resendCallbackErrorResponse'
+        "404":
+          description: Transaction not found
+          schema:
+            $ref: '#/definitions/handler.resendCallbackErrorResponse'
+        "422":
+          description: No callback to resend / no notification URL
+          schema:
+            $ref: '#/definitions/handler.resendCallbackErrorResponse'
+      security:
+      - AdminAPIKey: []
+      summary: Resend the most recent merchant callback for a transaction
+      tags:
+      - Admin
   /api/v1/utilities/signature-auth:
     post:
       description: Generates the SHA256withRSA signature required as X-SIGNATURE when
@@ -1093,7 +1147,8 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "404":
-          description: Not Found (mapped from downstream error)
+          description: Not Found (mapped from downstream error), or 4042419 Expired
+            Transaction (virtualAccountData.inquiryStatus=01, feature 007-merchant-expiry-callback)
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "409":
@@ -1211,7 +1266,8 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "404":
-          description: Not Found (mapped from downstream error)
+          description: Not Found (mapped from downstream error), or 4042519 Expired
+            Transaction (virtualAccountData.paymentFlagStatus=01, feature 007-merchant-expiry-callback)
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "409":

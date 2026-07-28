@@ -246,8 +246,19 @@ func main() {
 	if asynqClient != nil {
 		notifier = asynqClient
 	}
-	vaUsecase := usecase.NewVAUsecase(vaRepo, notifier)
+	// Notification delivery-attempt audit repository (feature
+	// 007-merchant-expiry-callback): reuses vaRepo's concrete type, which
+	// implements domain.VANotificationDeliveryRepository.
+	var deliveryRepo domain.VANotificationDeliveryRepository
+	if vaRepo != nil {
+		deliveryRepo = vaRepo
+	}
+	vaUsecase := usecase.NewVAUsecaseWithDeliveryRepo(vaRepo, notifier, deliveryRepo)
 	vaHandler := handler.NewVAHandler(vaUsecase)
+
+	// Resend Callback (admin) Usecase & Handler (feature 007-merchant-expiry-callback, US2)
+	resendCallbackUsecase := usecase.NewResendCallbackUsecase(vaRepo, deliveryRepo, notifier)
+	adminResendHandler := handler.NewAdminResendHandler(resendCallbackUsecase)
 
 	// VA Type Rule Provider (feature 006-static-dynamic-va amendment):
 	// master_va_type / master_partner_service_ids in PostgreSQL, cached in
@@ -356,6 +367,7 @@ func main() {
 	adminGroup.POST("/clients", clientHandler.RegisterClient)
 	adminGroup.POST("/clients/:clientId/keys", clientHandler.AddClientKey)
 	adminGroup.DELETE("/clients/:clientId/keys/:keyId", clientHandler.RevokeClientKey)
+	adminGroup.POST("/transactions/:virtualAccountNo/resend-callback", adminResendHandler.Resend)
 	if adminAPIKey == "" {
 		log.Println("Warning: ADMIN_API_KEY not set — /admin/* endpoints are disabled")
 	}

@@ -13,7 +13,12 @@
 #       -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) \
 #       [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] \
 #       [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] \
-#       [-y <vaType>] [-u <base-url>]
+#       [-y <vaType>] [-x <expiredDate>] [-u <base-url>]
+#
+# -x <expiredDate> sets the top-level expiredDate field (ISO-8601, e.g.
+# 2026-07-28T10:15:00+07:00) used by feature 007-merchant-expiry-callback's
+# on-access expiry detection (VAUsecase.Inquiry/Payment). Omit for a VA that
+# never expires via that mechanism.
 #
 # -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
 # (same raw-secret convention the server itself uses, see vendor_config.go),
@@ -50,6 +55,7 @@ VA_NO=""
 BILL_NO=""
 BILL_NAME=""
 VA_TYPE=""
+EXPIRED_DATE=""
 CLIENT_SECRET=""
 ENV_FILE=""
 CHANNEL_ID="95231"
@@ -57,7 +63,7 @@ PARTNER_ID="111111"
 ACCESS_TOKEN=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] [-y <vaType>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] [-y <vaType>] [-x <expiredDate>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -76,7 +82,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:n:a:w:v:t:e:f:i:p:o:b:d:y:u:h" opt; do
+while getopts "s:c:n:a:w:v:t:e:f:i:p:o:b:d:y:x:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -93,6 +99,7 @@ while getopts "s:c:n:a:w:v:t:e:f:i:p:o:b:d:y:u:h" opt; do
 	b) BILL_NO="$OPTARG" ;;
 	d) BILL_NAME="$OPTARG" ;;
 	y) VA_TYPE="$OPTARG" ;;
+	x) EXPIRED_DATE="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	h | *) usage ;;
 	esac
@@ -177,6 +184,12 @@ if [[ "$VA_TYPE" == "01" || "$VA_TYPE" == "04" ]]; then
 	TOTAL_AMOUNT_FIELD=""
 fi
 
+# expiredDate is a top-level field on MerchantCreateVARequest
+# (internal/domain/va.go:389) — only sent when -x is given, so a plain
+# create-va call still sends a spec-valid payload without one.
+EXPIRED_DATE_FIELD=""
+[[ -n "$EXPIRED_DATE" ]] && EXPIRED_DATE_FIELD="\"expiredDate\": \"${EXPIRED_DATE}\","
+
 BODY=$(cat <<JSON
 {
   "partnerServiceId": "${PARTNER_SERVICE_ID}",
@@ -186,6 +199,7 @@ BODY=$(cat <<JSON
   "trxId": "${TRX_ID}",
   ${ADDITIONAL_INFO_FIELD}
   ${BILL_DETAILS_FIELD}
+  ${EXPIRED_DATE_FIELD}
   ${TOTAL_AMOUNT_FIELD}
   "virtualAccountTrxType": "C"
 }
