@@ -173,20 +173,20 @@ type BilingualText struct {
 
 // BillDetail represents a single bill item (14 fields per ASPI OpenAPI)
 type BillDetail struct {
-	BillCode        string                 `json:"billCode,omitempty"`
-	BillNo          string                 `json:"billNo"`
-	BillName        string                 `json:"billName,omitempty"`
-	BillShortName   string                 `json:"billShortName,omitempty"`
-	BillDescription *BilingualText         `json:"billDescription,omitempty"`
-	BillSubCompany  string                 `json:"billSubCompany,omitempty"`
-	BillAmount      *Amount                `json:"billAmount,omitempty"`
-	BillAmountLabel string                 `json:"billAmountLabel,omitempty"`
-	BillAmountValue string                 `json:"billAmountValue,omitempty"`
-	BillReferenceNo string                 `json:"billReferenceNo,omitempty"`
-	BillerReferenceID string               `json:"billerReferenceId,omitempty"`
-	Status          string                 `json:"status,omitempty"`
-	Reason          *BilingualText         `json:"reason,omitempty"`
-	AdditionalInfo  map[string]interface{} `json:"additionalInfo,omitempty"`
+	BillCode          string                 `json:"billCode,omitempty"`
+	BillNo            string                 `json:"billNo"`
+	BillName          string                 `json:"billName,omitempty"`
+	BillShortName     string                 `json:"billShortName,omitempty"`
+	BillDescription   *BilingualText         `json:"billDescription,omitempty"`
+	BillSubCompany    string                 `json:"billSubCompany,omitempty"`
+	BillAmount        *Amount                `json:"billAmount,omitempty"`
+	BillAmountLabel   string                 `json:"billAmountLabel,omitempty"`
+	BillAmountValue   string                 `json:"billAmountValue,omitempty"`
+	BillReferenceNo   string                 `json:"billReferenceNo,omitempty"`
+	BillerReferenceID string                 `json:"billerReferenceId,omitempty"`
+	Status            string                 `json:"status,omitempty"`
+	Reason            *BilingualText         `json:"reason,omitempty"`
+	AdditionalInfo    map[string]interface{} `json:"additionalInfo,omitempty"`
 }
 
 // VA Repository Interface
@@ -204,6 +204,10 @@ type VARepository interface {
 	SaveBillDetails(ctx context.Context, transactionID string, bills []BillDetail) error
 	UpdateVAStatus(ctx context.Context, virtualAccountNo string, status string) error
 	GetVAByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*VAInquiryRecord, error)
+	// Static/Dynamic VA methods (feature 006-static-dynamic-va)
+	NextCustomerNoSequence(ctx context.Context, vaType string) (string, error)
+	RegisterStaticCustomerNo(ctx context.Context, partnerServiceID, customerNo string) error
+	SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (paidAmount string, status string, err error)
 }
 
 // VAInquiryRecord represents a persisted inquiry
@@ -219,9 +223,12 @@ type VAInquiryRecord struct {
 	Status           string
 	TotalAmount      string
 	Currency         string
-	ExpiredDate      *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// VAType classifies the VA per feature 006-static-dynamic-va (01-06);
+	// empty for VAs created before this feature or outside its partnerServiceId set.
+	VAType      string
+	ExpiredDate *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // VAPaymentRecord represents a persisted payment
@@ -278,53 +285,53 @@ type MerchantVAUsecase interface {
 
 // MerchantCreateVARequest maps to ASPI VAUpsertRequest (Service Code 27)
 type MerchantCreateVARequest struct {
-	PartnerServiceID    string                 `json:"partnerServiceId"`
-	CustomerNo          string                 `json:"customerNo"`
-	VirtualAccountNo    string                 `json:"virtualAccountNo"`
-	VirtualAccountName  string                 `json:"virtualAccountName"`
-	VirtualAccountEmail string                 `json:"virtualAccountEmail,omitempty"`
-	VirtualAccountPhone string                 `json:"virtualAccountPhone,omitempty"`
-	TrxID               string                 `json:"trxId"`
-	TotalAmount         *Amount                `json:"totalAmount,omitempty"`
-	BillDetails         []BillDetail           `json:"billDetails,omitempty"`
-	FreeTexts           []BilingualText        `json:"freeTexts,omitempty"`
-	VirtualAccountTrxType string               `json:"virtualAccountTrxType,omitempty"`
-	FeeAmount           *Amount                `json:"feeAmount,omitempty"`
-	ExpiredDate         *time.Time             `json:"expiredDate,omitempty"`
+	PartnerServiceID      string          `json:"partnerServiceId"`
+	CustomerNo            string          `json:"customerNo"`
+	VirtualAccountNo      string          `json:"virtualAccountNo"`
+	VirtualAccountName    string          `json:"virtualAccountName"`
+	VirtualAccountEmail   string          `json:"virtualAccountEmail,omitempty"`
+	VirtualAccountPhone   string          `json:"virtualAccountPhone,omitempty"`
+	TrxID                 string          `json:"trxId"`
+	TotalAmount           *Amount         `json:"totalAmount,omitempty"`
+	BillDetails           []BillDetail    `json:"billDetails,omitempty"`
+	FreeTexts             []BilingualText `json:"freeTexts,omitempty"`
+	VirtualAccountTrxType string          `json:"virtualAccountTrxType,omitempty"`
+	FeeAmount             *Amount         `json:"feeAmount,omitempty"`
+	ExpiredDate           *time.Time      `json:"expiredDate,omitempty"`
 	// AdditionalInfo carries proprietary extensions per ASPI VAUpsertRequest's
 	// additionalInfo.dbUrlProcess slot (aspi-open-api-va.yaml:317-320) — the
 	// merchant payment callback URL is passed here as additionalInfo.dbUrlProcess,
 	// not as a top-level field (there is no such field in the spec).
-	AdditionalInfo      map[string]interface{} `json:"additionalInfo,omitempty"`
+	AdditionalInfo map[string]interface{} `json:"additionalInfo,omitempty"`
 }
 
 // MerchantCreateVAResponse maps to ASPI VAUpsertResponse
 type MerchantCreateVAResponse struct {
-	ResponseCode       string           `json:"responseCode"`
-	ResponseMessage    string           `json:"responseMessage"`
-	VirtualAccountData *MerchantVAData  `json:"virtualAccountData,omitempty"`
+	ResponseCode       string          `json:"responseCode"`
+	ResponseMessage    string          `json:"responseMessage"`
+	VirtualAccountData *MerchantVAData `json:"virtualAccountData,omitempty"`
 }
 
 // MerchantVAData maps to VAUpsertResponse.virtualAccountData
 type MerchantVAData struct {
-	PartnerServiceID    string                 `json:"partnerServiceId"`
-	CustomerNo          string                 `json:"customerNo"`
-	VirtualAccountNo    string                 `json:"virtualAccountNo"`
-	VirtualAccountName  string                 `json:"virtualAccountName"`
-	VirtualAccountEmail string                 `json:"virtualAccountEmail,omitempty"`
-	VirtualAccountPhone string                 `json:"virtualAccountPhone,omitempty"`
-	TrxID               string                 `json:"trxId"`
-	TotalAmount         *Amount                `json:"totalAmount,omitempty"`
-	BillDetails         []BillDetail           `json:"billDetails,omitempty"`
-	FreeTexts           []BilingualText        `json:"freeTexts,omitempty"`
-	VirtualAccountTrxType string               `json:"virtualAccountTrxType,omitempty"`
-	FeeAmount           *Amount                `json:"feeAmount,omitempty"`
-	ExpiredDate         *time.Time             `json:"expiredDate,omitempty"`
-	LastUpdateDate      *time.Time             `json:"lastUpdateDate,omitempty"`
-	PaymentDate         *time.Time             `json:"paymentDate,omitempty"`
+	PartnerServiceID      string          `json:"partnerServiceId"`
+	CustomerNo            string          `json:"customerNo"`
+	VirtualAccountNo      string          `json:"virtualAccountNo"`
+	VirtualAccountName    string          `json:"virtualAccountName"`
+	VirtualAccountEmail   string          `json:"virtualAccountEmail,omitempty"`
+	VirtualAccountPhone   string          `json:"virtualAccountPhone,omitempty"`
+	TrxID                 string          `json:"trxId"`
+	TotalAmount           *Amount         `json:"totalAmount,omitempty"`
+	BillDetails           []BillDetail    `json:"billDetails,omitempty"`
+	FreeTexts             []BilingualText `json:"freeTexts,omitempty"`
+	VirtualAccountTrxType string          `json:"virtualAccountTrxType,omitempty"`
+	FeeAmount             *Amount         `json:"feeAmount,omitempty"`
+	ExpiredDate           *time.Time      `json:"expiredDate,omitempty"`
+	LastUpdateDate        *time.Time      `json:"lastUpdateDate,omitempty"`
+	PaymentDate           *time.Time      `json:"paymentDate,omitempty"`
 	// AdditionalInfo echoes back additionalInfo.dbUrlProcess per ASPI
 	// VAUpsertResponse (aspi-open-api-va.yaml:348-351).
-	AdditionalInfo      map[string]interface{} `json:"additionalInfo,omitempty"`
+	AdditionalInfo map[string]interface{} `json:"additionalInfo,omitempty"`
 }
 
 // MerchantDeleteVARequest maps to ASPI DeleteVARequest (Service Code 31)
@@ -338,8 +345,8 @@ type MerchantDeleteVARequest struct {
 
 // MerchantDeleteVAResponse maps to ASPI DeleteVAResponse
 type MerchantDeleteVAResponse struct {
-	ResponseCode       string               `json:"responseCode"`
-	ResponseMessage    string               `json:"responseMessage"`
+	ResponseCode       string                `json:"responseCode"`
+	ResponseMessage    string                `json:"responseMessage"`
 	VirtualAccountData *MerchantDeleteVAData `json:"virtualAccountData,omitempty"`
 }
 
@@ -408,21 +415,80 @@ type AsynqEnqueuer interface {
 	EnqueuePaymentNotification(ctx context.Context, payload *PaymentNotificationPayload) error
 }
 
+// Static/Dynamic VA Type Rules (feature 006-static-dynamic-va)
+
+// VATypeBilling classifies how a VA's amount is determined.
+type VATypeBilling string
+
+const (
+	VATypeBillingNone     VATypeBilling = "none"     // no bill: amount determined at inquiry/payment time
+	VATypeBillingVariable VATypeBilling = "variable" // variable bill: cumulative target, multiple payments allowed
+	VATypeBillingFixed    VATypeBilling = "fixed"    // fixed bill: single fixed amount set at creation
+)
+
+// VATypeRule describes one of the recognized partnerServiceId +
+// additionalInfo.vaType combinations, sourced from the master_va_type table
+// (feature 006-static-dynamic-va amendment — previously a hardcoded map).
+type VATypeRule struct {
+	VAType           string
+	PartnerServiceID string
+	Dynamic          bool
+	Billing          VATypeBilling
+	Description      string
+}
+
+// PartnerServiceIDRecord mirrors a master_partner_service_ids row.
+type PartnerServiceIDRecord struct {
+	PartnerServiceID string
+	BankCode         string
+}
+
+// VATypeRuleProvider resolves VA type routing rules and the reserved
+// partnerServiceId set. Defined here (consumer: MerchantVAUsecase) per
+// Constitution I; implemented in internal/infrastructure/cache by a
+// PostgreSQL-backed, Redis-cached provider with an in-process fallback so
+// this data can be edited by operators without a code deployment (FR-015..FR-019).
+type VATypeRuleProvider interface {
+	// LookupVATypeRule resolves the rule for a given partnerServiceId/vaType
+	// pair. ok is false if vaType is unrecognized or does not match
+	// partnerServiceId. err is non-nil only on a data-source failure (e.g.
+	// cache and database both unavailable), not on a not-found lookup.
+	LookupVATypeRule(ctx context.Context, partnerServiceID, vaType string) (rule VATypeRule, ok bool, err error)
+	// IsReservedPartnerServiceID reports whether partnerServiceId belongs to
+	// the static/dynamic VA type feature's reserved set.
+	IsReservedPartnerServiceID(ctx context.Context, partnerServiceID string) (bool, error)
+}
+
+// MasterDataRepository defines PostgreSQL CRUD/List operations for the VA
+// type / partner service ID master data tables (feature 006-static-dynamic-va
+// amendment). Mutation methods are expected to trigger an immediate cache
+// refresh (FR-017) from their caller.
+type MasterDataRepository interface {
+	ListVATypes(ctx context.Context) ([]VATypeRule, error)
+	ListPartnerServiceIDs(ctx context.Context) ([]PartnerServiceIDRecord, error)
+	CreateVAType(ctx context.Context, rule VATypeRule) error
+	UpdateVAType(ctx context.Context, rule VATypeRule) error
+	DeleteVAType(ctx context.Context, vaType string) error
+	CreatePartnerServiceID(ctx context.Context, record PartnerServiceIDRecord) error
+	UpdatePartnerServiceID(ctx context.Context, record PartnerServiceIDRecord) error
+	DeletePartnerServiceID(ctx context.Context, partnerServiceID string) error
+}
+
 // PaymentNotificationPayload maps to ASPI PaymentRequest (Service Code 25)
 type PaymentNotificationPayload struct {
-	PartnerServiceID        string                 `json:"partnerServiceId"`
-	CustomerNo              string                 `json:"customerNo"`
-	VirtualAccountNo        string                 `json:"virtualAccountNo"`
-	TrxID                   string                 `json:"trxId,omitempty"`
-	PaymentRequestID        string                 `json:"paymentRequestId"`
-	PaidAmount              *Amount                `json:"paidAmount"`
-	CumulativePaymentAmount *Amount                `json:"cumulativePaymentAmount,omitempty"`
-	PaidBills               string                 `json:"paidBills,omitempty"`
-	TotalAmount             *Amount                `json:"totalAmount,omitempty"`
-	TrxDateTime             string                 `json:"trxDateTime,omitempty"`
-	ReferenceNo             string                 `json:"referenceNo,omitempty"`
-	JournalNum              string                 `json:"journalNum,omitempty"`
-	PaymentType             string                 `json:"paymentType,omitempty"`
-	FlagAdvise              string                 `json:"flagAdvise,omitempty"`
-	NotificationURL         string                 `json:"notificationUrl"`
+	PartnerServiceID        string  `json:"partnerServiceId"`
+	CustomerNo              string  `json:"customerNo"`
+	VirtualAccountNo        string  `json:"virtualAccountNo"`
+	TrxID                   string  `json:"trxId,omitempty"`
+	PaymentRequestID        string  `json:"paymentRequestId"`
+	PaidAmount              *Amount `json:"paidAmount"`
+	CumulativePaymentAmount *Amount `json:"cumulativePaymentAmount,omitempty"`
+	PaidBills               string  `json:"paidBills,omitempty"`
+	TotalAmount             *Amount `json:"totalAmount,omitempty"`
+	TrxDateTime             string  `json:"trxDateTime,omitempty"`
+	ReferenceNo             string  `json:"referenceNo,omitempty"`
+	JournalNum              string  `json:"journalNum,omitempty"`
+	PaymentType             string  `json:"paymentType,omitempty"`
+	FlagAdvise              string  `json:"flagAdvise,omitempty"`
+	NotificationURL         string  `json:"notificationUrl"`
 }

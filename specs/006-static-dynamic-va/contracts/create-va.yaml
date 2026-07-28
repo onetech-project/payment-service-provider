@@ -1,0 +1,138 @@
+openapi: 3.0.3
+info:
+  title: Create Virtual Account (Static & Dynamic VA extension)
+  version: "1.0.0"
+  description: >
+    Extension to the existing POST /openapi/v1.0/transfer-va/create-va endpoint
+    (ASPI VAUpsertRequest) to support 6 static/dynamic VA type combinations,
+    system-generated sequential customerNo for dynamic types, and totalAmount
+    handling for fixed/variable bill types.
+paths:
+  /openapi/v1.0/transfer-va/create-va:
+    post:
+      summary: Create a static or dynamic Virtual Account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVARequest'
+      responses:
+        '200':
+          description: VA created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateVAResponse'
+        '400':
+          description: >
+            Invalid request — unrecognized partnerServiceId/vaType combination,
+            customerNo present when it must be empty (dynamic), customerNo
+            missing when required (static), or missing totalAmount for a
+            fixed/variable bill vaType.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Static customerNo already registered for this partnerServiceId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: >
+            System unavailable — e.g. the sequential customerNo generator could
+            not be reached or used. Includes a specific reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    CreateVARequest:
+      type: object
+      required: [partnerServiceId, virtualAccountNo, virtualAccountName, trxId, additionalInfo]
+      properties:
+        partnerServiceId:
+          type: string
+          enum: ["15973", "15974", "15975"]
+        customerNo:
+          type: string
+          maxLength: 20
+          description: >
+            Empty string for dynamic vaType (04/05/06) — system-generated on
+            response. Required, merchant-defined, non-empty for static vaType
+            (01/02/03).
+        virtualAccountNo:
+          type: string
+          maxLength: 28
+        virtualAccountName:
+          type: string
+        trxId:
+          type: string
+        totalAmount:
+          $ref: '#/components/schemas/Amount'
+          description: >
+            Required for vaType 02/03/05/06 (variable/fixed bill, static or
+            dynamic). For 02/05 (variable bill) this is the cumulative target
+            amount reached across one or more payments. Omitted/ignored for
+            vaType 01/04 (no bill).
+        additionalInfo:
+          type: object
+          required: [vaType]
+          properties:
+            vaType:
+              type: string
+              enum: ["01", "02", "03", "04", "05", "06"]
+              description: >
+                01=static no bill, 02=static variable bill, 03=static fixed
+                bill, 04=dynamic no bill, 05=dynamic variable bill, 06=dynamic
+                fixed bill. Must correspond to partnerServiceId per the fixed
+                mapping: 15973↔{01,04}, 15974↔{02,05}, 15975↔{03,06}.
+    CreateVAResponse:
+      type: object
+      properties:
+        responseCode:
+          type: string
+        responseMessage:
+          type: string
+        virtualAccountData:
+          type: object
+          properties:
+            partnerServiceId:
+              type: string
+            customerNo:
+              type: string
+              description: >
+                Echoed unchanged for static requests; system-generated
+                (2-digit vaType + 18-digit zero-padded sequence, 20 digits
+                total) for dynamic requests.
+            virtualAccountNo:
+              type: string
+            totalAmount:
+              $ref: '#/components/schemas/Amount'
+            additionalInfo:
+              type: object
+              properties:
+                vaType:
+                  type: string
+    Amount:
+      type: object
+      properties:
+        value:
+          type: string
+        currency:
+          type: string
+    ErrorResponse:
+      type: object
+      properties:
+        responseCode:
+          type: string
+        responseMessage:
+          type: string
+        reason:
+          type: string
+          description: >
+            Present on 500 system-unavailable responses — specific cause
+            (e.g. "sequence lock timeout", "database unreachable").

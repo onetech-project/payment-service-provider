@@ -76,6 +76,21 @@ func (m *MockVARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualA
 	return args.Get(0).(*domain.VAInquiryRecord), args.Error(1)
 }
 
+func (m *MockVARepository) NextCustomerNoSequence(ctx context.Context, vaType string) (string, error) {
+	args := m.Called(ctx, vaType)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockVARepository) RegisterStaticCustomerNo(ctx context.Context, partnerServiceID, customerNo string) error {
+	args := m.Called(ctx, partnerServiceID, customerNo)
+	return args.Error(0)
+}
+
+func (m *MockVARepository) SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (string, string, error) {
+	args := m.Called(ctx, transactionID, amount, referenceNo)
+	return args.String(0), args.String(1), args.Error(2)
+}
+
 func TestVAUsecase_Inquiry_Success(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	usecase := NewVAUsecase(mockRepo, nil)
@@ -452,6 +467,7 @@ func TestVAUsecase_Payment_AmountMismatch(t *testing.T) {
 	}
 
 	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
 
 	resp, err := usecase.Payment(context.Background(), req)
 
@@ -483,6 +499,78 @@ func TestVAUsecase_Payment_OptionalTotalAmount_NoMismatchCheck(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
+}
+
+// --- Variable-bill multi-payment tests (feature 006-static-dynamic-va) ---
+
+func TestVAUsecase_Payment_VariableBill_PartialPayment_StaysPending(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "15974",
+		CustomerNo:       "05000000000000000001",
+		VirtualAccountNo: "15974050000000000000001",
+		InquiryRequestID: "inquiry-var-1",
+		PaymentRequestID: "payment-var-1",
+		PaidAmount:       &domain.Amount{Value: "60000.00", Currency: "IDR"},
+		TotalAmount:      &domain.Amount{Value: "100000.00", Currency: "IDR"},
+	}
+
+	merchantVA := &domain.VAInquiryRecord{
+		ID:               "txn-var-1",
+		PartnerServiceID: "15974",
+		VirtualAccountNo: req.VirtualAccountNo,
+		Status:           "03",
+		VAType:           "05",
+		TrxID:            "trx-var-1",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("SaveVAPayment", mock.Anything, "txn-var-1", "60000.00", req.ReferenceNo).Return("60000.00", "03", nil)
+
+	resp, err := usecase.Payment(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "03", resp.VirtualAccountData.PaymentFlagStatus)
+	assert.Equal(t, "60000.00", resp.VirtualAccountData.PaidAmount.Value)
+	mockRepo.AssertExpectations(t)
+	mockRepo.AssertNotCalled(t, "SavePayment", mock.Anything, mock.Anything)
+}
+
+func TestVAUsecase_Payment_VariableBill_CumulativeReachesTotal_MarksPaid(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "15974",
+		CustomerNo:       "05000000000000000001",
+		VirtualAccountNo: "15974050000000000000001",
+		InquiryRequestID: "inquiry-var-2",
+		PaymentRequestID: "payment-var-2",
+		PaidAmount:       &domain.Amount{Value: "40000.00", Currency: "IDR"},
+		TotalAmount:      &domain.Amount{Value: "100000.00", Currency: "IDR"},
+	}
+
+	merchantVA := &domain.VAInquiryRecord{
+		ID:               "txn-var-1",
+		PartnerServiceID: "15974",
+		VirtualAccountNo: req.VirtualAccountNo,
+		Status:           "03",
+		VAType:           "05",
+		TrxID:            "trx-var-1",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("SaveVAPayment", mock.Anything, "txn-var-1", "40000.00", req.ReferenceNo).Return("100000.00", "00", nil)
+
+	resp, err := usecase.Payment(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
+	assert.Equal(t, "100000.00", resp.VirtualAccountData.PaidAmount.Value)
 }
 
 func TestVAUsecase_Status_Success(t *testing.T) {

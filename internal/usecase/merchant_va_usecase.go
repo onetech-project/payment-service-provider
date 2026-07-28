@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,20 +12,43 @@ import (
 
 // MerchantVAUsecase implements domain.MerchantVAUsecase
 type MerchantVAUsecase struct {
-	repo domain.VARepository
+	repo        domain.VARepository
+	vaTypeRules domain.VATypeRuleProvider
 }
 
-// NewMerchantVAUsecase creates a new merchant VA usecase
-func NewMerchantVAUsecase(repo domain.VARepository) *MerchantVAUsecase {
-	return &MerchantVAUsecase{repo: repo}
+// NewMerchantVAUsecase creates a new merchant VA usecase. vaTypeRules may be
+// nil, in which case every request is treated as an unmanaged (legacy)
+// request — i.e. none of the six static/dynamic VA type combinations are
+// recognized. Pass a real domain.VATypeRuleProvider (see
+// internal/infrastructure/cache) to enable feature 006-static-dynamic-va.
+func NewMerchantVAUsecase(repo domain.VARepository, vaTypeRules domain.VATypeRuleProvider) *MerchantVAUsecase {
+	return &MerchantVAUsecase{repo: repo, vaTypeRules: vaTypeRules}
 }
 
-// CreateVA handles VA creation per ASPI VAUpsertRequest (Service Code 27)
+// CreateVA handles VA creation per ASPI VAUpsertRequest (Service Code 27),
+// extended per feature 006-static-dynamic-va to route requests bearing a
+// reserved partnerServiceId (15973/15974/15975) or an explicit
+// additionalInfo.vaType through the six static/dynamic VA type combinations.
 func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCreateVARequest) (*domain.MerchantCreateVAResponse, error) {
+	vaType, hasVAType := vaTypeFromAdditionalInfo(req.AdditionalInfo)
+	managed := hasVAType
+	if !managed && u.vaTypeRules != nil {
+		reserved, err := u.vaTypeRules.IsReservedPartnerServiceID(ctx, req.PartnerServiceID)
+		if err != nil {
+			return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [VA type master data: %v]", err), err)
+		}
+		managed = reserved
+	}
+
 	// Validate required fields per ASPI VAIdentity (partnerServiceId,
 	// customerNo, virtualAccountNo are all mandatory client-supplied input).
-	if req.PartnerServiceID == "" || req.CustomerNo == "" {
-		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [partnerServiceId/customerNo]", nil)
+	// customerNo is validated below per VA-type mode for managed requests
+	// (empty required for dynamic, non-empty required for static).
+	if req.PartnerServiceID == "" {
+		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [partnerServiceId]", nil)
+	}
+	if !managed && req.CustomerNo == "" {
+		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [customerNo]", nil)
 	}
 	if req.VirtualAccountNo == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [virtualAccountNo]", nil)
@@ -34,6 +58,35 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	}
 	if req.TrxID == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [trxId]", nil)
+	}
+
+	var vaTypeRule domain.VATypeRule
+	if managed {
+		if u.vaTypeRules == nil {
+			return nil, domain.NewDomainError("4002702", "Invalid Field Format [partnerServiceId/additionalInfo.vaType combination]", nil)
+		}
+		rule, ok, err := u.vaTypeRules.LookupVATypeRule(ctx, req.PartnerServiceID, vaType)
+		if err != nil {
+			return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [VA type master data: %v]", err), err)
+		}
+		if !ok {
+			return nil, domain.NewDomainError("4002702", "Invalid Field Format [partnerServiceId/additionalInfo.vaType combination]", nil)
+		}
+		vaTypeRule = rule
+
+		if vaTypeRule.Dynamic && req.CustomerNo != "" {
+			return nil, domain.NewDomainError("4002703", "Invalid Field Format [customerNo must be empty for dynamic vaType]", nil)
+		}
+		if !vaTypeRule.Dynamic && req.CustomerNo == "" {
+			return nil, domain.NewDomainError("4002704", "Invalid Mandatory Field [customerNo required for static vaType]", nil)
+		}
+
+		if vaTypeRule.Billing == domain.VATypeBillingNone && req.TotalAmount != nil {
+			return nil, domain.NewDomainError("4002706", "Invalid Field Format [totalAmount must not be set for no-bill vaType]", nil)
+		}
+		if vaTypeRule.Billing != domain.VATypeBillingNone && req.TotalAmount == nil {
+			return nil, domain.NewDomainError("4002705", "Invalid Mandatory Field [totalAmount required for this vaType]", nil)
+		}
 	}
 
 	// Validate virtualAccountTrxType if provided
@@ -50,6 +103,24 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
 	}
 
+	// Resolve customerNo: system-generated for dynamic VA types, merchant-
+	// supplied (echoed) for static VA types and legacy (unmanaged) requests.
+	customerNo := req.CustomerNo
+	if managed && vaTypeRule.Dynamic {
+		generated, err := u.repo.NextCustomerNoSequence(ctx, vaType)
+		if err != nil {
+			return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [sequence generator: %v]", err), err)
+		}
+		customerNo = generated
+	} else if managed && !vaTypeRule.Dynamic {
+		if err := u.repo.RegisterStaticCustomerNo(ctx, req.PartnerServiceID, customerNo); err != nil {
+			if errors.Is(err, domain.ErrVACustomerNoAlreadyRegistered) {
+				return nil, domain.NewDomainError("4092701", "Conflict: customerNo already registered for this partnerServiceId", nil)
+			}
+			return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [customerNo registration: %v]", err), err)
+		}
+	}
+
 	// A virtualAccountNo is reusable across transaction cycles — only a
 	// currently PENDING ("03", i.e. created but not yet paid) transaction on
 	// it blocks a new create-va call. Once that transaction reaches a
@@ -64,7 +135,7 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	now := time.Now()
 	record := &domain.VAInquiryRecord{
 		PartnerServiceID: req.PartnerServiceID,
-		CustomerNo:       req.CustomerNo,
+		CustomerNo:       customerNo,
 		CustomerName:     req.VirtualAccountName,
 		VirtualAccountNo: vaNo,
 		InquiryRequestID: req.TrxID,
@@ -73,6 +144,7 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		Status:           "03",
 		TotalAmount:      "0",
 		Currency:         "IDR",
+		VAType:           vaType,
 		ExpiredDate:      req.ExpiredDate,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -97,21 +169,21 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		ResponseCode:    "2002700",
 		ResponseMessage: "Success",
 		VirtualAccountData: &domain.MerchantVAData{
-			PartnerServiceID:    req.PartnerServiceID,
-			CustomerNo:          req.CustomerNo,
-			VirtualAccountNo:    vaNo,
-			VirtualAccountName:  req.VirtualAccountName,
-			VirtualAccountEmail: req.VirtualAccountEmail,
-			VirtualAccountPhone: req.VirtualAccountPhone,
-			TrxID:               req.TrxID,
-			TotalAmount:         req.TotalAmount,
-			BillDetails:         req.BillDetails,
-			FreeTexts:           req.FreeTexts,
+			PartnerServiceID:      req.PartnerServiceID,
+			CustomerNo:            customerNo,
+			VirtualAccountNo:      vaNo,
+			VirtualAccountName:    req.VirtualAccountName,
+			VirtualAccountEmail:   req.VirtualAccountEmail,
+			VirtualAccountPhone:   req.VirtualAccountPhone,
+			TrxID:                 req.TrxID,
+			TotalAmount:           req.TotalAmount,
+			BillDetails:           req.BillDetails,
+			FreeTexts:             req.FreeTexts,
 			VirtualAccountTrxType: req.VirtualAccountTrxType,
-			FeeAmount:           req.FeeAmount,
-			ExpiredDate:         req.ExpiredDate,
-			LastUpdateDate:      &now,
-			AdditionalInfo:      req.AdditionalInfo,
+			FeeAmount:             req.FeeAmount,
+			ExpiredDate:           req.ExpiredDate,
+			LastUpdateDate:        &now,
+			AdditionalInfo:        req.AdditionalInfo,
 		},
 	}
 
@@ -219,6 +291,20 @@ func notificationURLFromAdditionalInfo(additionalInfo map[string]interface{}) st
 		return v
 	}
 	return ""
+}
+
+// vaTypeFromAdditionalInfo extracts additionalInfo.vaType (feature
+// 006-static-dynamic-va) — the 2-digit code routing a /create-va request to
+// one of the six static/dynamic VA type combinations.
+func vaTypeFromAdditionalInfo(additionalInfo map[string]interface{}) (string, bool) {
+	if additionalInfo == nil {
+		return "", false
+	}
+	v, ok := additionalInfo["vaType"].(string)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
 }
 
 // Ensure MerchantVAUsecase implements domain.MerchantVAUsecase

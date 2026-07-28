@@ -131,6 +131,146 @@ func TestMerchantVAHandler_CreateVA_UsecaseError(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestMerchantVAHandler_CreateVA_DynamicVA_EmptyCustomerNoAccepted(t *testing.T) {
+	e := echo.New()
+	req := domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountNo:   "15973000000000000001",
+		VirtualAccountName: "Dynamic NoBill",
+		TrxID:              "trx-dyn-handler-01",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockMerchantVAUsecase)
+	mockUsecase.On("CreateVA", mock.Anything, &req).Return(&domain.MerchantCreateVAResponse{
+		ResponseCode:    "2002700",
+		ResponseMessage: "Success",
+		VirtualAccountData: &domain.MerchantVAData{
+			PartnerServiceID: "15973",
+			CustomerNo:       "04000000000000000001",
+			VirtualAccountNo: req.VirtualAccountNo,
+			TrxID:            req.TrxID,
+		},
+	}, nil)
+
+	h := NewMerchantVAHandler(mockUsecase)
+	err := h.CreateVA(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp domain.MerchantCreateVAResponse
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "04000000000000000001", resp.VirtualAccountData.CustomerNo)
+	mockUsecase.AssertExpectations(t)
+}
+
+func TestMerchantVAHandler_CreateVA_StaticVA_EchoesCustomerNo(t *testing.T) {
+	e := echo.New()
+	req := domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "0001234567",
+		VirtualAccountNo:   "15973000012345670001",
+		VirtualAccountName: "Static NoBill",
+		TrxID:              "trx-static-handler-01",
+		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockMerchantVAUsecase)
+	mockUsecase.On("CreateVA", mock.Anything, &req).Return(&domain.MerchantCreateVAResponse{
+		ResponseCode:    "2002700",
+		ResponseMessage: "Success",
+		VirtualAccountData: &domain.MerchantVAData{
+			PartnerServiceID: "15973",
+			CustomerNo:       "0001234567",
+			VirtualAccountNo: req.VirtualAccountNo,
+			TrxID:            req.TrxID,
+		},
+	}, nil)
+
+	h := NewMerchantVAHandler(mockUsecase)
+	err := h.CreateVA(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp domain.MerchantCreateVAResponse
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "0001234567", resp.VirtualAccountData.CustomerNo)
+	mockUsecase.AssertExpectations(t)
+}
+
+func TestMerchantVAHandler_CreateVA_DuplicateStaticCustomerNo_Returns409(t *testing.T) {
+	e := echo.New()
+	req := domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "0001234567",
+		VirtualAccountNo:   "15973000012345670099",
+		VirtualAccountName: "Static NoBill Dup",
+		TrxID:              "trx-static-handler-dup",
+		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockMerchantVAUsecase)
+	mockUsecase.On("CreateVA", mock.Anything, &req).Return(nil, domain.NewDomainError("4092701", "Conflict: customerNo already registered for this partnerServiceId", nil))
+
+	h := NewMerchantVAHandler(mockUsecase)
+	err := h.CreateVA(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestMerchantVAHandler_CreateVA_InvalidCombination_Returns400(t *testing.T) {
+	e := echo.New()
+	req := domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "0009999999",
+		VirtualAccountNo:   "15973000099999990001",
+		VirtualAccountName: "Invalid Combo",
+		TrxID:              "trx-handler-invalid-combo",
+		AdditionalInfo:     map[string]interface{}{"vaType": "02"},
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockMerchantVAUsecase)
+	mockUsecase.On("CreateVA", mock.Anything, &req).Return(nil, domain.NewDomainError("4002702", "Invalid Field Format [partnerServiceId/additionalInfo.vaType combination]", nil))
+
+	h := NewMerchantVAHandler(mockUsecase)
+	err := h.CreateVA(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var resp domain.MerchantCreateVAResponse
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp.ResponseMessage)
+}
+
 // --- ListVA Handler Tests ---
 
 func TestMerchantVAHandler_ListVA_Success(t *testing.T) {

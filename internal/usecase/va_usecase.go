@@ -156,11 +156,6 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		}, nil
 	}
 
-	// Validate amount match (totalAmount is optional per spec; only checked when present)
-	if req.TotalAmount != nil && req.PaidAmount.Value != req.TotalAmount.Value {
-		return nil, domain.NewDomainError("4002401", "Invalid Field Format [amount mismatch]", nil)
-	}
-
 	// Inherit customer name / trx ID / notificationUrl / inquiry_request_id
 	// from the merchant's create-va record when one exists, so the mandatory
 	// columns stay populated and the UPSERT below lands on that same row
@@ -180,6 +175,59 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// transaction must never be mutated after the fact.
 	if merchantVA != nil && merchantVA.Status != "03" {
 		return nil, domain.NewDomainError("4092500", "Conflict: Bill/Virtual Account already paid or inactive", nil)
+	}
+
+	// Variable-bill VAs (vaType 02/05, feature 006-static-dynamic-va) accept
+	// multiple payments against the same VA number until the cumulative total
+	// reaches totalAmount ("lunas") — each payment is individually recorded
+	// via SaveVAPayment rather than the single-settlement equal-amount path
+	// below, and is not subject to the exact totalAmount match check since a
+	// partial payment is expected and valid.
+	if merchantVA != nil && (merchantVA.VAType == "02" || merchantVA.VAType == "05") {
+		paidAmount, status, err := u.repo.SaveVAPayment(ctx, merchantVA.ID, req.PaidAmount.Value, req.ReferenceNo)
+		if err != nil {
+			return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+		}
+
+		transactionDate := time.Now()
+		if req.TrxDateTime != nil {
+			transactionDate = *req.TrxDateTime
+		}
+
+		trxID := merchantVA.TrxID
+		if trxID == "" {
+			trxID = req.InquiryRequestID
+		}
+
+		paymentFlagStatus := "03" // pending — cumulative total not yet reached
+		if status == "00" {
+			paymentFlagStatus = "00"
+		}
+
+		u.notifyMerchantWithVA(ctx, req, merchantVA, trxID, merchantVA.NotificationURL)
+
+		return &domain.VAPaymentResponse{
+			ResponseCode:    "2002400",
+			ResponseMessage: "Successful",
+			VirtualAccountData: &domain.VAPaymentStatus{
+				PartnerServiceID:  req.PartnerServiceID,
+				CustomerNo:        req.CustomerNo,
+				VirtualAccountNo:  req.VirtualAccountNo,
+				TrxID:             trxID,
+				PaymentRequestID:  req.PaymentRequestID,
+				PaidAmount:        &domain.Amount{Value: paidAmount, Currency: req.PaidAmount.Currency},
+				TotalAmount:       req.TotalAmount,
+				TrxDateTime:       &transactionDate,
+				ReferenceNo:       req.ReferenceNo,
+				PaymentFlagStatus: paymentFlagStatus,
+				PaymentFlagReason: getPaymentFlagReason(paymentFlagStatus),
+			},
+		}, nil
+	}
+
+	// Validate amount match (totalAmount is optional per spec; only checked when present)
+	if req.TotalAmount != nil && req.PaidAmount.Value != req.TotalAmount.Value {
+		return nil, domain.NewDomainError("4002401", "Invalid Field Format [amount mismatch]", nil)
 	}
 
 	if merchantVA != nil {

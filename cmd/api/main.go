@@ -20,6 +20,7 @@ import (
 	customMiddleware "backbone-new/internal/adapter/delivery/http/middleware"
 	"backbone-new/internal/adapter/delivery/worker"
 	"backbone-new/internal/domain"
+	"backbone-new/internal/infrastructure/cache"
 	"backbone-new/internal/infrastructure/config"
 	"backbone-new/internal/infrastructure/crypto"
 	"backbone-new/internal/infrastructure/database"
@@ -235,7 +236,11 @@ func main() {
 	// VA Usecase & Handler
 	var vaRepo *database.VARepository
 	if pgPool != nil {
-		vaRepo = database.NewVARepository(pgPool)
+		// Locker-aware constructor: guards static/dynamic VA customerNo
+		// sequence generation and static registration (feature
+		// 006-static-dynamic-va) with the same Redis distributed lock used by
+		// the idempotency middleware.
+		vaRepo = database.NewVARepositoryWithLocker(pgPool, redisClient)
 	}
 	var notifier domain.NotificationEnqueuer
 	if asynqClient != nil {
@@ -244,8 +249,26 @@ func main() {
 	vaUsecase := usecase.NewVAUsecase(vaRepo, notifier)
 	vaHandler := handler.NewVAHandler(vaUsecase)
 
+	// VA Type Rule Provider (feature 006-static-dynamic-va amendment):
+	// master_va_type / master_partner_service_ids in PostgreSQL, cached in
+	// Redis with a 5-minute scheduled refresh + immediate refresh on write.
+	var vaTypeRuleProvider *cache.CachedVATypeRuleProvider
+	if pgPool != nil {
+		masterDataRepo := database.NewMasterVADataRepository(pgPool)
+		masterDataCache := redis.NewMasterDataCache(redisClient)
+		vaTypeRuleProvider = cache.NewCachedVATypeRuleProvider(masterDataRepo, masterDataCache)
+		if err := vaTypeRuleProvider.RefreshNow(context.Background()); err != nil {
+			log.Printf("Warning: initial VA type master data load failed (will retry on next request/tick): %v", err)
+		}
+		vaTypeRuleProvider.Start(context.Background(), cache.DefaultRefreshInterval)
+	}
+
 	// Merchant VA Usecase & Handler
-	merchantVAUsecase := usecase.NewMerchantVAUsecase(vaRepo)
+	var vaTypeRuleProviderIface domain.VATypeRuleProvider
+	if vaTypeRuleProvider != nil {
+		vaTypeRuleProviderIface = vaTypeRuleProvider
+	}
+	merchantVAUsecase := usecase.NewMerchantVAUsecase(vaRepo, vaTypeRuleProviderIface)
 	merchantVAHandler := handler.NewMerchantVAHandler(merchantVAUsecase)
 
 	// Asynq Worker for payment notifications

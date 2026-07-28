@@ -12,7 +12,8 @@
 #   ./scripts/merchant-create-va.sh -s <partnerServiceId> -c <customerNo> \
 #       -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) \
 #       [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] \
-#       [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] [-u <base-url>]
+#       [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] \
+#       [-y <vaType>] [-u <base-url>]
 #
 # -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
 # (same raw-secret convention the server itself uses, see vendor_config.go),
@@ -23,6 +24,16 @@
 # billName) so create-va actually exercises bill-detail persistence
 # (internal/infrastructure/database/va_repository.go SaveBillDetails) instead
 # of always sending an empty billDetails array. Omit -b for a VA with no bills.
+#
+# -y <vaType> sets additionalInfo.vaType per feature 006-static-dynamic-va's
+# six static/dynamic VA type combinations (01=static no bill, 02=static
+# variable bill, 03=static fixed bill, 04=dynamic no bill, 05=dynamic variable
+# bill, 06=dynamic fixed bill). When -y is 04/05/06 (dynamic), -c/<customerNo>
+# is NOT required — the server generates it, and this script echoes the
+# server-assigned value back on stdout diagnostics (see
+# e2e-dynamic-va-flow.sh). "No bill" types (01/04) must NOT send totalAmount
+# per FR-012, so -a is silently omitted from the request body in that case;
+# pass -a explicitly for 02/03/05/06 (variable/fixed bill).
 #
 # Requires: curl, openssl, uuidgen
 set -euo pipefail
@@ -38,6 +49,7 @@ TRX_ID=""
 VA_NO=""
 BILL_NO=""
 BILL_NAME=""
+VA_TYPE=""
 CLIENT_SECRET=""
 ENV_FILE=""
 CHANNEL_ID="95231"
@@ -45,7 +57,7 @@ PARTNER_ID="111111"
 ACCESS_TOKEN=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] [-y <vaType>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -64,7 +76,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:n:a:w:v:t:e:f:i:p:o:b:d:u:h" opt; do
+while getopts "s:c:n:a:w:v:t:e:f:i:p:o:b:d:y:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -80,6 +92,7 @@ while getopts "s:c:n:a:w:v:t:e:f:i:p:o:b:d:u:h" opt; do
 	o) ACCESS_TOKEN="$OPTARG" ;;
 	b) BILL_NO="$OPTARG" ;;
 	d) BILL_NAME="$OPTARG" ;;
+	y) VA_TYPE="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	h | *) usage ;;
 	esac
@@ -97,7 +110,19 @@ fi
 # X-CLIENT-KEY is intentionally not requested/sent here — per ASPI spec it's
 # only used on the access-token endpoint, never on transfer-va endpoints
 # (aspi-open-api-va.yaml has no XClientKey parameter on any transfer-va path).
-[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$CLIENT_SECRET" ]] && usage
+# customerNo is required EXCEPT for dynamic vaType (04/05/06, feature
+# 006-static-dynamic-va), where the server generates it and the request must
+# send it empty.
+IS_DYNAMIC_VA_TYPE=false
+case "$VA_TYPE" in
+04 | 05 | 06) IS_DYNAMIC_VA_TYPE=true ;;
+esac
+if [[ "$IS_DYNAMIC_VA_TYPE" == false ]]; then
+	[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$CLIENT_SECRET" ]] && usage
+else
+	[[ -n "$CUSTOMER_NO" ]] && { echo "!! -y ${VA_TYPE} is a dynamic vaType — customerNo must be empty (omit -c); the server assigns it." >&2; exit 1; }
+	[[ -z "$PARTNER_SERVICE_ID" || -z "$VA_NAME" || -z "$CLIENT_SECRET" ]] && usage
+fi
 # trxId becomes the row's inquiry_request_id, which is UNIQUE across the
 # WHOLE va_transactions table (not just per-VA) — $(date +%s) alone would
 # collide if two different VAs are created within the same second (e.g. two
@@ -106,16 +131,31 @@ fi
 [[ -z "$TRX_ID" ]] && TRX_ID="TRX-$(date +%s)$RANDOM"
 # virtualAccountNo is mandatory per ASPI spec VAIdentity (client-supplied, not
 # server-generated); default to partnerServiceId+customerNo only for convenience.
-[[ -z "$VA_NO" ]] && VA_NO="${PARTNER_SERVICE_ID}${CUSTOMER_NO}"
+# For dynamic vaType, customerNo isn't known yet at request time, so -v is
+# effectively required in that case (see e2e-dynamic-va-flow.sh).
+if [[ -z "$VA_NO" ]]; then
+	if [[ "$IS_DYNAMIC_VA_TYPE" == true ]]; then
+		echo "!! -y ${VA_TYPE} is a dynamic vaType — customerNo isn't known yet, so -v <virtualAccountNo> is required." >&2
+		exit 1
+	fi
+	VA_NO="${PARTNER_SERVICE_ID}${CUSTOMER_NO}"
+fi
 
 TIMESTAMP="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 EXTERNAL_ID="$(date +%Y%m%d%H%M%S)$RANDOM"
 
-# The callback URL rides in additionalInfo.dbUrlProcess (ASPI's own extension
-# slot for VAUpsertRequest), never as a top-level notificationUrl field.
+# additionalInfo carries both the callback URL (dbUrlProcess, ASPI's own
+# extension slot for VAUpsertRequest) and vaType (feature
+# 006-static-dynamic-va) — merged into one object since a request may set
+# either, both, or neither.
+ADDITIONAL_INFO_PARTS=()
+[[ -n "$NOTIFICATION_URL" ]] && ADDITIONAL_INFO_PARTS+=("\"dbUrlProcess\": \"${NOTIFICATION_URL}\"")
+[[ -n "$VA_TYPE" ]] && ADDITIONAL_INFO_PARTS+=("\"vaType\": \"${VA_TYPE}\"")
 ADDITIONAL_INFO_FIELD=""
-if [[ -n "$NOTIFICATION_URL" ]]; then
-	ADDITIONAL_INFO_FIELD="\"additionalInfo\": {\"dbUrlProcess\": \"${NOTIFICATION_URL}\"},"
+if [[ ${#ADDITIONAL_INFO_PARTS[@]} -gt 0 ]]; then
+	IFS=,
+	ADDITIONAL_INFO_FIELD="\"additionalInfo\": {${ADDITIONAL_INFO_PARTS[*]}},"
+	unset IFS
 fi
 
 # billDetails per ASPI BillDetail schema — only attached when -b is given, so
@@ -129,6 +169,14 @@ if [[ -n "$BILL_NO" ]]; then
 	BILL_DETAILS_FIELD="\"billDetails\": [{\"billNo\": \"${BILL_NO}\", ${BILL_NAME_FIELD} \"billAmount\": {\"value\": \"${AMOUNT}\", \"currency\": \"IDR\"}}],"
 fi
 
+# "No bill" vaType (01/04, feature 006-static-dynamic-va FR-012) MUST NOT
+# carry totalAmount — omit the field entirely rather than sending a zero/empty
+# value, which the server would still treat as present.
+TOTAL_AMOUNT_FIELD="\"totalAmount\": {\"value\": \"${AMOUNT}\", \"currency\": \"IDR\"},"
+if [[ "$VA_TYPE" == "01" || "$VA_TYPE" == "04" ]]; then
+	TOTAL_AMOUNT_FIELD=""
+fi
+
 BODY=$(cat <<JSON
 {
   "partnerServiceId": "${PARTNER_SERVICE_ID}",
@@ -138,7 +186,7 @@ BODY=$(cat <<JSON
   "trxId": "${TRX_ID}",
   ${ADDITIONAL_INFO_FIELD}
   ${BILL_DETAILS_FIELD}
-  "totalAmount": {"value": "${AMOUNT}", "currency": "IDR"},
+  ${TOTAL_AMOUNT_FIELD}
   "virtualAccountTrxType": "C"
 }
 JSON

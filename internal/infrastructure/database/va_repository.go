@@ -7,19 +7,83 @@ import (
 
 	"backbone-new/internal/domain"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/google/uuid"
 )
+
+// vaLocker is the minimal distributed-lock surface this repository needs from
+// internal/infrastructure/redis.Client, kept as a local interface so this
+// package doesn't force a hard dependency on the redis client type in tests.
+type vaLocker interface {
+	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	ReleaseLock(ctx context.Context, key string) error
+}
 
 // VARepository implements domain.VARepository using PostgreSQL
 type VARepository struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	locker   vaLocker
+	lockWait time.Duration
 }
 
 // NewVARepository creates a new VA repository
 func NewVARepository(pool *pgxpool.Pool) *VARepository {
 	return &VARepository{pool: pool}
+}
+
+// NewVARepositoryWithLocker creates a new VA repository with a distributed
+// locker for the static/dynamic VA customerNo generation/registration
+// (feature 006-static-dynamic-va). Falls back to no locking (single-node
+// safety only, via the DB's SELECT ... FOR UPDATE) if locker is nil.
+func NewVARepositoryWithLocker(pool *pgxpool.Pool, locker vaLocker) *VARepository {
+	return &VARepository{pool: pool, locker: locker}
+}
+
+const (
+	sequenceLockTTL         = 5 * time.Second
+	sequenceLockRetry       = 50 * time.Millisecond
+	defaultSequenceLockWait = 3 * time.Second
+)
+
+// lockWaitOverride sets a non-default lock-acquisition timeout (test-only
+// hook, e.g. to keep tests fast without waiting on the production default).
+func (r *VARepository) lockWaitOverride(d time.Duration) {
+	r.lockWait = d
+}
+
+// withLock runs fn while holding a distributed lock on key, retrying
+// acquisition for up to the configured lock-wait timeout before giving up. If
+// no locker is configured, fn runs unlocked (relying solely on DB-level row
+// locking).
+func (r *VARepository) withLock(ctx context.Context, key string, fn func() error) error {
+	if r.locker == nil {
+		return fn()
+	}
+
+	wait := r.lockWait
+	if wait == 0 {
+		wait = defaultSequenceLockWait
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		ok, err := r.locker.AcquireLock(ctx, key, sequenceLockTTL)
+		if err != nil {
+			return fmt.Errorf("lock unavailable: %w", err)
+		}
+		if ok {
+			defer func() { _ = r.locker.ReleaseLock(ctx, key) }()
+			return fn()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("lock timeout for key %s", key)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sequenceLockRetry):
+		}
+	}
 }
 
 // SaveInquiry saves a VA inquiry record
@@ -34,8 +98,8 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 
 	query := `
 		INSERT INTO va_transactions (id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, expired_date, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, va_type, expired_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (inquiry_request_id) DO UPDATE SET
 			status = EXCLUDED.status,
 			notification_url = EXCLUDED.notification_url,
@@ -59,6 +123,7 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 		inquiry.Status,
 		inquiry.TotalAmount,
 		inquiry.Currency,
+		inquiry.VAType,
 		inquiry.ExpiredDate,
 		inquiry.CreatedAt,
 		inquiry.UpdatedAt,
@@ -466,7 +531,8 @@ func (r *VARepository) UpdateVAStatus(ctx context.Context, virtualAccountNo stri
 func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.VAInquiryRecord, error) {
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, created_at, updated_at
+			inquiry_request_id, trx_id, notification_url, status, total_amount, currency,
+			COALESCE(va_type, ''), created_at, updated_at
 		FROM va_transactions
 		WHERE virtual_account_no = $1
 		ORDER BY created_at DESC
@@ -485,6 +551,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		&record.Status,
 		&record.TotalAmount,
 		&record.Currency,
+		&record.VAType,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -495,4 +562,136 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		return nil, err
 	}
 	return record, nil
+}
+
+// NextCustomerNoSequence generates the next unique, sequential customerNo for
+// a dynamic VA type (feature 006-static-dynamic-va, FR-005/FR-005a). The
+// result is a 20-digit string: the 2-digit vaType followed by the 18-digit
+// zero-padded sequence. Guarded by a Redis lock (if configured) plus a
+// row-level lock on the counter row for defense in depth under concurrency.
+func (r *VARepository) NextCustomerNoSequence(ctx context.Context, vaType string) (string, error) {
+	var customerNo string
+	err := r.withLock(ctx, fmt.Sprintf("va-seq-lock:%s", vaType), func() error {
+		tx, err := r.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("sequence generator unavailable: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		var nextSeq int64
+		err = tx.QueryRow(ctx,
+			`SELECT next_seq FROM va_customer_no_sequences WHERE va_type = $1 FOR UPDATE`,
+			vaType,
+		).Scan(&nextSeq)
+		if err != nil {
+			return fmt.Errorf("sequence generator unavailable: %w", err)
+		}
+
+		seqStr := fmt.Sprintf("%d", nextSeq)
+		if len(seqStr) > 18 {
+			return fmt.Errorf("sequence generator unavailable: sequence range exhausted for vaType %s", vaType)
+		}
+
+		if _, err := tx.Exec(ctx,
+			`UPDATE va_customer_no_sequences SET next_seq = next_seq + 1, updated_at = NOW() WHERE va_type = $1`,
+			vaType,
+		); err != nil {
+			return fmt.Errorf("sequence generator unavailable: %w", err)
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("sequence generator unavailable: %w", err)
+		}
+
+		customerNo = vaType + fmt.Sprintf("%018d", nextSeq)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return customerNo, nil
+}
+
+// RegisterStaticCustomerNo enforces that a merchant-supplied customerNo is
+// only ever used once per partnerServiceId (feature 006-static-dynamic-va,
+// FR-008). Returns domain.ErrClientAlreadyExists-style conflict on duplicate.
+func (r *VARepository) RegisterStaticCustomerNo(ctx context.Context, partnerServiceID, customerNo string) error {
+	return r.withLock(ctx, fmt.Sprintf("va-static-lock:%s:%s", partnerServiceID, customerNo), func() error {
+		var existingCount int
+		err := r.pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM va_transactions WHERE partner_service_id = $1 AND customer_no = $2`,
+			partnerServiceID, customerNo,
+		).Scan(&existingCount)
+		if err != nil {
+			return fmt.Errorf("sequence generator unavailable: %w", err)
+		}
+		if existingCount > 0 {
+			return domain.ErrVACustomerNoAlreadyRegistered
+		}
+		return nil
+	})
+}
+
+// SaveVAPayment records an individual payment against a variable-bill VA
+// transaction, recalculates the cumulative paid_amount, and transitions the
+// transaction to fully-paid ("00") once it reaches total_amount (feature
+// 006-static-dynamic-va, FR-013).
+func (r *VARepository) SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (paidAmount string, status string, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO va_payments (id, transaction_id, amount, reference_no) VALUES ($1, $2, $3, $4)`,
+		uuid.New().String(), transactionID, amount, referenceNo,
+	); err != nil {
+		return "", "", err
+	}
+
+	var totalAmount string
+	err = tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(amount), 0)::text FROM va_payments WHERE transaction_id = $1`,
+		transactionID,
+	).Scan(&paidAmount)
+	if err != nil {
+		return "", "", err
+	}
+
+	err = tx.QueryRow(ctx,
+		`SELECT total_amount::text FROM va_transactions WHERE id = $1`,
+		transactionID,
+	).Scan(&totalAmount)
+	if err != nil {
+		return "", "", err
+	}
+
+	status = "03"
+	paidVal, errPaid := parseAmount(paidAmount)
+	totalVal, errTotal := parseAmount(totalAmount)
+	if errPaid == nil && errTotal == nil && paidVal >= totalVal {
+		status = "00"
+	}
+
+	if _, err = tx.Exec(ctx,
+		`UPDATE va_transactions SET paid_amount = $2, status = $3, updated_at = NOW() WHERE id = $1`,
+		transactionID, paidAmount, status,
+	); err != nil {
+		return "", "", err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return "", "", err
+	}
+
+	return paidAmount, status, nil
+}
+
+// parseAmount parses a NUMERIC(16,2) string as returned by Postgres (e.g.
+// "150000.00") into a float64 for cumulative-amount comparison.
+func parseAmount(s string) (float64, error) {
+	var v float64
+	_, err := fmt.Sscanf(s, "%f", &v)
+	return v, err
 }

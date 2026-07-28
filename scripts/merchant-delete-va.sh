@@ -50,6 +50,6 @@ echo >&2
 
 curl -sS -X DELETE "${BASE_URL}/openapi/v1.0/transfer-va/delete-va" \
 	-H "Content-Type: application/json" \
-	-H "Idempotency-Key: $(uuidgen)" \
+	-H "X-EXTERNAL-ID: $(date +%Y%m%d%H%M%S)$RANDOM" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)
