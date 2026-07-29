@@ -521,7 +521,7 @@ func TestMerchantVAUsecase_CreateVA_StaticNoBill_EchoesCustomerNo(t *testing.T) 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "15973",
 		CustomerNo:         "0001234567",
-		VirtualAccountNo:   "15973000012345670001",
+		VirtualAccountNo:   "159730001234567",
 		VirtualAccountName: "Static NoBill",
 		TrxID:              "trx-static-01",
 		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
@@ -545,7 +545,7 @@ func TestMerchantVAUsecase_CreateVA_StaticVariableBill_EchoesCustomerNo(t *testi
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "15974",
 		CustomerNo:         "0002234567",
-		VirtualAccountNo:   "15974000012345670002",
+		VirtualAccountNo:   "159740002234567",
 		VirtualAccountName: "Static Variable",
 		TrxID:              "trx-static-02",
 		TotalAmount:        &domain.Amount{Value: "200000.00", Currency: "IDR"},
@@ -570,7 +570,7 @@ func TestMerchantVAUsecase_CreateVA_StaticFixedBill_EchoesCustomerNo(t *testing.
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "15975",
 		CustomerNo:         "0003234567",
-		VirtualAccountNo:   "15975000012345670003",
+		VirtualAccountNo:   "159750003234567",
 		VirtualAccountName: "Static Fixed",
 		TrxID:              "trx-static-03",
 		TotalAmount:        &domain.Amount{Value: "300000.00", Currency: "IDR"},
@@ -595,7 +595,7 @@ func TestMerchantVAUsecase_CreateVA_DuplicateStaticCustomerNo_Conflict(t *testin
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "15973",
 		CustomerNo:         "0001234567",
-		VirtualAccountNo:   "15973000012345670099",
+		VirtualAccountNo:   "159730001234567",
 		VirtualAccountName: "Static NoBill Dup",
 		TrxID:              "trx-static-dup",
 		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
@@ -799,6 +799,260 @@ func TestMerchantVAUsecase_CreateVA_VATypeRuleProviderFailure_SystemUnavailable(
 	assert.ErrorAs(t, err, &domainErr)
 	assert.Equal(t, "5002702", domainErr.SNAPCode)
 	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+// --- VA Number Consistency Tests (feature 008-va-number-consistency) ---
+
+func TestMerchantVAUsecase_CreateVA_StaticVirtualAccountNoMismatch_Rejected(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "0001234567",
+		VirtualAccountNo:   "9999999999999999999999",
+		VirtualAccountName: "Static Consistency Mismatch",
+		TrxID:              "trx-static-mismatch",
+		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
+	}
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4002707", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "RegisterStaticCustomerNo", mock.Anything, mock.Anything, mock.Anything)
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+func TestMerchantVAUsecase_CreateVA_StaticVirtualAccountNoMatch_Succeeds(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "0001234567",
+		VirtualAccountNo:   "159730001234567",
+		VirtualAccountName: "Static Consistency Match",
+		TrxID:              "trx-static-match",
+		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
+	}
+
+	mockRepo.On("RegisterStaticCustomerNo", mock.Anything, "15973", "0001234567").Return(nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+	assert.Equal(t, "159730001234567", resp.VirtualAccountData.VirtualAccountNo)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestMerchantVAUsecase_CreateVA_UnmanagedLegacyVirtualAccountNoMismatch_Rejected(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, nil) // unmanaged/legacy mode (nil vaTypeRules)
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "088899",
+		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "00000000000000000000000000", // deliberately not partnerServiceId+customerNo
+		VirtualAccountName: "Legacy Consistency Mismatch",
+		TrxID:              "trx-legacy-mismatch",
+	}
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4002707", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoEmpty_AutoDerived(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountNo:   "", // intentionally left empty
+		VirtualAccountName: "Dynamic Auto-Derive",
+		TrxID:              "trx-dyn-auto-derive",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+
+	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000099", nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304000000000000000099").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
+		return r.VirtualAccountNo == "1597304000000000000000099" && r.CustomerNo == "04000000000000000099"
+	})).Return(nil)
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "04000000000000000099", resp.VirtualAccountData.CustomerNo)
+	assert.Equal(t, "1597304000000000000000099", resp.VirtualAccountData.VirtualAccountNo)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoSupplied_UsedAsIs(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountNo:   "1597304999999999999999", // merchant-chosen, not partnerServiceId+generated customerNo
+		VirtualAccountName: "Dynamic Merchant Chosen",
+		TrxID:              "trx-dyn-chosen",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+
+	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000100", nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304999999999999999").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
+		return r.VirtualAccountNo == "1597304999999999999999" && r.CustomerNo == "04000000000000000100"
+	})).Return(nil)
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "1597304999999999999999", resp.VirtualAccountData.VirtualAccountNo)
+	assert.Equal(t, "04000000000000000100", resp.VirtualAccountData.CustomerNo)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoSupplied_ConflictOnPending(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountNo:   "1597304888888888888888",
+		VirtualAccountName: "Dynamic Merchant Chosen Conflict",
+		TrxID:              "trx-dyn-conflict",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+
+	existing := &domain.VAInquiryRecord{
+		ID:               "existing-id",
+		PartnerServiceID: "15973",
+		VirtualAccountNo: "1597304888888888888888",
+		Status:           "03", // active pending transaction
+	}
+
+	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000101", nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304888888888888888").Return(existing, nil)
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4092700", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+func TestMerchantVAUsecase_CreateVA_StaticVirtualAccountNoTooLong_Rejected(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, nil) // unmanaged/legacy mode
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "088899",
+		CustomerNo:         "12345678901234567890",
+		VirtualAccountNo:   "0888991234567890123456789012345", // > 28 chars
+		VirtualAccountName: "Legacy Too Long",
+		TrxID:              "trx-legacy-too-long",
+	}
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4002700", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+func TestMerchantVAUsecase_CreateVA_DynamicDerivedVirtualAccountNoTooLong_Rejected(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	// partnerServiceId "15973" (5 chars) + a 24-char generated customerNo would
+	// be 29 chars, exceeding the 28-char ASPI VAIdentity limit (FR-007). The
+	// real sequence generator always returns 20-digit customerNo values (2
+	// vaType + 18 sequence, feature 006), so this scenario is defensive/
+	// future-proofing rather than reachable with today's generator — it
+	// guards the derivation path regardless of generator implementation.
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountNo:   "",
+		VirtualAccountName: "Dynamic Derived Too Long",
+		TrxID:              "trx-dyn-too-long",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+
+	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("040000000000000000000001", nil) // 24 chars
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4002700", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+func TestMerchantVAUsecase_InquiryVA_UsesServerDerivedVirtualAccountNo(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	// Create a dynamic VA leaving virtualAccountNo empty (server-derived, per
+	// TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoEmpty_AutoDerived).
+	createReq := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountNo:   "",
+		VirtualAccountName: "Dynamic Inquiry Regression",
+		TrxID:              "trx-dyn-inquiry-regress",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000200", nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304000000000000000200").Return(nil, domain.ErrMerchantVANotFound).Once()
+	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+
+	createResp, err := uc.CreateVA(context.Background(), createReq)
+	assert.NoError(t, err)
+	assert.Equal(t, "1597304000000000000000200", createResp.VirtualAccountData.VirtualAccountNo)
+	assert.Equal(t, createResp.VirtualAccountData.PartnerServiceID+createResp.VirtualAccountData.CustomerNo, createResp.VirtualAccountData.VirtualAccountNo)
+
+	// Confirm a subsequent lookup by that exact server-derived virtualAccountNo
+	// resolves to the just-created record (regression: inquiry/payment lookups
+	// are unaffected by how virtualAccountNo was produced).
+	created := &domain.VAInquiryRecord{
+		ID:               "created-id",
+		PartnerServiceID: "15973",
+		CustomerNo:       "04000000000000000200",
+		VirtualAccountNo: "1597304000000000000000200",
+		Status:           "03",
+	}
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304000000000000000200").Return(created, nil).Once()
+
+	found, err := mockRepo.GetVAByVirtualAccountNo(context.Background(), "1597304000000000000000200")
+	assert.NoError(t, err)
+	assert.Equal(t, created, found)
+	mockRepo.AssertExpectations(t)
 }
 
 // --- ListVA Tests ---

@@ -16,6 +16,12 @@ type MerchantVAUsecase struct {
 	vaTypeRules domain.VATypeRuleProvider
 }
 
+// vaNoMatchesPartnerAndCustomer reports whether virtualAccountNo equals the
+// SNAP-standard concatenation of partnerServiceId and customerNo.
+func vaNoMatchesPartnerAndCustomer(partnerServiceID, customerNo, virtualAccountNo string) bool {
+	return virtualAccountNo == partnerServiceID+customerNo
+}
+
 // NewMerchantVAUsecase creates a new merchant VA usecase. vaTypeRules may be
 // nil, in which case every request is treated as an unmanaged (legacy)
 // request — i.e. none of the six static/dynamic VA type combinations are
@@ -50,7 +56,12 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	if !managed && req.CustomerNo == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [customerNo]", nil)
 	}
-	if req.VirtualAccountNo == "" {
+	// virtualAccountNo remains mandatory for unmanaged (legacy) requests. For
+	// managed requests it is validated per VA-type mode below (mandatory for
+	// static, optional for dynamic — since customerNo, and therefore the
+	// SNAP-standard virtualAccountNo, may not exist yet at this point for a
+	// dynamic request).
+	if !managed && req.VirtualAccountNo == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [virtualAccountNo]", nil)
 	}
 	if req.VirtualAccountName == "" {
@@ -80,6 +91,9 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		if !vaTypeRule.Dynamic && req.CustomerNo == "" {
 			return nil, domain.NewDomainError("4002704", "Invalid Mandatory Field [customerNo required for static vaType]", nil)
 		}
+		if !vaTypeRule.Dynamic && req.VirtualAccountNo == "" {
+			return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [virtualAccountNo]", nil)
+		}
 
 		if vaTypeRule.Billing == domain.VATypeBillingNone && req.TotalAmount != nil {
 			return nil, domain.NewDomainError("4002706", "Invalid Field Format [totalAmount must not be set for no-bill vaType]", nil)
@@ -97,9 +111,11 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		}
 	}
 
-	// Use the client-supplied virtualAccountNo per ASPI VAIdentity (maxLength 28)
+	// Use the client-supplied virtualAccountNo per ASPI VAIdentity (maxLength
+	// 28). For a dynamic managed request it may be empty at this point (it is
+	// resolved below, once customerNo is known/generated).
 	vaNo := req.VirtualAccountNo
-	if len(vaNo) > 28 {
+	if vaNo != "" && len(vaNo) > 28 {
 		return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
 	}
 
@@ -112,12 +128,30 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 			return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [sequence generator: %v]", err), err)
 		}
 		customerNo = generated
-	} else if managed && !vaTypeRule.Dynamic {
-		if err := u.repo.RegisterStaticCustomerNo(ctx, req.PartnerServiceID, customerNo); err != nil {
-			if errors.Is(err, domain.ErrVACustomerNoAlreadyRegistered) {
-				return nil, domain.NewDomainError("4092701", "Conflict: customerNo already registered for this partnerServiceId", nil)
+
+		// virtualAccountNo is optional for dynamic VA: honor the merchant's
+		// own value if supplied, otherwise derive it per the SNAP standard
+		// (partnerServiceId + customerNo).
+		if vaNo == "" {
+			vaNo = req.PartnerServiceID + customerNo
+			if len(vaNo) > 28 {
+				return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
 			}
-			return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [customerNo registration: %v]", err), err)
+		}
+	} else {
+		// Static (managed non-dynamic) and unmanaged/legacy requests: the
+		// merchant-supplied virtualAccountNo MUST match the SNAP-standard
+		// concatenation of partnerServiceId + customerNo.
+		if !vaNoMatchesPartnerAndCustomer(req.PartnerServiceID, customerNo, vaNo) {
+			return nil, domain.NewDomainError("4002707", "Invalid Field Format [virtualAccountNo does not match partnerServiceId + customerNo]", nil)
+		}
+		if managed {
+			if err := u.repo.RegisterStaticCustomerNo(ctx, req.PartnerServiceID, customerNo); err != nil {
+				if errors.Is(err, domain.ErrVACustomerNoAlreadyRegistered) {
+					return nil, domain.NewDomainError("4092701", "Conflict: customerNo already registered for this partnerServiceId", nil)
+				}
+				return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [customerNo registration: %v]", err), err)
+			}
 		}
 	}
 

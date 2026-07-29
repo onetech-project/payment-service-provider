@@ -47,12 +47,14 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 	}
 
 	// Validate required fields per ASPI VAUpsertRequest (required: virtualAccountName,
-	// trxId, plus VAIdentity's partnerServiceId/virtualAccountNo).
+	// trxId, plus VAIdentity's partnerServiceId).
 	// notificationUrl is a proprietary extension, not part of the spec, so it's optional here.
-	// customerNo is intentionally NOT required here: per feature
-	// 006-static-dynamic-va, dynamic VA types require it to be empty — that
-	// mode-dependent check is performed in the usecase layer instead.
-	if req.PartnerServiceID == "" || req.VirtualAccountNo == "" || req.VirtualAccountName == "" || req.TrxID == "" {
+	// customerNo and virtualAccountNo are intentionally NOT required here: per
+	// feature 006-static-dynamic-va, dynamic VA types require customerNo to be
+	// empty, and per feature 008-va-number-consistency, dynamic VA types leave
+	// virtualAccountNo optional (server-derived) too — those mode-dependent
+	// checks are performed in the usecase layer instead.
+	if req.PartnerServiceID == "" || req.VirtualAccountName == "" || req.TrxID == "" {
 		return c.JSON(http.StatusBadRequest, domain.MerchantCreateVAResponse{
 			ResponseCode:    "4002701",
 			ResponseMessage: "Invalid Mandatory Field",

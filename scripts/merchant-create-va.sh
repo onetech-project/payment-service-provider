@@ -136,15 +136,14 @@ fi
 # calls in one e2e script run), silently clobbering the first VA's row
 # instead of creating a second one. $RANDOM avoids that regardless of timing.
 [[ -z "$TRX_ID" ]] && TRX_ID="TRX-$(date +%s)$RANDOM"
-# virtualAccountNo is mandatory per ASPI spec VAIdentity (client-supplied, not
-# server-generated); default to partnerServiceId+customerNo only for convenience.
-# For dynamic vaType, customerNo isn't known yet at request time, so -v is
-# effectively required in that case (see e2e-dynamic-va-flow.sh).
-if [[ -z "$VA_NO" ]]; then
-	if [[ "$IS_DYNAMIC_VA_TYPE" == true ]]; then
-		echo "!! -y ${VA_TYPE} is a dynamic vaType — customerNo isn't known yet, so -v <virtualAccountNo> is required." >&2
-		exit 1
-	fi
+# virtualAccountNo is mandatory (and MUST equal partnerServiceId+customerNo,
+# per feature 008-va-number-consistency) for static vaType and legacy
+# requests; default to that concatenation for convenience when omitted.
+# For dynamic vaType, virtualAccountNo is OPTIONAL: leave -v unset to have the
+# server derive it from partnerServiceId + the customerNo it generates, or
+# pass -v to use your own value as-is (still subject to length/conflict
+# checks server-side).
+if [[ -z "$VA_NO" && "$IS_DYNAMIC_VA_TYPE" != true ]]; then
 	VA_NO="${PARTNER_SERVICE_ID}${CUSTOMER_NO}"
 fi
 

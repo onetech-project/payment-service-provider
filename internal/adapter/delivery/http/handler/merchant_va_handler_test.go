@@ -271,6 +271,47 @@ func TestMerchantVAHandler_CreateVA_InvalidCombination_Returns400(t *testing.T) 
 	assert.NotEmpty(t, resp.ResponseMessage)
 }
 
+func TestMerchantVAHandler_CreateVA_DynamicVA_EmptyVirtualAccountNoAccepted(t *testing.T) {
+	e := echo.New()
+	req := domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountNo:   "", // feature 008-va-number-consistency: optional for dynamic vaType
+		VirtualAccountName: "Dynamic NoBill Auto Derive",
+		TrxID:              "trx-dyn-handler-auto-derive",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockMerchantVAUsecase)
+	mockUsecase.On("CreateVA", mock.Anything, &req).Return(&domain.MerchantCreateVAResponse{
+		ResponseCode:    "2002700",
+		ResponseMessage: "Success",
+		VirtualAccountData: &domain.MerchantVAData{
+			PartnerServiceID: "15973",
+			CustomerNo:       "04000000000000000099",
+			VirtualAccountNo: "1597304000000000000099",
+			TrxID:            req.TrxID,
+		},
+	}, nil)
+
+	h := NewMerchantVAHandler(mockUsecase)
+	err := h.CreateVA(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp domain.MerchantCreateVAResponse
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "1597304000000000000099", resp.VirtualAccountData.VirtualAccountNo)
+	mockUsecase.AssertExpectations(t)
+}
+
 // --- ListVA Handler Tests ---
 
 func TestMerchantVAHandler_ListVA_Success(t *testing.T) {

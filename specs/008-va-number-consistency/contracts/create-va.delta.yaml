@@ -1,0 +1,87 @@
+openapi: 3.0.3
+info:
+  title: Create Virtual Account — SNAP virtualAccountNo/customerNo consistency (delta)
+  version: "1.1.0"
+  description: >
+    Delta on top of specs/006-static-dynamic-va/contracts/create-va.yaml's
+    CreateVARequest/CreateVAResponse for POST
+    /openapi/v1.0/transfer-va/create-va. Only the fields/responses that
+    change are listed here; everything else in the base contract (vaType
+    enum, partnerServiceId enum, totalAmount rules, response echo of
+    additionalInfo, etc.) is unchanged.
+paths:
+  /openapi/v1.0/transfer-va/create-va:
+    post:
+      responses:
+        '400':
+          description: >
+            Adds a new case to the base contract's 400 response: for static
+            vaType (01/02/03) or unmanaged/legacy requests, virtualAccountNo
+            does not equal partnerServiceId + customerNo (responseCode
+            4002707). All existing 400 cases from the base contract remain
+            unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            Adds a new case to the base contract's 409 response (which today
+            only covers static customerNo-already-registered, 4092701): a
+            virtualAccountNo (merchant-supplied static, or merchant-supplied
+            dynamic) collides with an existing VA record that currently has
+            an active pending ("03") transaction (responseCode 4092700 — same
+            code already used elsewhere in this use case for VA number
+            reuse conflicts).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    CreateVARequest:
+      type: object
+      description: >
+        CHANGED from base contract: virtualAccountNo is no longer
+        unconditionally required. It remains required for static vaType
+        (01/02/03) and unmanaged/legacy requests. For dynamic vaType
+        (04/05/06) it is now OPTIONAL — merchants leave it empty to have the
+        server derive it, or supply their own value to use as-is.
+      required: [partnerServiceId, virtualAccountName, trxId, additionalInfo]
+      properties:
+        customerNo:
+          type: string
+          maxLength: 20
+          description: Unchanged from base contract.
+        virtualAccountNo:
+          type: string
+          maxLength: 28
+          description: >
+            Static/unmanaged: REQUIRED, and MUST equal partnerServiceId +
+            customerNo exactly, or the request is rejected (4002707).
+            Dynamic: OPTIONAL. Empty → server derives
+            partnerServiceId + generated-customerNo. Non-empty → used as-is
+            (still subject to the length and pending-conflict checks).
+    CreateVAResponse:
+      type: object
+      properties:
+        virtualAccountData:
+          type: object
+          properties:
+            customerNo:
+              type: string
+              description: Unchanged from base contract.
+            virtualAccountNo:
+              type: string
+              description: >
+                CHANGED: now guaranteed to equal
+                virtualAccountData.partnerServiceId + virtualAccountData.customerNo
+                for every successful response (static: because it was
+                validated; dynamic-derived: because the server computed it
+                that way; dynamic-merchant-supplied: the merchant's own
+                value is echoed back, which by construction does not
+                necessarily equal partnerServiceId + customerNo — see
+                Assumptions in spec.md for this intentional exception).
+    ErrorResponse:
+      type: object
+      description: Unchanged shape from base contract; new responseCode values used are 4002707 and 4092700 (reused).

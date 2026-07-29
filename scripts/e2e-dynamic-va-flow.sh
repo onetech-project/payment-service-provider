@@ -128,15 +128,17 @@ RUN_ID="$(date +%s)$RANDOM"
 echo "=================================================================="
 echo "Test 1/3: Dynamic No Bill (partnerServiceId=15973, vaType=04)"
 echo "=================================================================="
-VA_NO_1="1597304${RUN_ID: -12}"
-CREATE_RESP_1="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15973 -n "Dynamic NoBill ${RUN_ID}" -y 04 -v "$VA_NO_1" -t "trx-dyn-nobill-${RUN_ID}" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
+CREATE_RESP_1="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15973 -n "Dynamic NoBill ${RUN_ID}" -y 04 -t "trx-dyn-nobill-${RUN_ID}" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
 echo "$CREATE_RESP_1" | jq .
 
 RESP_CODE_1="$(echo "$CREATE_RESP_1" | jq -r '.responseCode // empty')"
 CUSTOMER_NO_1="$(echo "$CREATE_RESP_1" | jq -r '.virtualAccountData.customerNo // empty')"
+VA_NO_1="$(echo "$CREATE_RESP_1" | jq -r '.virtualAccountData.virtualAccountNo // empty')"
 check "create-va succeeded (responseCode 2xx)" "$([[ "$RESP_CODE_1" == 2* ]] && echo true || echo false)"
 check "server-generated customerNo is 20 digits starting with 04" "$([[ "$CUSTOMER_NO_1" =~ ^04[0-9]{18}$ ]] && echo true || echo false)"
+check "server-derived virtualAccountNo equals partnerServiceId+customerNo" "$([[ "$VA_NO_1" == "15973${CUSTOMER_NO_1}" ]] && echo true || echo false)"
 echo "==> generated customerNo: ${CUSTOMER_NO_1}"
+echo "==> derived virtualAccountNo: ${VA_NO_1}"
 echo
 
 echo "--- inquiry ---"
@@ -157,17 +159,19 @@ echo
 echo "=================================================================="
 echo "Test 2/3: Dynamic Fixed Bill (partnerServiceId=15975, vaType=06)"
 echo "=================================================================="
-VA_NO_2="1597506${RUN_ID: -12}"
 FIXED_AMOUNT="150000.00"
-CREATE_RESP_2="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15975 -n "Dynamic Fixed ${RUN_ID}" -y 06 -v "$VA_NO_2" -a "$FIXED_AMOUNT" -t "trx-dyn-fixed-${RUN_ID}" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
+CREATE_RESP_2="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15975 -n "Dynamic Fixed ${RUN_ID}" -y 06 -a "$FIXED_AMOUNT" -t "trx-dyn-fixed-${RUN_ID}" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
 echo "$CREATE_RESP_2" | jq .
 
 RESP_CODE_2="$(echo "$CREATE_RESP_2" | jq -r '.responseCode // empty')"
 CUSTOMER_NO_2="$(echo "$CREATE_RESP_2" | jq -r '.virtualAccountData.customerNo // empty')"
+VA_NO_2="$(echo "$CREATE_RESP_2" | jq -r '.virtualAccountData.virtualAccountNo // empty')"
 check "create-va succeeded (responseCode 2xx)" "$([[ "$RESP_CODE_2" == 2* ]] && echo true || echo false)"
 check "server-generated customerNo is 20 digits starting with 06" "$([[ "$CUSTOMER_NO_2" =~ ^06[0-9]{18}$ ]] && echo true || echo false)"
 check "customerNo differs from Test 1's (per-vaType sequence, not shared)" "$([[ "$CUSTOMER_NO_2" != "$CUSTOMER_NO_1" ]] && echo true || echo false)"
+check "server-derived virtualAccountNo equals partnerServiceId+customerNo" "$([[ "$VA_NO_2" == "15975${CUSTOMER_NO_2}" ]] && echo true || echo false)"
 echo "==> generated customerNo: ${CUSTOMER_NO_2}"
+echo "==> derived virtualAccountNo: ${VA_NO_2}"
 echo
 
 echo "--- inquiry ---"
@@ -190,16 +194,18 @@ echo
 echo "=================================================================="
 echo "Test 3/3: Dynamic Variable Bill (partnerServiceId=15974, vaType=05)"
 echo "=================================================================="
-VA_NO_3="1597405${RUN_ID: -12}"
 TARGET_AMOUNT="100000.00"
-CREATE_RESP_3="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15974 -n "Dynamic Variable ${RUN_ID}" -y 05 -v "$VA_NO_3" -a "$TARGET_AMOUNT" -t "trx-dyn-variable-${RUN_ID}" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
+CREATE_RESP_3="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15974 -n "Dynamic Variable ${RUN_ID}" -y 05 -a "$TARGET_AMOUNT" -t "trx-dyn-variable-${RUN_ID}" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
 echo "$CREATE_RESP_3" | jq .
 
 RESP_CODE_3="$(echo "$CREATE_RESP_3" | jq -r '.responseCode // empty')"
 CUSTOMER_NO_3="$(echo "$CREATE_RESP_3" | jq -r '.virtualAccountData.customerNo // empty')"
+VA_NO_3="$(echo "$CREATE_RESP_3" | jq -r '.virtualAccountData.virtualAccountNo // empty')"
 check "create-va succeeded (responseCode 2xx)" "$([[ "$RESP_CODE_3" == 2* ]] && echo true || echo false)"
 check "server-generated customerNo is 20 digits starting with 05" "$([[ "$CUSTOMER_NO_3" =~ ^05[0-9]{18}$ ]] && echo true || echo false)"
+check "server-derived virtualAccountNo equals partnerServiceId+customerNo" "$([[ "$VA_NO_3" == "15974${CUSTOMER_NO_3}" ]] && echo true || echo false)"
 echo "==> generated customerNo: ${CUSTOMER_NO_3}"
+echo "==> derived virtualAccountNo: ${VA_NO_3}"
 echo
 
 echo "--- inquiry ---"
