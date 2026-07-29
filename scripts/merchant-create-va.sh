@@ -10,9 +10,9 @@
 #
 # Usage:
 #   ./scripts/merchant-create-va.sh -s <partnerServiceId> -c <customerNo> \
-#       -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) \
+#       -n <virtualAccountName> -a <amount> (-e <secret> -o <access-token> | -f <.env.merchant.NAME>) \
 #       [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] \
-#       [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] \
+#       [-p <partner-id>] [-b <billNo>] [-d <billName>] \
 #       [-y <vaType>] [-x <expiredDate>] [-u <base-url>]
 #
 # -x <expiredDate> sets the top-level expiredDate field (ISO-8601, e.g.
@@ -20,13 +20,20 @@
 # on-access expiry detection (VAUsecase.Inquiry/Payment). Omit for a VA that
 # never expires via that mechanism.
 #
-# -e/-f is the MERCHANT shared secret (feature 010-merchant-hmac-signature,
-# provisioned via POST /admin/clients/:clientId/secret) — a DIFFERENT secret
-# from a vendor's VENDOR_CLIENT_SECRET, despite -f's key name below (this
-# script's -f loader was originally written for the vendor .env.<vendor>.<channel>
-# file format and its VENDOR_CLIENT_SECRET key; pass the merchant secret
-# directly via -e instead unless you specifically keep it in such a file
-# under that same key name). -e still wins if both are given.
+# Auth (feature 009-transfer-va-auth + 010-merchant-hmac-signature): this
+# endpoint requires BOTH a valid accessToken (Authorization: Bearer) AND a
+# valid X-SIGNATURE, computed with the merchant's shared secret. Two ways to
+# supply these:
+#   -f <.env.merchant.NAME>  Preferred. A credentials file produced by
+#                            onboard-merchant.sh (MERCHANT_CLIENT_ID,
+#                            MERCHANT_PRIVATE_KEY_PATH, MERCHANT_SECRET_VALUE).
+#                            This script fetches a fresh accessToken
+#                            automatically via curl-b2b-token.sh — no need to
+#                            pass -o yourself.
+#   -e <secret> -o <token>   Manual: pass the merchant's shared secret and an
+#                            already-obtained accessToken directly.
+# This merchant secret is a DIFFERENT credential from a vendor's
+# VENDOR_CLIENT_SECRET — never reuse a .env.<vendor>.<channel> file here.
 #
 # -b <billNo> attaches one billDetails entry (billNo + billAmount = -a; -d sets
 # billName) so create-va actually exercises bill-detail persistence
@@ -43,8 +50,10 @@
 # per FR-012, so -a is silently omitted from the request body in that case;
 # pass -a explicitly for 02/03/05/06 (variable/fixed bill).
 #
-# Requires: curl, openssl, uuidgen
+# Requires: curl, openssl, uuidgen, jq
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BASE_URL="http://localhost:8080"
 ENDPOINT="/openapi/v1.0/transfer-va/create-va"
@@ -66,12 +75,13 @@ PARTNER_ID="111111"
 ACCESS_TOKEN=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -a <amount> (-e <client-secret> | -f <env-file>) [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] [-p <partner-id>] [-o <access-token>] [-b <billNo>] [-d <billName>] [-y <vaType>] [-x <expiredDate>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -a <amount> (-e <secret> -o <access-token> | -f <.env.merchant.NAME>) [-w <notificationUrl>] [-v <virtualAccountNo>] [-t <trxId>] [-i <channel-id>] [-p <partner-id>] [-b <billNo>] [-d <billName>] [-y <vaType>] [-x <expiredDate>] [-u <base-url>]" >&2
 	exit 1
 }
 
-# read_env_var extracts KEY=value from a .env.<vendor>.<channel> file,
-# stripping surrounding quotes the same way vendor_config.go's parseEnvFile does.
+# read_env_var extracts KEY=value from a .env.<vendor>.<channel> or
+# .env.merchant.<name> file, stripping surrounding quotes the same way
+# vendor_config.go's parseEnvFile does.
 read_env_var() {
 	local file="$1" key="$2" line value
 	line="$(grep -E "^${key}=" "$file" | tail -n1)"
@@ -110,11 +120,21 @@ done
 
 if [[ -n "$ENV_FILE" ]]; then
 	[[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
-	[[ -z "$CLIENT_SECRET" ]] && CLIENT_SECRET="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_SECRET || true)"
-	# read_env_var succeeds (and prints "") when the key exists but its value is
-	# blank, e.g. "VENDOR_CLIENT_SECRET=" — flag that explicitly so it's not
-	# confused with "the -f flag itself is missing".
-	[[ -z "$CLIENT_SECRET" ]] && echo "!! ${ENV_FILE}: VENDOR_CLIENT_SECRET is empty — fill it in, or pass -e <client-secret> directly." >&2
+	[[ -z "$CLIENT_SECRET" ]] && CLIENT_SECRET="$(read_env_var "$ENV_FILE" MERCHANT_SECRET_VALUE || true)"
+	[[ -z "$CLIENT_SECRET" ]] && echo "!! ${ENV_FILE}: MERCHANT_SECRET_VALUE is empty — fill it in, or pass -e <secret> directly." >&2
+
+	if [[ -z "$ACCESS_TOKEN" ]]; then
+		MERCHANT_CLIENT_ID="$(read_env_var "$ENV_FILE" MERCHANT_CLIENT_ID || true)"
+		MERCHANT_PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" MERCHANT_PRIVATE_KEY_PATH || true)"
+		if [[ -n "$MERCHANT_CLIENT_ID" && -n "$MERCHANT_PRIVATE_KEY_PATH" ]]; then
+			echo "==> Fetching accessToken for merchant client ${MERCHANT_CLIENT_ID}..." >&2
+			TOKEN_RESPONSE="$("$SCRIPT_DIR/curl-b2b-token.sh" -i "$MERCHANT_CLIENT_ID" -p "$MERCHANT_PRIVATE_KEY_PATH" -u "$BASE_URL")"
+			ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken // empty' 2>/dev/null || true)"
+			[[ -z "$ACCESS_TOKEN" ]] && { echo "!! Failed to obtain accessToken for ${MERCHANT_CLIENT_ID} — aborting." >&2; exit 1; }
+		else
+			echo "!! ${ENV_FILE}: MERCHANT_CLIENT_ID/MERCHANT_PRIVATE_KEY_PATH missing — cannot auto-fetch accessToken; pass -o <access-token> directly." >&2
+		fi
+	fi
 fi
 
 # X-CLIENT-KEY is intentionally not requested/sent here — per ASPI spec it's
@@ -128,10 +148,10 @@ case "$VA_TYPE" in
 04 | 05 | 06) IS_DYNAMIC_VA_TYPE=true ;;
 esac
 if [[ "$IS_DYNAMIC_VA_TYPE" == false ]]; then
-	[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$CLIENT_SECRET" ]] && usage
+	[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$CLIENT_SECRET" || -z "$ACCESS_TOKEN" ]] && usage
 else
 	[[ -n "$CUSTOMER_NO" ]] && { echo "!! -y ${VA_TYPE} is a dynamic vaType — customerNo must be empty (omit -c); the server assigns it." >&2; exit 1; }
-	[[ -z "$PARTNER_SERVICE_ID" || -z "$VA_NAME" || -z "$CLIENT_SECRET" ]] && usage
+	[[ -z "$PARTNER_SERVICE_ID" || -z "$VA_NAME" || -z "$CLIENT_SECRET" || -z "$ACCESS_TOKEN" ]] && usage
 fi
 # trxId becomes the row's inquiry_request_id, which is UNIQUE across the
 # WHOLE va_transactions table (not just per-VA) — $(date +%s) alone would

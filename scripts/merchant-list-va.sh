@@ -8,20 +8,23 @@
 # to one virtualAccountNo.
 #
 # Usage:
-#   ./scripts/merchant-list-va.sh -s <partnerServiceId> [-v <virtualAccountNo>] -o <access-token> -g <merchant-secret> [-u <base-url>]
+#   ./scripts/merchant-list-va.sh -s <partnerServiceId> [-v <virtualAccountNo>] (-g <secret> -o <access-token> | -f <.env.merchant.NAME>) [-u <base-url>]
 #
-# -o <access-token> is required (feature 009-transfer-va-auth): this
-# endpoint requires a valid Authorization: Bearer <accessToken> issued by
-# curl-b2b-token.sh / POST /access-token/b2b.
+# Auth (feature 009-transfer-va-auth + 010-merchant-hmac-signature): this
+# endpoint requires BOTH a valid accessToken (Authorization: Bearer) AND a
+# valid X-SIGNATURE computed with the merchant's shared secret.
+#   -f <.env.merchant.NAME>  Preferred. A credentials file produced by
+#                            onboard-merchant.sh. Fetches a fresh accessToken
+#                            automatically via curl-b2b-token.sh.
+#   -g <secret> -o <token>   Manual: the merchant's shared secret and an
+#                            already-obtained accessToken directly.
+# This merchant secret is a DIFFERENT credential from a vendor's
+# VENDOR_CLIENT_SECRET — never reuse a .env.<vendor>.<channel> file here.
 #
-# -g <merchant-secret> is required (feature 010-merchant-hmac-signature):
-# this endpoint also requires a valid X-TIMESTAMP/X-SIGNATURE, computed with
-# a shared secret provisioned via POST /admin/clients/:clientId/secret. This
-# is a DIFFERENT secret from a vendor's VENDOR_CLIENT_SECRET — do not reuse
-# a .env.<vendor>.<channel> file's secret here.
-#
-# Requires: curl, openssl, uuidgen
+# Requires: curl, openssl, uuidgen, jq
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BASE_URL="http://localhost:8080"
 ENDPOINT="/openapi/v1.0/transfer-va/list"
@@ -29,22 +32,51 @@ PARTNER_SERVICE_ID=""
 VA_NO=""
 ACCESS_TOKEN=""
 MERCHANT_SECRET=""
+ENV_FILE=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> [-v <virtualAccountNo>] -o <access-token> -g <merchant-secret> [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> [-v <virtualAccountNo>] (-g <secret> -o <access-token> | -f <.env.merchant.NAME>) [-u <base-url>]" >&2
 	exit 1
 }
 
-while getopts "s:v:o:g:u:h" opt; do
+read_env_var() {
+	local file="$1" key="$2" line value
+	line="$(grep -E "^${key}=" "$file" | tail -n1)"
+	[[ -n "$line" ]] || return 1
+	value="${line#*=}"
+	if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+		value="${value:1:${#value}-2}"
+	elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+		value="${value:1:${#value}-2}"
+	fi
+	printf '%s' "$value"
+}
+
+while getopts "s:v:o:g:f:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	v) VA_NO="$OPTARG" ;;
 	o) ACCESS_TOKEN="$OPTARG" ;;
 	g) MERCHANT_SECRET="$OPTARG" ;;
+	f) ENV_FILE="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	h | *) usage ;;
 	esac
 done
+
+if [[ -n "$ENV_FILE" ]]; then
+	[[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
+	[[ -z "$MERCHANT_SECRET" ]] && MERCHANT_SECRET="$(read_env_var "$ENV_FILE" MERCHANT_SECRET_VALUE || true)"
+	if [[ -z "$ACCESS_TOKEN" ]]; then
+		MERCHANT_CLIENT_ID="$(read_env_var "$ENV_FILE" MERCHANT_CLIENT_ID || true)"
+		MERCHANT_PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" MERCHANT_PRIVATE_KEY_PATH || true)"
+		if [[ -n "$MERCHANT_CLIENT_ID" && -n "$MERCHANT_PRIVATE_KEY_PATH" ]]; then
+			TOKEN_RESPONSE="$("$SCRIPT_DIR/curl-b2b-token.sh" -i "$MERCHANT_CLIENT_ID" -p "$MERCHANT_PRIVATE_KEY_PATH" -u "$BASE_URL")"
+			ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken // empty' 2>/dev/null || true)"
+			[[ -z "$ACCESS_TOKEN" ]] && { echo "!! Failed to obtain accessToken for ${MERCHANT_CLIENT_ID} — aborting." >&2; exit 1; }
+		fi
+	fi
+fi
 
 [[ -z "$PARTNER_SERVICE_ID" || -z "$ACCESS_TOKEN" || -z "$MERCHANT_SECRET" ]] && usage
 

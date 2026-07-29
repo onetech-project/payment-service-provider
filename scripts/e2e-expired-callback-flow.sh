@@ -14,16 +14,23 @@
 #     - POST /admin/transactions/:virtualAccountNo/resend-callback redelivers
 #       the va.expired event and records a second ("manual") delivery
 #
+# This exercises BOTH sides of the auth model (features 009/010), which use
+# two INDEPENDENT identities/credentials — a vendor never needs a merchant's
+# credentials or vice versa:
+#   - Merchant side (create-va): accessToken (Bearer) + HMAC signature using
+#     a merchant's own shared secret. See onboard-merchant.sh.
+#   - Vendor side (inquiry/payment): HMAC signature only, using a vendor's
+#     own shared secret. See onboard-vendor.sh.
+#
 # Chains together, in order:
-#   1. curl-b2b-token.sh      POST /openapi/v1.0/access-token/b2b
-#   2. merchant-create-va.sh  POST /openapi/v1.0/transfer-va/create-va (with -x <short expiredDate>)
-#   3. (sleep until past expiry)
-#   4. vendor-inquiry-va.sh   POST /openapi/v1.0/transfer-va/inquiry     -> expect 4042419
-#   5. vendor-payment-va.sh   POST /openapi/v1.0/transfer-va/payment     -> expect 4042519
-#   6. (poll webhook.site for the auto "va.expired" callback)
-#   7. vendor-inquiry-va.sh again                                       -> expect 4042419, NO 2nd callback
-#   8. POST /admin/transactions/:virtualAccountNo/resend-callback        -> expect 200
-#   9. (poll webhook.site for the manual resend "va.expired" callback)
+#   1. merchant-create-va.sh  POST /openapi/v1.0/transfer-va/create-va (with -x <short expiredDate>)
+#   2. (sleep until past expiry)
+#   3. vendor-inquiry-va.sh   POST /openapi/v1.0/transfer-va/inquiry     -> expect 4042419
+#   4. vendor-payment-va.sh   POST /openapi/v1.0/transfer-va/payment     -> expect 4042519
+#   5. (poll webhook.site for the auto "va.expired" callback)
+#   6. vendor-inquiry-va.sh again                                       -> expect 4042419, NO 2nd callback
+#   7. POST /admin/transactions/:virtualAccountNo/resend-callback        -> expect 200
+#   8. (poll webhook.site for the manual resend "va.expired" callback)
 #
 # Callback verification uses webhook.site's request-inspection API
 # (https://webhook.site/token/<token>/requests) rather than a local listener,
@@ -34,16 +41,14 @@
 #
 # Usage:
 #   ./scripts/e2e-expired-callback-flow.sh -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> \
-#       -i <client_id> -k <private_key.pem> (-e <client-secret> | -f <env-file>) \
-#       -K <admin-api-key> \
+#       -m <.env.merchant.NAME> -f <.env.vendor.channel> -K <admin-api-key> \
 #       [-w <webhook.site-url-or-token>] [-a <amount>] [-v <virtualAccountNo>] \
 #       [-x <seconds-until-expiry>] [-u <base-url>]
 #
-# -i/-k are for the B2B access-token call (asymmetric RSA signing, see
-# curl-b2b-token.sh). -e/-f are for the create-va/inquiry/payment HMAC signing
-# (see merchant-create-va.sh / vendor-inquiry-va.sh / vendor-payment-va.sh).
+# -m is passed straight through to merchant-create-va.sh's -f.
+# -f is passed straight through to vendor-inquiry-va.sh / vendor-payment-va.sh's -f.
 # -K is the ADMIN_API_KEY the server was started with (see .env.example),
-# required for step 8's X-Admin-API-Key header.
+# required for step 7's X-Admin-API-Key header.
 #
 # -x <seconds-until-expiry> (default 8) sets how far in the future
 # expiredDate is when the VA is created; the script then sleeps
@@ -62,32 +67,17 @@ VA_NAME=""
 AMOUNT="100000.00"
 VA_NO=""
 WEBHOOK_INPUT=""
-CLIENT_ID=""
-PRIVATE_KEY_PATH=""
-CLIENT_SECRET=""
-ENV_FILE=""
+MERCHANT_ENV_FILE=""
+VENDOR_ENV_FILE=""
 ADMIN_API_KEY=""
 EXPIRE_IN_SECONDS="8"
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -i <client_id> -k <private_key.pem> (-e <client-secret> | -f <env-file>) -K <admin-api-key> [-w <webhook.site-url-or-token>] [-a <amount>] [-v <virtualAccountNo>] [-x <seconds-until-expiry>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -m <.env.merchant.NAME> -f <.env.vendor.channel> -K <admin-api-key> [-w <webhook.site-url-or-token>] [-a <amount>] [-v <virtualAccountNo>] [-x <seconds-until-expiry>] [-u <base-url>]" >&2
 	exit 1
 }
 
-read_env_var() {
-	local file="$1" key="$2" line value
-	line="$(grep -E "^${key}=" "$file" | tail -n1)"
-	[[ -n "$line" ]] || return 1
-	value="${line#*=}"
-	if [[ "$value" == \"*\" && "$value" == *\" ]]; then
-		value="${value:1:${#value}-2}"
-	elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
-		value="${value:1:${#value}-2}"
-	fi
-	printf '%s' "$value"
-}
-
-while getopts "s:c:n:a:v:w:i:k:e:f:K:x:u:h" opt; do
+while getopts "s:c:n:a:v:w:m:f:K:x:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -95,10 +85,8 @@ while getopts "s:c:n:a:v:w:i:k:e:f:K:x:u:h" opt; do
 	a) AMOUNT="$OPTARG" ;;
 	v) VA_NO="$OPTARG" ;;
 	w) WEBHOOK_INPUT="$OPTARG" ;;
-	i) CLIENT_ID="$OPTARG" ;;
-	k) PRIVATE_KEY_PATH="$OPTARG" ;;
-	e) CLIENT_SECRET="$OPTARG" ;;
-	f) ENV_FILE="$OPTARG" ;;
+	m) MERCHANT_ENV_FILE="$OPTARG" ;;
+	f) VENDOR_ENV_FILE="$OPTARG" ;;
 	K) ADMIN_API_KEY="$OPTARG" ;;
 	x) EXPIRE_IN_SECONDS="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
@@ -106,14 +94,9 @@ while getopts "s:c:n:a:v:w:i:k:e:f:K:x:u:h" opt; do
 	esac
 done
 
-if [[ -n "$ENV_FILE" ]]; then
-	[[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
-	[[ -z "$CLIENT_SECRET" ]] && CLIENT_SECRET="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_SECRET || true)"
-	[[ -z "$CLIENT_ID" ]] && CLIENT_ID="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
-	[[ -z "$PRIVATE_KEY_PATH" ]] && PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" VENDOR_PRIVATE_KEY_PATH || true)"
-fi
-
-[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$CLIENT_ID" || -z "$PRIVATE_KEY_PATH" || -z "$CLIENT_SECRET" || -z "$ADMIN_API_KEY" ]] && usage
+[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$MERCHANT_ENV_FILE" || -z "$VENDOR_ENV_FILE" || -z "$ADMIN_API_KEY" ]] && usage
+[[ -f "$MERCHANT_ENV_FILE" ]] || { echo "merchant env file not found: $MERCHANT_ENV_FILE (run onboard-merchant.sh first)" >&2; exit 1; }
+[[ -f "$VENDOR_ENV_FILE" ]] || { echo "vendor env file not found: $VENDOR_ENV_FILE (run onboard-vendor.sh first)" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is required for this script" >&2; exit 1; }
 
 # Accept https://webhook.site/#!/view/<token>, https://webhook.site/<token>,
@@ -160,23 +143,10 @@ wait_for_new_webhook_request() {
 }
 
 echo "=================================================================="
-echo "Step 1/9: POST /openapi/v1.0/access-token/b2b"
-echo "=================================================================="
-TOKEN_RESPONSE="$("$SCRIPT_DIR/curl-b2b-token.sh" -i "$CLIENT_ID" -p "$PRIVATE_KEY_PATH" -u "$BASE_URL")"
-echo "$TOKEN_RESPONSE" | jq .
-ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken // empty')"
-if [[ -z "$ACCESS_TOKEN" ]]; then
-	echo "!! Failed to obtain accessToken from step 1 response above — aborting." >&2
-	exit 1
-fi
-echo "==> accessToken acquired: ${ACCESS_TOKEN:0:12}..."
-echo
-
-echo "=================================================================="
-echo "Step 2/9: POST /openapi/v1.0/transfer-va/create-va (expiring in ${EXPIRE_IN_SECONDS}s)"
+echo "Step 1/8: POST /openapi/v1.0/transfer-va/create-va (expiring in ${EXPIRE_IN_SECONDS}s; merchant identity)"
 echo "=================================================================="
 EXPIRED_DATE="$(date -u -d "+${EXPIRE_IN_SECONDS} seconds" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null || date -u -v+"${EXPIRE_IN_SECONDS}"S +%Y-%m-%dT%H:%M:%S+00:00)"
-CREATE_VA_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -n "$VA_NAME" -a "$AMOUNT" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -x "$EXPIRED_DATE" -u "$BASE_URL")
+CREATE_VA_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -n "$VA_NAME" -a "$AMOUNT" -f "$MERCHANT_ENV_FILE" -x "$EXPIRED_DATE" -u "$BASE_URL")
 [[ -n "$VA_NO" ]] && CREATE_VA_ARGS+=(-v "$VA_NO")
 [[ -n "$NOTIFICATION_URL" ]] && CREATE_VA_ARGS+=(-w "$NOTIFICATION_URL")
 
@@ -200,19 +170,19 @@ echo "==> expiredDate: ${EXPIRED_DATE}"
 echo
 
 echo "=================================================================="
-echo "Step 3/9: waiting $((EXPIRE_IN_SECONDS + 5))s for the VA to pass its expiredDate"
+echo "Step 2/8: waiting $((EXPIRE_IN_SECONDS + 5))s for the VA to pass its expiredDate"
 echo "=================================================================="
 sleep "$((EXPIRE_IN_SECONDS + 5))"
 echo "==> done waiting"
 echo
 
 echo "=================================================================="
-echo "Step 4/9: POST /openapi/v1.0/transfer-va/inquiry (expect 4042419)"
+echo "Step 3/8: POST /openapi/v1.0/transfer-va/inquiry (expect 4042419)"
 echo "=================================================================="
 BASELINE_COUNT=0
 [[ -n "$WEBHOOK_TOKEN" ]] && BASELINE_COUNT="$(webhook_request_count)"
 
-INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
+INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE" | jq .
 
 INQUIRY_CODE="$(echo "$INQUIRY_RESPONSE" | jq -r '.responseCode // empty')"
@@ -225,9 +195,9 @@ fi
 echo
 
 echo "=================================================================="
-echo "Step 5/9: POST /openapi/v1.0/transfer-va/payment (expect 4042519)"
+echo "Step 4/8: POST /openapi/v1.0/transfer-va/payment (expect 4042519)"
 echo "=================================================================="
-PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
+PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$PAYMENT_RESPONSE" | jq .
 
 PAYMENT_CODE="$(echo "$PAYMENT_RESPONSE" | jq -r '.responseCode // empty')"
@@ -240,7 +210,7 @@ fi
 echo
 
 echo "=================================================================="
-echo "Step 6/9: verify the automatic va.expired callback was delivered"
+echo "Step 5/8: verify the automatic va.expired callback was delivered"
 echo "=================================================================="
 if [[ -n "$WEBHOOK_TOKEN" ]]; then
 	wait_for_new_webhook_request "$BASELINE_COUNT" "auto va.expired callback" || true
@@ -252,9 +222,9 @@ fi
 echo
 
 echo "=================================================================="
-echo "Step 7/9: repeat inquiry (expect 4042419 again, NO second callback)"
+echo "Step 6/8: repeat inquiry (expect 4042419 again, NO second callback)"
 echo "=================================================================="
-INQUIRY_RESPONSE_2="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
+INQUIRY_RESPONSE_2="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE_2" | jq .
 INQUIRY_CODE_2="$(echo "$INQUIRY_RESPONSE_2" | jq -r '.responseCode // empty')"
 [[ "$INQUIRY_CODE_2" == "4042419" ]] && echo "==> PASS: still returns 4042419" || echo "!! FAIL: expected 4042419, got ${INQUIRY_CODE_2:-<none>}" >&2
@@ -271,7 +241,7 @@ fi
 echo
 
 echo "=================================================================="
-echo "Step 8/9: POST /admin/transactions/${VA_NO}/resend-callback"
+echo "Step 7/8: POST /admin/transactions/${VA_NO}/resend-callback"
 echo "=================================================================="
 if [[ -z "$WEBHOOK_TOKEN" ]]; then
 	echo "==> skipped (no -w webhook.site token given, and resend requires a prior delivery record" \
@@ -292,7 +262,7 @@ else
 	echo
 
 	echo "=================================================================="
-	echo "Step 9/9: verify the manual resend callback was delivered"
+	echo "Step 8/8: verify the manual resend callback was delivered"
 	echo "=================================================================="
 	wait_for_new_webhook_request "$RESEND_BASELINE_COUNT" "manual resend callback" || true
 fi

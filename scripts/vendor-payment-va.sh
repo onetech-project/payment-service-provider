@@ -7,12 +7,16 @@
 # (internal/usecase/va_usecase.go notifyMerchant -> Asynq queue ->
 # internal/adapter/delivery/worker/payment_notification_worker.go).
 #
+# Protected by SNAPAuthMiddleware — verified via HMAC-SHA512 only (feature
+# 009-transfer-va-auth). No accessToken and no X-CLIENT-KEY are ever sent or
+# checked on this endpoint: X-CLIENT-KEY is only used on the access-token
+# endpoint per ASPI spec, and no header on this endpoint ever carries an
+# accessToken, so the AccessToken component of stringToSign below is always
+# an empty string (see snap_auth.go's matching server-side convention).
+#
 # Usage:
 #   ./scripts/vendor-payment-va.sh -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> \
-#       -a <amount> (-e <client-secret> | -f <env-file>) [-k <client-key>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]
-#
-# X-CLIENT-KEY is NOT part of the ASPI spec for this endpoint (only used on the
-# access-token endpoint) — sent here only if -k is explicitly provided.
+#       -a <amount> (-e <client-secret> | -f <env-file>) [-i <channel-id>] [-p <partner-id>] [-u <base-url>]
 #
 # -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
 # (same raw-secret convention the server itself uses, see vendor_config.go),
@@ -28,15 +32,13 @@ PARTNER_SERVICE_ID=""
 CUSTOMER_NO=""
 VA_NO=""
 AMOUNT="100000.00"
-CLIENT_KEY=""
 CLIENT_SECRET=""
 ENV_FILE=""
 CHANNEL_ID="95231"
 PARTNER_ID="111111"
-ACCESS_TOKEN=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> -a <amount> (-e <client-secret> | -f <env-file>) [-k <client-key>] [-i <channel-id>] [-p <partner-id>] [-t <access-token>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> -a <amount> (-e <client-secret> | -f <env-file>) [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -55,18 +57,16 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:v:a:k:e:f:i:p:t:u:h" opt; do
+while getopts "s:c:v:a:e:f:i:p:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
 	v) VA_NO="$OPTARG" ;;
 	a) AMOUNT="$OPTARG" ;;
-	k) CLIENT_KEY="$OPTARG" ;;
 	e) CLIENT_SECRET="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
-	t) ACCESS_TOKEN="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	h | *) usage ;;
 	esac
@@ -75,7 +75,6 @@ done
 if [[ -n "$ENV_FILE" ]]; then
 	[[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
 	[[ -z "$CLIENT_SECRET" ]] && CLIENT_SECRET="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_SECRET || true)"
-	[[ -z "$CLIENT_KEY" ]] && CLIENT_KEY="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
 	# read_env_var succeeds (and prints "") when the key exists but its value is
 	# blank, e.g. "VENDOR_CLIENT_SECRET=" — flag that explicitly so it's not
 	# confused with "the -f flag itself is missing".
@@ -119,8 +118,9 @@ JSON
 
 # SNAP symmetric signature: HMAC_SHA512(clientSecret, stringToSign)
 # stringToSign = HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp
+# AccessToken is always "" here — no header on this endpoint ever carries one.
 BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -hex | awk '{print $NF}')"
-STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
+STRING_TO_SIGN="POST:${ENDPOINT}::${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -hex | awk '{print $NF}')"
 
 # Diagnostics go to stderr so stdout stays clean JSON — this lets the script
@@ -134,15 +134,9 @@ echo "==> Request body:" >&2
 echo "$BODY" | (command -v jq >/dev/null && jq . || cat) >&2
 echo >&2
 
-CLIENT_KEY_HEADER=()
-if [[ -n "$CLIENT_KEY" ]]; then
-	CLIENT_KEY_HEADER=(-H "X-CLIENT-KEY: ${CLIENT_KEY}")
-fi
-
 curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "Content-Type: application/json" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
-	"${CLIENT_KEY_HEADER[@]}" \
 	-H "X-SIGNATURE: ${SIGNATURE}" \
 	-H "CHANNEL-ID: ${CHANNEL_ID}" \
 	-H "X-PARTNER-ID: ${PARTNER_ID}" \

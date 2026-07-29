@@ -215,6 +215,13 @@ The system supports configurable vendor integrations via `.env.<vendor>.<channel
 
 Full field-level ASPI compliance details (request/response schemas, header requirements) are in [`aspi-open-api-va.yaml`](./aspi-open-api-va.yaml) and [`specs/004-snap-va-field-compliance/`](./specs/004-snap-va-field-compliance/).
 
+**Onboarding a real vendor or merchant?** See
+[docs/guides/vendor-onboarding.md](docs/guides/vendor-onboarding.md) or
+[docs/guides/merchant-onboarding.md](docs/guides/merchant-onboarding.md) for
+the full authentication model each side must implement (request signing,
+timestamp freshness, credential provisioning) — vendors and merchants use
+completely independent auth mechanisms, so read the one that matches your role.
+
 ### Adding a New Vendor
 
 1. Copy `.env.vendor.channel.example` to `.env.<vendor>.<channel>`:
@@ -265,7 +272,16 @@ See `.env.vendor.channel.example` for all available configuration options:
 
 ## Scripts
 
-`scripts/` contains dev/test tooling for exercising the SNAP VA flows without a real vendor connection. Each script's header comment documents its own flags; the highlights:
+`scripts/` contains dev/test tooling for exercising the SNAP VA flows without a real vendor/merchant connection. Each script's header comment documents its own flags; the highlights:
+
+Onboarding (see [docs/guides/](docs/guides/) for the full merchant/vendor auth model):
+
+| Script | Purpose |
+|--------|---------|
+| `onboard-vendor.sh` | Generates a `.env.<vendor>.<channel>` config file with a fresh `VENDOR_CLIENT_SECRET` — no API call, no keypair (vendor auth is HMAC-only). |
+| `onboard-merchant.sh` | Generates an RSA keypair, registers it + a fresh shared secret via the admin API, and writes a `.env.merchant.<name>` credentials file (test-tooling convenience — the server itself never reads it; its DB is the source of truth). |
+
+VA operations:
 
 | Script | Purpose |
 |--------|---------|
@@ -274,21 +290,33 @@ See `.env.vendor.channel.example` for all available configuration options:
 | `merchant-list-va.sh` / `merchant-delete-va.sh` | List / cancel (delete) VAs |
 | `vendor-inquiry-va.sh` | Simulate a vendor VA inquiry |
 | `vendor-payment-va.sh` | Simulate a vendor payment notification (triggers the merchant callback) |
-| `e2e-va-flow.sh` | Runs the happy-path flow in one command: token → create-va → inquiry → payment → **verifies the merchant callback actually arrives** (spins up a throwaway local HTTP listener and prints the received callback payload) |
+| `e2e-va-flow.sh` | Runs the happy-path flow in one command: create-va → inquiry → payment → **verifies the merchant callback actually arrives** (spins up a throwaway local HTTP listener and prints the received callback payload) |
 | `e2e-va-cancel-flow.sh` | Runs the cancel/immutability flow in one command: create a VA, cancel it while pending (and confirm its number is reusable), then pay a second VA and **prove a paid transaction can no longer be cancelled or re-paid** (asserts the expected `405`/`409` rejections at each step) |
 
-The HMAC-signing scripts (`merchant-create-va.sh`, `vendor-inquiry-va.sh`, `vendor-payment-va.sh`, `e2e-va-flow.sh`, `e2e-va-cancel-flow.sh`) accept `-f <env-file>` to load `VENDOR_CLIENT_SECRET`/`VENDOR_CLIENT_ID`/`VENDOR_PRIVATE_KEY_PATH` straight from a `.env.<vendor>.<channel>` file instead of passing secrets as plain CLI arguments (`merchant-list-va.sh`/`merchant-delete-va.sh` don't sign requests at all, and `curl-b2b-token.sh` takes an RSA key file directly via `-p`). Examples:
+**Vendor and merchant are two independent identities/credentials — never
+reuse one for the other.** The vendor-facing scripts (`vendor-inquiry-va.sh`,
+`vendor-payment-va.sh`) sign with a `.env.<vendor>.<channel>` file's
+`VENDOR_CLIENT_SECRET` (HMAC only, no accessToken). The merchant-facing
+scripts (`merchant-create-va.sh`, `merchant-list-va.sh`,
+`merchant-delete-va.sh`) take a `.env.merchant.<name>` file (from
+`onboard-merchant.sh`) via `-f`, which supplies both an accessToken (fetched
+automatically) and an HMAC signature. The `e2e-*.sh` flows accordingly take
+**two** separate flags: `-m <.env.merchant.NAME>` and `-f <.env.vendor.channel>`.
 
 ```bash
-# Happy path: token -> create-va -> inquiry -> payment -> callback verification
+# 1. Onboard a test vendor and merchant against a local instance:
+./scripts/onboard-vendor.sh -n bca -c va
+./scripts/onboard-merchant.sh -n mytest -K changeme -u http://localhost:8080
+
+# 2. Happy path: create-va -> inquiry -> payment -> callback verification
 ./scripts/e2e-va-flow.sh -s 12345678 -c 0812345678 -n "Merchant Name" \
-  -i <client_id> -k <private_key.pem> -f .env.bca.va \
+  -m .env.merchant.mytest -f .env.bca.va \
   -a 10000 -b INV-001 -d "Invoice Januari"
 
-# Cancel / paid-immutability checks: cancel-while-pending + reuse, then
-# prove a paid VA rejects both cancellation and a second payment attempt
+# 3. Cancel / paid-immutability checks: cancel-while-pending + reuse, then
+#    prove a paid VA rejects both cancellation and a second payment attempt
 ./scripts/e2e-va-cancel-flow.sh -s 12345678 -c 0812345678 -n "Merchant Name" \
-  -i <client_id> -k <private_key.pem> -f .env.bca.va -a 10000
+  -m .env.merchant.mytest -f .env.bca.va -a 10000
 ```
 
 See [VA lifecycle](#vendor-facing-api-endpoints-service-code-24-27-31) above for the reuse/immutability rules `e2e-va-cancel-flow.sh` asserts at each step.

@@ -14,10 +14,8 @@ type VendorConfig struct {
 	Channel string
 
 	// Authentication
-	ClientID       string
-	ClientSecret   string
-	PrivateKeyPath string
-	PublicKeyPath  string
+	ClientID     string
+	ClientSecret string
 
 	// Endpoints
 	BaseURL       string
@@ -129,12 +127,6 @@ func (l *VendorConfigLoader) applyEnvVars(config *VendorConfig, envVars map[stri
 	}
 	if v, ok := envVars["VENDOR_CLIENT_SECRET"]; ok {
 		config.ClientSecret = v
-	}
-	if v, ok := envVars["VENDOR_PRIVATE_KEY_PATH"]; ok {
-		config.PrivateKeyPath = v
-	}
-	if v, ok := envVars["VENDOR_PUBLIC_KEY_PATH"]; ok {
-		config.PublicKeyPath = v
 	}
 	if v, ok := envVars["VENDOR_BASE_URL"]; ok {
 		config.BaseURL = v

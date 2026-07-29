@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
 #
-# End-to-end VA flow: get a B2B access token, create a VA, inquire it, pay it,
-# and show the merchant payment callback arriving.
+# End-to-end VA flow: create a VA, inquire it, pay it, and show the merchant
+# payment callback arriving.
+#
+# This exercises BOTH sides of the auth model (features 009/010), which use
+# two INDEPENDENT identities/credentials — a vendor never needs a merchant's
+# credentials or vice versa:
+#   - Merchant side (create-va): accessToken (Bearer) + HMAC signature using
+#     a merchant's own shared secret. See onboard-merchant.sh.
+#   - Vendor side (inquiry/payment): HMAC signature only, using a vendor's
+#     own shared secret. See onboard-vendor.sh.
 #
 # Chains together, in order:
-#   1. curl-b2b-token.sh      POST /openapi/v1.0/access-token/b2b        (get accessToken)
-#   2. merchant-create-va.sh  POST /openapi/v1.0/transfer-va/create-va   (create the VA, using the token)
-#   3. vendor-inquiry-va.sh   POST /openapi/v1.0/transfer-va/inquiry     (inquire the VA, using the token)
-#   4. vendor-payment-va.sh   POST /openapi/v1.0/transfer-va/payment     (pay the VA, using the token)
-#   5. (local callback listener) shows the async merchant notification
+#   1. merchant-create-va.sh  POST /openapi/v1.0/transfer-va/create-va   (create the VA; fetches its own accessToken)
+#   2. vendor-inquiry-va.sh   POST /openapi/v1.0/transfer-va/inquiry     (inquire the VA)
+#   3. vendor-payment-va.sh   POST /openapi/v1.0/transfer-va/payment     (pay the VA)
+#   4. (local callback listener) shows the async merchant notification
 #      (internal/usecase/va_usecase.go notifyMerchantWithVA -> Asynq queue ->
 #      payment_notification_worker) actually being delivered.
 #
-# Each step's JSON response is captured (diagnostics from the sub-scripts go
-# to stderr, so stdout stays clean JSON) and the accessToken / virtualAccountNo
-# are threaded automatically into the next step — no manual copy-pasting.
-#
 # Usage:
 #   ./scripts/e2e-va-flow.sh -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> \
-#       -i <client_id> -k <private_key.pem> (-e <client-secret> | -f <env-file>) \
+#       -m <.env.merchant.NAME> -f <.env.vendor.channel> \
 #       [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] \
 #       [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>]
 #
-# -i/-k are for the B2B access-token call (asymmetric RSA signing, see
-# curl-b2b-token.sh). -e/-f are for the create-va/inquiry/payment HMAC signing
-# (see merchant-create-va.sh / vendor-inquiry-va.sh / vendor-payment-va.sh) —
-# -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
-# instead of typing it raw.
+# -m is passed straight through to merchant-create-va.sh's -f.
+# -f is passed straight through to vendor-inquiry-va.sh / vendor-payment-va.sh's -f.
 #
 # -b/-d attach one billDetails entry to the create-va call (see
 # merchant-create-va.sh), so this flow can also exercise bill-detail
@@ -36,9 +36,9 @@
 # local HTTP listener (python3) and registers ITS URL as the VA's
 # notificationUrl, so the merchant callback that vendor-payment-va.sh
 # triggers has somewhere of ours to land — its raw payload is then printed to
-# the terminal in step 5. If the PSP API runs in a container/host that can't
+# the terminal in step 4. If the PSP API runs in a container/host that can't
 # reach 127.0.0.1 on this machine (e.g. a separate Docker network), pass your
-# own reachable -w instead; step 5 will then just remind you to check it
+# own reachable -w instead; step 4 will then just remind you to check it
 # manually instead of polling. -L overrides the local listener's port
 # (default 8099).
 #
@@ -57,33 +57,16 @@ TRX_ID=""
 NOTIFICATION_URL=""
 BILL_NO=""
 BILL_NAME=""
-CLIENT_ID=""
-PRIVATE_KEY_PATH=""
-CLIENT_SECRET=""
-ENV_FILE=""
+MERCHANT_ENV_FILE=""
+VENDOR_ENV_FILE=""
 LISTENER_PORT="8099"
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -i <client_id> -k <private_key.pem> (-e <client-secret> | -f <env-file>) [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -m <.env.merchant.NAME> -f <.env.vendor.channel> [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>]" >&2
 	exit 1
 }
 
-# read_env_var extracts KEY=value from a .env.<vendor>.<channel> file,
-# stripping surrounding quotes the same way vendor_config.go's parseEnvFile does.
-read_env_var() {
-	local file="$1" key="$2" line value
-	line="$(grep -E "^${key}=" "$file" | tail -n1)"
-	[[ -n "$line" ]] || return 1
-	value="${line#*=}"
-	if [[ "$value" == \"*\" && "$value" == *\" ]]; then
-		value="${value:1:${#value}-2}"
-	elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
-		value="${value:1:${#value}-2}"
-	fi
-	printf '%s' "$value"
-}
-
-while getopts "s:c:n:a:v:t:w:i:k:e:f:b:d:L:u:h" opt; do
+while getopts "s:c:n:a:v:t:w:m:f:b:d:L:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -92,10 +75,8 @@ while getopts "s:c:n:a:v:t:w:i:k:e:f:b:d:L:u:h" opt; do
 	v) VA_NO="$OPTARG" ;;
 	t) TRX_ID="$OPTARG" ;;
 	w) NOTIFICATION_URL="$OPTARG" ;;
-	i) CLIENT_ID="$OPTARG" ;;
-	k) PRIVATE_KEY_PATH="$OPTARG" ;;
-	e) CLIENT_SECRET="$OPTARG" ;;
-	f) ENV_FILE="$OPTARG" ;;
+	m) MERCHANT_ENV_FILE="$OPTARG" ;;
+	f) VENDOR_ENV_FILE="$OPTARG" ;;
 	b) BILL_NO="$OPTARG" ;;
 	d) BILL_NAME="$OPTARG" ;;
 	L) LISTENER_PORT="$OPTARG" ;;
@@ -104,21 +85,9 @@ while getopts "s:c:n:a:v:t:w:i:k:e:f:b:d:L:u:h" opt; do
 	esac
 done
 
-if [[ -n "$ENV_FILE" ]]; then
-	[[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
-	[[ -z "$CLIENT_SECRET" ]] && CLIENT_SECRET="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_SECRET || true)"
-	[[ -z "$CLIENT_ID" ]] && CLIENT_ID="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
-	[[ -z "$PRIVATE_KEY_PATH" ]] && PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" VENDOR_PRIVATE_KEY_PATH || true)"
-
-	# read_env_var succeeds (and prints "") when the key exists but its value is
-	# blank, e.g. "VENDOR_CLIENT_SECRET=" — distinguish that from "missing
-	# entirely" so the error below actually points at the fix.
-	[[ -z "$CLIENT_SECRET" ]] && echo "!! ${ENV_FILE}: VENDOR_CLIENT_SECRET is empty — fill it in, or pass -e <client-secret> directly." >&2
-	[[ -z "$CLIENT_ID" ]] && echo "!! ${ENV_FILE}: VENDOR_CLIENT_ID is empty — fill it in, or pass -i <client-id> directly." >&2
-	[[ -z "$PRIVATE_KEY_PATH" ]] && echo "!! ${ENV_FILE}: VENDOR_PRIVATE_KEY_PATH is empty — fill it in, or pass -k <private-key.pem> directly." >&2
-fi
-
-[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$CLIENT_ID" || -z "$PRIVATE_KEY_PATH" || -z "$CLIENT_SECRET" ]] && usage
+[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$MERCHANT_ENV_FILE" || -z "$VENDOR_ENV_FILE" ]] && usage
+[[ -f "$MERCHANT_ENV_FILE" ]] || { echo "merchant env file not found: $MERCHANT_ENV_FILE (run onboard-merchant.sh first)" >&2; exit 1; }
+[[ -f "$VENDOR_ENV_FILE" ]] || { echo "vendor env file not found: $VENDOR_ENV_FILE (run onboard-vendor.sh first)" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is required for this script" >&2; exit 1; }
 
 USING_LOCAL_LISTENER=false
@@ -178,23 +147,9 @@ fi
 echo
 
 echo "=================================================================="
-echo "Step 1/5: POST /openapi/v1.0/access-token/b2b"
+echo "Step 1/4: POST /openapi/v1.0/transfer-va/create-va (merchant identity)"
 echo "=================================================================="
-TOKEN_RESPONSE="$("$SCRIPT_DIR/curl-b2b-token.sh" -i "$CLIENT_ID" -p "$PRIVATE_KEY_PATH" -u "$BASE_URL")"
-echo "$TOKEN_RESPONSE" | jq .
-
-ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken // empty')"
-if [[ -z "$ACCESS_TOKEN" ]]; then
-	echo "!! Failed to obtain accessToken from step 1 response above — aborting." >&2
-	exit 1
-fi
-echo "==> accessToken acquired: ${ACCESS_TOKEN:0:12}..."
-echo
-
-echo "=================================================================="
-echo "Step 2/5: POST /openapi/v1.0/transfer-va/create-va"
-echo "=================================================================="
-CREATE_VA_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -n "$VA_NAME" -a "$AMOUNT" -e "$CLIENT_SECRET" -o "$ACCESS_TOKEN" -u "$BASE_URL")
+CREATE_VA_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -n "$VA_NAME" -a "$AMOUNT" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")
 [[ -n "$VA_NO" ]] && CREATE_VA_ARGS+=(-v "$VA_NO")
 [[ -n "$TRX_ID" ]] && CREATE_VA_ARGS+=(-t "$TRX_ID")
 [[ -n "$NOTIFICATION_URL" ]] && CREATE_VA_ARGS+=(-w "$NOTIFICATION_URL")
@@ -222,16 +177,16 @@ echo "==> virtualAccountNo: ${VA_NO}"
 echo
 
 echo "=================================================================="
-echo "Step 3/5: POST /openapi/v1.0/transfer-va/inquiry"
+echo "Step 2/4: POST /openapi/v1.0/transfer-va/inquiry (vendor identity)"
 echo "=================================================================="
-INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
+INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE" | jq .
 echo
 
 echo "=================================================================="
-echo "Step 4/5: POST /openapi/v1.0/transfer-va/payment"
+echo "Step 3/4: POST /openapi/v1.0/transfer-va/payment (vendor identity)"
 echo "=================================================================="
-PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
+PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$PAYMENT_RESPONSE" | jq .
 
 PAYMENT_CODE="$(echo "$PAYMENT_RESPONSE" | jq -r '.responseCode // empty')"
@@ -242,7 +197,7 @@ fi
 echo
 
 echo "=================================================================="
-echo "Step 5/5: Merchant payment callback"
+echo "Step 4/4: Merchant payment callback"
 echo "=================================================================="
 if [[ "$USING_LOCAL_LISTENER" == true ]]; then
 	echo "==> Waiting for the async callback (Asynq -> payment_notification_worker) to reach ${NOTIFICATION_URL} ..."
@@ -271,5 +226,5 @@ fi
 
 echo
 echo "=================================================================="
-echo "Done: token issued -> VA ${VA_NO} created -> inquiry confirmed -> paid -> callback checked."
+echo "Done: VA ${VA_NO} created -> inquiry confirmed -> paid -> callback checked."
 echo "=================================================================="
