@@ -145,7 +145,7 @@ echo
 echo "=================================================================="
 echo "Step 3/8: Cancel VA #1 while still pending -> expect success"
 echo "=================================================================="
-DELETE1_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_CANCEL" -v "$VA_NO_CANCEL" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
+DELETE1_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_CANCEL" -v "$VA_NO_CANCEL" -o "$ACCESS_TOKEN" -g "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$DELETE1_RESPONSE" | jq .
 expect_code "cancel pending VA#1" "$DELETE1_RESPONSE" "200"
 echo
@@ -177,7 +177,7 @@ echo
 echo "=================================================================="
 echo "Step 7/8: Try cancelling VA #2 (now paid) -> expect REJECTION"
 echo "=================================================================="
-DELETE2_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
+DELETE2_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -o "$ACCESS_TOKEN" -g "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$DELETE2_RESPONSE" | jq .
 expect_code "cancel paid VA#2 (must be rejected)" "$DELETE2_RESPONSE" "405"
 echo

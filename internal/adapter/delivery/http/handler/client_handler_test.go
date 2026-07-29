@@ -35,6 +35,16 @@ func (m *MockClientUsecase) RevokeClientKey(ctx context.Context, clientID, keyID
 	return args.Error(0)
 }
 
+func (m *MockClientUsecase) AddClientSecret(ctx context.Context, secret *domain.ClientSecret) error {
+	args := m.Called(ctx, secret)
+	return args.Error(0)
+}
+
+func (m *MockClientUsecase) RevokeClientSecret(ctx context.Context, clientID, secretID string) error {
+	args := m.Called(ctx, clientID, secretID)
+	return args.Error(0)
+}
+
 const testRSAPubPEM = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtcbGGNSyv5wZjDNtEQIF
 JSxUspXV5oO/g9u6ZGgo9rNOrf28Iu2mVONaPYmUlYoNFqkS1ljpLoz+6mrH3mpB
@@ -294,6 +304,136 @@ func TestClientHandler_RevokeClientKey(t *testing.T) {
 		mockUC.On("RevokeClientKey", mock.Anything, "c1", "k1").Return(assert.AnError).Once()
 
 		err := h.RevokeClientKey(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+		mockUC.AssertExpectations(t)
+	})
+}
+
+func TestClientHandler_AddClientSecret(t *testing.T) {
+	e := echo.New()
+
+	newCtx := func(body []byte, clientID string) (echo.Context, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest(http.MethodPost, "/admin/clients/"+clientID+"/secret", bytes.NewReader(body))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("clientId")
+		c.SetParamValues(clientID)
+		return c, rec
+	}
+
+	t.Run("Missing clientId path param", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/clients//secret", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+
+		err := h.AddClientSecret(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("Invalid payload", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		c, rec := newCtx([]byte(`{"secretId":`), "c1")
+		err := h.AddClientSecret(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("Missing secretId/secretValue", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		body, _ := json.Marshal(domain.AddClientSecretRequest{SecretID: "s1"})
+		c, rec := newCtx(body, "c1")
+		err := h.AddClientSecret(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("Success", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		body, _ := json.Marshal(domain.AddClientSecretRequest{SecretID: "s1", SecretValue: "shh"})
+		c, rec := newCtx(body, "c1")
+
+		mockUC.On("AddClientSecret", mock.Anything, mock.Anything).Return(nil).Once()
+
+		err := h.AddClientSecret(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusCreated, rec.Code)
+		mockUC.AssertExpectations(t)
+
+		var resp map[string]interface{}
+		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.NotContains(t, rec.Body.String(), "shh", "secretValue must never be echoed back in the response")
+	})
+
+	t.Run("Usecase error", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		body, _ := json.Marshal(domain.AddClientSecretRequest{SecretID: "s1", SecretValue: "shh"})
+		c, rec := newCtx(body, "c1")
+		mockUC.On("AddClientSecret", mock.Anything, mock.Anything).Return(assert.AnError).Once()
+
+		err := h.AddClientSecret(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+		mockUC.AssertExpectations(t)
+	})
+}
+
+func TestClientHandler_RevokeClientSecret(t *testing.T) {
+	e := echo.New()
+
+	newCtx := func(clientID, secretID string) (echo.Context, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest(http.MethodDelete, "/admin/clients/"+clientID+"/secret/"+secretID, nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("clientId", "secretId")
+		c.SetParamValues(clientID, secretID)
+		return c, rec
+	}
+
+	t.Run("Missing path params", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		c, rec := newCtx("", "")
+		err := h.RevokeClientSecret(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("Success", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		c, rec := newCtx("c1", "s1")
+		mockUC.On("RevokeClientSecret", mock.Anything, "c1", "s1").Return(nil).Once()
+
+		err := h.RevokeClientSecret(c)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		mockUC.AssertExpectations(t)
+	})
+
+	t.Run("Usecase error", func(t *testing.T) {
+		mockUC := new(MockClientUsecase)
+		h := handler.NewClientHandler(mockUC)
+
+		c, rec := newCtx("c1", "s1")
+		mockUC.On("RevokeClientSecret", mock.Anything, "c1", "s1").Return(assert.AnError).Once()
+
+		err := h.RevokeClientSecret(c)
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusInternalServerError, rec.Code)
 		mockUC.AssertExpectations(t)

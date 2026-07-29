@@ -367,6 +367,8 @@ func main() {
 	adminGroup.POST("/clients", clientHandler.RegisterClient)
 	adminGroup.POST("/clients/:clientId/keys", clientHandler.AddClientKey)
 	adminGroup.DELETE("/clients/:clientId/keys/:keyId", clientHandler.RevokeClientKey)
+	adminGroup.POST("/clients/:clientId/secret", clientHandler.AddClientSecret)
+	adminGroup.DELETE("/clients/:clientId/secret/:secretId", clientHandler.RevokeClientSecret)
 	adminGroup.POST("/transactions/:virtualAccountNo/resend-callback", adminResendHandler.Resend)
 	if adminAPIKey == "" {
 		log.Println("Warning: ADMIN_API_KEY not set — /admin/* endpoints are disabled")
@@ -409,7 +411,7 @@ func main() {
 		// its own sub-group so MerchantAuthMiddleware never applies to the
 		// vendor routes above (and SNAPAuthMiddleware never applies here).
 		merchantGroup := transferVAGroup.Group("")
-		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer))
+		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo))
 		merchantGroup.POST("/create-va", merchantVAHandler.CreateVA)
 		merchantGroup.POST("/list", merchantVAHandler.ListVA)
 		merchantGroup.DELETE("/delete-va", merchantVAHandler.DeleteVA)

@@ -9,6 +9,13 @@ definitions:
       publicKeyPem:
         type: string
     type: object
+  domain.AddClientSecretRequest:
+    properties:
+      secretId:
+        type: string
+      secretValue:
+        type: string
+    type: object
   domain.Amount:
     properties:
       currency:
@@ -85,6 +92,21 @@ definitions:
       key_id:
         type: string
       public_key_pem:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  domain.ClientSecret:
+    properties:
+      client_id:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      is_active:
+        type: boolean
+      secret_id:
         type: string
       updated_at:
         type: string
@@ -608,6 +630,8 @@ definitions:
         $ref: '#/definitions/domain.ClientKey'
       message:
         type: string
+      secret:
+        $ref: '#/definitions/domain.ClientSecret'
       status:
         type: string
     type: object
@@ -785,6 +809,109 @@ paths:
       security:
       - AdminToken: []
       summary: Revoke a client key
+      tags:
+      - Admin Client Management
+  /admin/clients/{clientId}/secret:
+    post:
+      description: 'Registers an additional active shared secret for an existing client,
+        used to verify merchant-facing X-SIGNATURE. State-changing: creates a persistent
+        client_secret record. The secret value is never echoed back in any response.'
+      parameters:
+      - description: Static admin API key (ADMIN_API_KEY)
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Client identifier
+        in: path
+        name: clientId
+        required: true
+        type: string
+      - description: Client secret payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.AddClientSecretRequest'
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "400":
+          description: Missing clientId, missing secretId/secretValue
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "401":
+          description: Unauthorized. Invalid or missing X-Admin-API-Key header
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "503":
+          description: Admin API disabled (ADMIN_API_KEY not set)
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - AdminToken: []
+      summary: Provision a merchant shared secret
+      tags:
+      - Admin Client Management
+  /admin/clients/{clientId}/secret/{secretId}:
+    delete:
+      description: 'Revokes (deactivates) a client''s shared secret so it can no longer
+        be used to verify signatures. State-changing: updates a persistent client_secret
+        record.'
+      parameters:
+      - description: Static admin API key (ADMIN_API_KEY)
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Client identifier
+        in: path
+        name: clientId
+        required: true
+        type: string
+      - description: Secret identifier to revoke
+        in: path
+        name: secretId
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "400":
+          description: Missing clientId or secretId path parameters
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "401":
+          description: Unauthorized. Invalid or missing X-Admin-API-Key header
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.clientResponse'
+        "503":
+          description: Admin API disabled (ADMIN_API_KEY not set)
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - AdminToken: []
+      summary: Revoke a merchant shared secret
       tags:
       - Admin Client Management
   /admin/transactions/{virtualAccountNo}/resend-callback:
@@ -1001,6 +1128,17 @@ paths:
         name: Authorization
         required: true
         type: string
+      - description: Request timestamp, ISO 8601, must be within ±5 minutes of server
+          time
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: HMAC-SHA512(merchantSecret, \
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
       - description: Unique external ID for this request
         in: header
         name: X-EXTERNAL-ID
@@ -1023,7 +1161,9 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "401":
-          description: 'Unauthorized: missing/invalid/expired accessToken'
+          description: 'Unauthorized: missing/invalid/expired accessToken, invalid/missing
+            X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret
+            provisioned for this client'
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "409":
@@ -1054,6 +1194,17 @@ paths:
         name: Authorization
         required: true
         type: string
+      - description: Request timestamp, ISO 8601, must be within ±5 minutes of server
+          time
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: HMAC-SHA512(merchantSecret, \
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
       - description: Unique external ID for this request
         in: header
         name: X-EXTERNAL-ID
@@ -1075,7 +1226,9 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "401":
-          description: 'Unauthorized: missing/invalid/expired accessToken'
+          description: 'Unauthorized: missing/invalid/expired accessToken, invalid/missing
+            X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret
+            provisioned for this client'
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "409":
@@ -1168,6 +1321,17 @@ paths:
         name: Authorization
         required: true
         type: string
+      - description: Request timestamp, ISO 8601, must be within ±5 minutes of server
+          time
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: HMAC-SHA512(merchantSecret, \
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
       - description: Unique external ID for this request
         in: header
         name: X-EXTERNAL-ID
@@ -1189,7 +1353,9 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "401":
-          description: 'Unauthorized: missing/invalid/expired accessToken'
+          description: 'Unauthorized: missing/invalid/expired accessToken, invalid/missing
+            X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret
+            provisioned for this client'
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "409":

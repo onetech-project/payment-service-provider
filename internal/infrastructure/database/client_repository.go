@@ -77,3 +77,36 @@ func (r *ClientRepository) RevokeClientKey(ctx context.Context, clientID, keyID 
 	}
 	return nil
 }
+
+func (r *ClientRepository) GetActiveClientSecret(ctx context.Context, clientID string) (string, error) {
+	query := `SELECT secret_value FROM client_secrets WHERE client_id = $1 AND is_active = true ORDER BY created_at DESC LIMIT 1`
+
+	var secretValue string
+	err := r.pool.QueryRow(ctx, query, clientID).Scan(&secretValue)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrClientNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to query client_secrets: %w", err)
+	}
+
+	return secretValue, nil
+}
+
+func (r *ClientRepository) CreateClientSecret(ctx context.Context, secret *domain.ClientSecret) error {
+	query := `INSERT INTO client_secrets (id, client_id, secret_id, secret_value, is_active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err := r.pool.Exec(ctx, query, secret.ID, secret.ClientID, secret.SecretID, secret.SecretValue, secret.IsActive, secret.CreatedAt, secret.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to insert client_secrets: %w", err)
+	}
+	return nil
+}
+
+func (r *ClientRepository) RevokeClientSecret(ctx context.Context, clientID, secretID string) error {
+	query := `UPDATE client_secrets SET is_active = false, updated_at = NOW() WHERE client_id = $1 AND secret_id = $2`
+	_, err := r.pool.Exec(ctx, query, clientID, secretID)
+	if err != nil {
+		return fmt.Errorf("failed to revoke client_secret: %w", err)
+	}
+	return nil
+}

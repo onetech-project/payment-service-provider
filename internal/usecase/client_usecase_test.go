@@ -223,3 +223,69 @@ func TestClientUsecase_AddClientKey(t *testing.T) {
 		mockRepo.AssertExpectations(t)
 	})
 }
+
+func TestClientUsecase_AddClientSecret(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("Success", func(t *testing.T) {
+		mockRepo := new(MockClientRepository)
+		uc := usecase.NewClientUsecase(mockRepo, nil)
+
+		mockRepo.On("CreateClientSecret", ctx, mock.Anything).Return(nil).Once()
+
+		secret := &domain.ClientSecret{ClientID: "client-1", SecretID: "secret-1", SecretValue: "shh"}
+		err := uc.AddClientSecret(ctx, secret)
+		assert.NoError(t, err)
+		assert.True(t, secret.IsActive)
+		mockRepo.AssertExpectations(t)
+	})
+
+	t.Run("Missing client_id", func(t *testing.T) {
+		mockRepo := new(MockClientRepository)
+		uc := usecase.NewClientUsecase(mockRepo, nil)
+
+		err := uc.AddClientSecret(ctx, &domain.ClientSecret{SecretID: "secret-1", SecretValue: "shh"})
+		assert.Error(t, err)
+		mockRepo.AssertNotCalled(t, "CreateClientSecret", mock.Anything, mock.Anything)
+	})
+
+	t.Run("Missing secret_id", func(t *testing.T) {
+		mockRepo := new(MockClientRepository)
+		uc := usecase.NewClientUsecase(mockRepo, nil)
+
+		err := uc.AddClientSecret(ctx, &domain.ClientSecret{ClientID: "client-1", SecretValue: "shh"})
+		assert.Error(t, err)
+	})
+
+	t.Run("Missing secret_value", func(t *testing.T) {
+		mockRepo := new(MockClientRepository)
+		uc := usecase.NewClientUsecase(mockRepo, nil)
+
+		err := uc.AddClientSecret(ctx, &domain.ClientSecret{ClientID: "client-1", SecretID: "secret-1"})
+		assert.Error(t, err)
+	})
+
+	t.Run("CreateClientSecret repo error", func(t *testing.T) {
+		mockRepo := new(MockClientRepository)
+		uc := usecase.NewClientUsecase(mockRepo, nil)
+
+		mockRepo.On("CreateClientSecret", ctx, mock.Anything).Return(errors.New("db error")).Once()
+
+		secret := &domain.ClientSecret{ClientID: "client-1", SecretID: "secret-1", SecretValue: "shh"}
+		err := uc.AddClientSecret(ctx, secret)
+		assert.Error(t, err)
+		mockRepo.AssertExpectations(t)
+	})
+}
+
+func TestClientUsecase_RevokeClientSecret(t *testing.T) {
+	ctx := context.Background()
+	mockRepo := new(MockClientRepository)
+	uc := usecase.NewClientUsecase(mockRepo, nil)
+
+	mockRepo.On("RevokeClientSecret", ctx, "client-1", "secret-1").Return(nil).Once()
+
+	err := uc.RevokeClientSecret(ctx, "client-1", "secret-1")
+	assert.NoError(t, err)
+	mockRepo.AssertExpectations(t)
+}

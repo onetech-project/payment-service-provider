@@ -1,0 +1,170 @@
+openapi: 3.0.3
+info:
+  title: Merchant transfer-va endpoints — HMAC signature enforcement (delta)
+  version: "1.0.0"
+  description: >
+    Delta on top of feature 009's merchant-facing contract
+    (create-va/list/delete-va already require Authorization: Bearer). This
+    feature adds a mandatory X-SIGNATURE/X-TIMESTAMP requirement on top,
+    plus two new admin provisioning endpoints. No existing request/response
+    schema changes.
+paths:
+  /openapi/v1.0/transfer-va/create-va:
+    post:
+      description: >
+        NEW: in addition to the existing Bearer accessToken requirement
+        (feature 009), this endpoint now also requires X-TIMESTAMP and a
+        valid X-SIGNATURE, verified with the shared secret provisioned for
+        the calling client (see POST /admin/clients/{clientId}/secret).
+        Unlike the vendor-facing endpoints, the AccessToken component of
+        the signing input is the real bearer token, not an empty string.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: X-TIMESTAMP
+          in: header
+          required: true
+          schema:
+            type: string
+          description: ISO 8601 request timestamp, must be within ±5 minutes of server time.
+        - name: X-SIGNATURE
+          in: header
+          required: true
+          schema:
+            type: string
+          description: >
+            HMAC-SHA512(secret, "POST:<path>:<accessToken>:<sha256hex(body)>:<timestamp>"),
+            hex-encoded.
+      responses:
+        '401':
+          description: >
+            NEW cases added to the existing 401 (missing/invalid/expired
+            token, feature 009): signature does not match, X-TIMESTAMP
+            outside the ±5 minute window, or the calling client has no
+            active shared secret provisioned (fail-closed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /openapi/v1.0/transfer-va/list:
+    post:
+      description: Same delta as /create-va above.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+      responses:
+        '401':
+          description: Same delta as /create-va above.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /openapi/v1.0/transfer-va/delete-va:
+    delete:
+      description: Same delta as /create-va above.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XSignature'
+      responses:
+        '401':
+          description: Same delta as /create-va above.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/clients/{clientId}/secret:
+    post:
+      summary: Provision or rotate a merchant's shared secret (NEW)
+      description: >
+        Admin-only (X-Admin-API-Key). Creates a new active shared secret for
+        the client, mirroring POST /admin/clients/{clientId}/keys. The
+        previous active secret (if any) is left in place unless separately
+        revoked — callers wanting a hard rotation should revoke the old
+        secretId after confirming the new one works.
+      security:
+        - AdminToken: []
+      parameters:
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddClientSecretRequest'
+      responses:
+        '201':
+          description: Secret provisioned.
+        '404':
+          description: Unknown clientId.
+        '409':
+          description: secretId already exists for this client.
+  /admin/clients/{clientId}/secret/{secretId}:
+    delete:
+      summary: Revoke a merchant's shared secret (NEW)
+      description: Admin-only. Mirrors DELETE /admin/clients/{clientId}/keys/{keyId}.
+      security:
+        - AdminToken: []
+      parameters:
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: secretId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Secret revoked (is_active set to false).
+        '404':
+          description: Unknown clientId/secretId.
+components:
+  parameters:
+    XTimestamp:
+      name: X-TIMESTAMP
+      in: header
+      required: true
+      schema:
+        type: string
+    XSignature:
+      name: X-SIGNATURE
+      in: header
+      required: true
+      schema:
+        type: string
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    AdminToken:
+      type: apiKey
+      name: X-Admin-API-Key
+      in: header
+  schemas:
+    AddClientSecretRequest:
+      type: object
+      required: [secretId, secretValue]
+      properties:
+        secretId:
+          type: string
+        secretValue:
+          type: string
+          description: The shared secret value. Never echoed back in any response.
+    ErrorResponse:
+      type: object
+      properties:
+        responseCode:
+          type: string
+        responseMessage:
+          type: string

@@ -94,5 +94,34 @@ func (u *ClientUsecase) AddClientKey(ctx context.Context, key *domain.ClientKey)
 	return nil
 }
 
+// AddClientSecret provisions a new active shared secret for an existing
+// client, used to verify the symmetric X-SIGNATURE on merchant-facing
+// transfer-va requests (feature 010-merchant-hmac-signature). Mirrors
+// AddClientKey.
+func (u *ClientUsecase) AddClientSecret(ctx context.Context, secret *domain.ClientSecret) error {
+	if secret.ClientID == "" || secret.SecretID == "" || secret.SecretValue == "" {
+		return errors.New("client_id, secret_id and secret_value are required")
+	}
+
+	if secret.ID == "" {
+		secret.ID = uuid.New().String()
+	}
+	secret.IsActive = true
+	secret.CreatedAt = time.Now()
+	secret.UpdatedAt = time.Now()
+
+	if err := u.clientRepo.CreateClientSecret(ctx, secret); err != nil {
+		return fmt.Errorf("failed to add client secret: %w", err)
+	}
+
+	return nil
+}
+
+// RevokeClientSecret deactivates a merchant's shared secret so it can no
+// longer be used to verify signatures.
+func (u *ClientUsecase) RevokeClientSecret(ctx context.Context, clientID, secretID string) error {
+	return u.clientRepo.RevokeClientSecret(ctx, clientID, secretID)
+}
+
 // Ensure ClientUsecase implements domain.ClientUsecase
 var _ domain.ClientUsecase = (*ClientUsecase)(nil)

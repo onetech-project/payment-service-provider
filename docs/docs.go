@@ -237,6 +237,158 @@ const docTemplate = `{
                 }
             }
         },
+        "/admin/clients/{clientId}/secret": {
+            "post": {
+                "security": [
+                    {
+                        "AdminToken": []
+                    }
+                ],
+                "description": "Registers an additional active shared secret for an existing client, used to verify merchant-facing X-SIGNATURE. State-changing: creates a persistent client_secret record. The secret value is never echoed back in any response.",
+                "tags": [
+                    "Admin Client Management"
+                ],
+                "summary": "Provision a merchant shared secret",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Static admin API key (ADMIN_API_KEY)",
+                        "name": "X-Admin-API-Key",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client identifier",
+                        "name": "clientId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Client secret payload",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/domain.AddClientSecretRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/handler.clientResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Missing clientId, missing secretId/secretValue",
+                        "schema": {
+                            "$ref": "#/definitions/handler.clientResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized. Invalid or missing X-Admin-API-Key header",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.clientResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Admin API disabled (ADMIN_API_KEY not set)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/clients/{clientId}/secret/{secretId}": {
+            "delete": {
+                "security": [
+                    {
+                        "AdminToken": []
+                    }
+                ],
+                "description": "Revokes (deactivates) a client's shared secret so it can no longer be used to verify signatures. State-changing: updates a persistent client_secret record.",
+                "tags": [
+                    "Admin Client Management"
+                ],
+                "summary": "Revoke a merchant shared secret",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Static admin API key (ADMIN_API_KEY)",
+                        "name": "X-Admin-API-Key",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client identifier",
+                        "name": "clientId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Secret identifier to revoke",
+                        "name": "secretId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.clientResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Missing clientId or secretId path parameters",
+                        "schema": {
+                            "$ref": "#/definitions/handler.clientResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized. Invalid or missing X-Admin-API-Key header",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.clientResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Admin API disabled (ADMIN_API_KEY not set)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/admin/transactions/{virtualAccountNo}/resend-callback": {
             "post": {
                 "security": [
@@ -552,6 +704,20 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Request timestamp, ISO 8601, must be within ±5 minutes of server time",
+                        "name": "X-TIMESTAMP",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "HMAC-SHA512(merchantSecret, \\",
+                        "name": "X-SIGNATURE",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Unique external ID for this request",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
@@ -581,7 +747,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized: missing/invalid/expired accessToken",
+                        "description": "Unauthorized: missing/invalid/expired accessToken, invalid/missing X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret provisioned for this client",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantCreateVAResponse"
                         }
@@ -629,6 +795,20 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Request timestamp, ISO 8601, must be within ±5 minutes of server time",
+                        "name": "X-TIMESTAMP",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "HMAC-SHA512(merchantSecret, \\",
+                        "name": "X-SIGNATURE",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Unique external ID for this request",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
@@ -658,7 +838,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized: missing/invalid/expired accessToken",
+                        "description": "Unauthorized: missing/invalid/expired accessToken, invalid/missing X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret provisioned for this client",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantDeleteVAResponse"
                         }
@@ -799,6 +979,20 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Request timestamp, ISO 8601, must be within ±5 minutes of server time",
+                        "name": "X-TIMESTAMP",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "HMAC-SHA512(merchantSecret, \\",
+                        "name": "X-SIGNATURE",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Unique external ID for this request",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
@@ -828,7 +1022,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized: missing/invalid/expired accessToken",
+                        "description": "Unauthorized: missing/invalid/expired accessToken, invalid/missing X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret provisioned for this client",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantListVAResponse"
                         }
@@ -1056,6 +1250,17 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.AddClientSecretRequest": {
+            "type": "object",
+            "properties": {
+                "secretId": {
+                    "type": "string"
+                },
+                "secretValue": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.Amount": {
             "type": "object",
             "properties": {
@@ -1171,6 +1376,29 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "public_key_pem": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "domain.ClientSecret": {
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "secret_id": {
                     "type": "string"
                 },
                 "updated_at": {
@@ -1950,6 +2178,9 @@ const docTemplate = `{
                 },
                 "message": {
                     "type": "string"
+                },
+                "secret": {
+                    "$ref": "#/definitions/domain.ClientSecret"
                 },
                 "status": {
                     "type": "string"

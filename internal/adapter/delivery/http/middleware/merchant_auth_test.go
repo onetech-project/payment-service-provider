@@ -1,12 +1,15 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"backbone-new/internal/domain"
+	"backbone-new/internal/infrastructure/crypto"
 
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
@@ -33,6 +36,64 @@ func (m *MockJWTIssuer) ValidateToken(tokenString string) (*domain.TokenClaims, 
 	return args.Get(0).(*domain.TokenClaims), args.Error(1)
 }
 
+// MockMerchantClientRepository is a local mock of domain.ClientRepository
+// for merchant_auth_test.go (feature 010-merchant-hmac-signature) — only
+// GetActiveClientSecret is exercised by MerchantAuthMiddleware, but the full
+// interface must be implemented.
+type MockMerchantClientRepository struct {
+	mock.Mock
+}
+
+func (m *MockMerchantClientRepository) GetClientByID(ctx context.Context, clientID string) (*domain.ClientApp, error) {
+	panic("not used by these tests")
+}
+
+func (m *MockMerchantClientRepository) GetActiveClientPublicKey(ctx context.Context, clientID string) (string, error) {
+	panic("not used by these tests")
+}
+
+func (m *MockMerchantClientRepository) CreateClient(ctx context.Context, client *domain.ClientApp) error {
+	panic("not used by these tests")
+}
+
+func (m *MockMerchantClientRepository) CreateClientKey(ctx context.Context, key *domain.ClientKey) error {
+	panic("not used by these tests")
+}
+
+func (m *MockMerchantClientRepository) RevokeClientKey(ctx context.Context, clientID, keyID string) error {
+	panic("not used by these tests")
+}
+
+func (m *MockMerchantClientRepository) GetActiveClientSecret(ctx context.Context, clientID string) (string, error) {
+	args := m.Called(ctx, clientID)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockMerchantClientRepository) CreateClientSecret(ctx context.Context, secret *domain.ClientSecret) error {
+	panic("not used by these tests")
+}
+
+func (m *MockMerchantClientRepository) RevokeClientSecret(ctx context.Context, clientID, secretID string) error {
+	panic("not used by these tests")
+}
+
+// newSignedMerchantRequest builds a POST request carrying a Bearer token and
+// a correctly-computed X-SIGNATURE per this feature's stringToSign
+// convention — unlike the vendor side (snap_auth_test.go's
+// newSignedRequest), the AccessToken component here is the REAL token, not
+// an empty string.
+func newSignedMerchantRequest(t *testing.T, path, body, token, secret, timestamp string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	bodyHash := crypto.HashSHA256Hex(body)
+	stringToSign := crypto.BuildStringToSign(http.MethodPost, path, token, bodyHash, timestamp)
+	signature := crypto.NewHMACSigner(secret, "HMAC-SHA512").Sign(stringToSign)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-TIMESTAMP", timestamp)
+	req.Header.Set("X-SIGNATURE", signature)
+	return req
+}
+
 func TestMerchantAuthMiddleware_MissingAuthorizationHeader_Rejected(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/create-va", nil)
@@ -40,8 +101,9 @@ func TestMerchantAuthMiddleware_MissingAuthorizationHeader_Rejected(t *testing.T
 	c := e.NewContext(req, rec)
 
 	mockIssuer := new(MockJWTIssuer)
+	mockRepo := new(MockMerchantClientRepository)
 
-	middleware := MerchantAuthMiddleware(mockIssuer)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -61,8 +123,9 @@ func TestMerchantAuthMiddleware_MalformedAuthorizationHeader_Rejected(t *testing
 	c := e.NewContext(req, rec)
 
 	mockIssuer := new(MockJWTIssuer)
+	mockRepo := new(MockMerchantClientRepository)
 
-	middleware := MerchantAuthMiddleware(mockIssuer)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -83,8 +146,9 @@ func TestMerchantAuthMiddleware_InvalidToken_Rejected(t *testing.T) {
 
 	mockIssuer := new(MockJWTIssuer)
 	mockIssuer.On("ValidateToken", "bad-token").Return(nil, assert.AnError)
+	mockRepo := new(MockMerchantClientRepository)
 
-	middleware := MerchantAuthMiddleware(mockIssuer)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -94,19 +158,25 @@ func TestMerchantAuthMiddleware_InvalidToken_Rejected(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	mockIssuer.AssertExpectations(t)
+	mockRepo.AssertNotCalled(t, "GetActiveClientSecret", mock.Anything, mock.Anything)
 }
 
-func TestMerchantAuthMiddleware_ValidToken_PassesThrough(t *testing.T) {
+// --- Signature, Fail-Closed & Timestamp Freshness Tests (feature 010-merchant-hmac-signature) ---
+
+func TestMerchantAuthMiddleware_ValidTokenAndSignature_PassesThrough(t *testing.T) {
 	e := echo.New()
-	req := httptest.NewRequest(http.MethodPost, "/create-va", nil)
-	req.Header.Set("Authorization", "Bearer good-token")
+	timestamp := time.Now().Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "good-token", "merchant-secret", timestamp)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
 	mockIssuer := new(MockJWTIssuer)
 	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
 	called := false
 	handler := middleware(func(c echo.Context) error {
 		called = true
@@ -119,4 +189,242 @@ func TestMerchantAuthMiddleware_ValidToken_PassesThrough(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.True(t, called)
 	mockIssuer.AssertExpectations(t)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestMerchantAuthMiddleware_ValidTokenInvalidSignature_Rejected(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "good-token", "merchant-secret", timestamp)
+	req.Header.Set("X-SIGNATURE", "clearly-wrong-signature")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	called := false
+	handler := middleware(func(c echo.Context) error {
+		called = true
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.False(t, called)
+}
+
+func TestMerchantAuthMiddleware_ValidTokenMissingSignature_Rejected(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Format(time.RFC3339)
+	req := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer good-token")
+	req.Header.Set("X-TIMESTAMP", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	handler := middleware(func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestMerchantAuthMiddleware_NoProvisionedSecret_FailsClosed(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	// Signed against a secret the server doesn't have — proves fail-closed
+	// triggers before signature verification is even attempted.
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "good-token", "some-secret", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "unprovisioned-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "unprovisioned-client").Return("", assert.AnError)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	called := false
+	handler := middleware(func(c echo.Context) error {
+		called = true
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.False(t, called)
+}
+
+func TestMerchantAuthMiddleware_StaleTimestamp_Rejected(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "good-token", "merchant-secret", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	handler := middleware(func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestMerchantAuthMiddleware_FutureTimestamp_Rejected(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "good-token", "merchant-secret", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	handler := middleware(func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestMerchantAuthMiddleware_TimestampWithinWindow_PassesThrough(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Add(4 * time.Minute).Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "good-token", "merchant-secret", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	called := false
+	handler := middleware(func(c echo.Context) error {
+		called = true
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, called)
+}
+
+// --- Dual-Enforcement Combination Tests (US4) ---
+
+func TestMerchantAuthMiddleware_InvalidTokenValidSignature_Rejected(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	// A signature that WOULD be valid if the token check passed — proves the
+	// token check still short-circuits first, independent of signature.
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "bad-token", "merchant-secret", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "bad-token").Return(nil, assert.AnError)
+	mockRepo := new(MockMerchantClientRepository)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	handler := middleware(func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	mockRepo.AssertNotCalled(t, "GetActiveClientSecret", mock.Anything, mock.Anything)
+}
+
+func TestMerchantAuthMiddleware_AllFourCombinations(t *testing.T) {
+	timestamp := time.Now().Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+
+	tests := []struct {
+		name           string
+		tokenValid     bool
+		signatureValid bool
+		wantStatus     int
+	}{
+		{"valid token, valid signature", true, true, http.StatusOK},
+		{"valid token, invalid signature", true, false, http.StatusUnauthorized},
+		{"invalid token, valid-looking signature", false, true, http.StatusUnauthorized},
+		{"invalid token, invalid signature", false, false, http.StatusUnauthorized},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := echo.New()
+			token := "good-token"
+			if !tt.tokenValid {
+				token = "bad-token"
+			}
+			req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, token, "merchant-secret", timestamp)
+			if !tt.signatureValid {
+				req.Header.Set("X-SIGNATURE", "clearly-wrong-signature")
+			}
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+
+			mockIssuer := new(MockJWTIssuer)
+			mockRepo := new(MockMerchantClientRepository)
+			if tt.tokenValid {
+				mockIssuer.On("ValidateToken", token).Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+				mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
+			} else {
+				mockIssuer.On("ValidateToken", token).Return(nil, assert.AnError)
+			}
+
+			middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+			handler := middleware(func(c echo.Context) error {
+				return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+			})
+
+			err := handler(c)
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
 }

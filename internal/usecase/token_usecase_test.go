@@ -45,6 +45,21 @@ func (m *MockClientRepository) RevokeClientKey(ctx context.Context, clientID, ke
 	return args.Error(0)
 }
 
+func (m *MockClientRepository) GetActiveClientSecret(ctx context.Context, clientID string) (string, error) {
+	args := m.Called(ctx, clientID)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockClientRepository) CreateClientSecret(ctx context.Context, secret *domain.ClientSecret) error {
+	args := m.Called(ctx, secret)
+	return args.Error(0)
+}
+
+func (m *MockClientRepository) RevokeClientSecret(ctx context.Context, clientID, secretID string) error {
+	args := m.Called(ctx, clientID, secretID)
+	return args.Error(0)
+}
+
 type MockRSAVerifier struct {
 	mock.Mock
 }

@@ -20,10 +20,13 @@
 # on-access expiry detection (VAUsecase.Inquiry/Payment). Omit for a VA that
 # never expires via that mechanism.
 #
-# -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
-# (same raw-secret convention the server itself uses, see vendor_config.go),
-# so the secret never has to be typed as a plain CLI argument (visible in
-# shell history / `ps aux`). -e still wins if both are given.
+# -e/-f is the MERCHANT shared secret (feature 010-merchant-hmac-signature,
+# provisioned via POST /admin/clients/:clientId/secret) — a DIFFERENT secret
+# from a vendor's VENDOR_CLIENT_SECRET, despite -f's key name below (this
+# script's -f loader was originally written for the vendor .env.<vendor>.<channel>
+# file format and its VENDOR_CLIENT_SECRET key; pass the merchant secret
+# directly via -e instead unless you specifically keep it in such a file
+# under that same key name). -e still wins if both are given.
 #
 # -b <billNo> attaches one billDetails entry (billNo + billAmount = -a; -d sets
 # billName) so create-va actually exercises bill-detail persistence

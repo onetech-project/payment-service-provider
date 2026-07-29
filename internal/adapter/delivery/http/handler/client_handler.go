@@ -26,10 +26,11 @@ func NewClientHandler(clientUsecase domain.ClientUsecase) *ClientHandler {
 }
 
 type clientResponse struct {
-	Status  string            `json:"status"`
-	Message string            `json:"message,omitempty"`
-	Client  *domain.ClientApp `json:"client,omitempty"`
-	Key     *domain.ClientKey `json:"key,omitempty"`
+	Status  string               `json:"status"`
+	Message string               `json:"message,omitempty"`
+	Client  *domain.ClientApp    `json:"client,omitempty"`
+	Key     *domain.ClientKey    `json:"key,omitempty"`
+	Secret  *domain.ClientSecret `json:"secret,omitempty"`
 }
 
 // RegisterClient handles POST /admin/clients: creates a new client_app and,
@@ -173,6 +174,83 @@ func (h *ClientHandler) RevokeClientKey(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, clientResponse{Status: "ok", Message: "key revoked"})
+}
+
+// AddClientSecret handles POST /admin/clients/:clientId/secret: provisions
+// an additional active shared secret for an existing client, used to verify
+// the symmetric X-SIGNATURE on merchant-facing transfer-va requests
+// (feature 010-merchant-hmac-signature), e.g. for secret rotation.
+// AddClientSecret godoc
+// @Tags Admin Client Management
+// @Summary Provision a merchant shared secret
+// @Description Registers an additional active shared secret for an existing client, used to verify merchant-facing X-SIGNATURE. State-changing: creates a persistent client_secret record. The secret value is never echoed back in any response.
+// @Security AdminToken
+// @Param X-Admin-API-Key header string true "Static admin API key (ADMIN_API_KEY)"
+// @Param clientId path string true "Client identifier"
+// @Param request body domain.AddClientSecretRequest true "Client secret payload"
+// @Success 201 {object} clientResponse
+// @Failure 400 {object} clientResponse "Missing clientId, missing secretId/secretValue"
+// @Failure 401 {object} map[string]string "Unauthorized. Invalid or missing X-Admin-API-Key header"
+// @Failure 500 {object} clientResponse "Internal Server Error"
+// @Failure 503 {object} map[string]string "Admin API disabled (ADMIN_API_KEY not set)"
+// @Router /admin/clients/{clientId}/secret [post]
+func (h *ClientHandler) AddClientSecret(c echo.Context) error {
+	clientID := c.Param("clientId")
+	if clientID == "" {
+		return c.JSON(http.StatusBadRequest, clientResponse{Status: "error", Message: "clientId path parameter is required"})
+	}
+
+	var req domain.AddClientSecretRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, clientResponse{Status: "error", Message: "Invalid request payload"})
+	}
+
+	if req.SecretID == "" || req.SecretValue == "" {
+		return c.JSON(http.StatusBadRequest, clientResponse{Status: "error", Message: "secretId and secretValue are required"})
+	}
+
+	secret := &domain.ClientSecret{
+		ClientID:    clientID,
+		SecretID:    req.SecretID,
+		SecretValue: req.SecretValue,
+	}
+
+	ctx := c.Request().Context()
+	if err := h.clientUsecase.AddClientSecret(ctx, secret); err != nil {
+		return c.JSON(http.StatusInternalServerError, clientResponse{Status: "error", Message: err.Error()})
+	}
+
+	return c.JSON(http.StatusCreated, clientResponse{Status: "ok", Secret: secret})
+}
+
+// RevokeClientSecret handles DELETE /admin/clients/:clientId/secret/:secretId.
+// RevokeClientSecret godoc
+// @Tags Admin Client Management
+// @Summary Revoke a merchant shared secret
+// @Description Revokes (deactivates) a client's shared secret so it can no longer be used to verify signatures. State-changing: updates a persistent client_secret record.
+// @Security AdminToken
+// @Param X-Admin-API-Key header string true "Static admin API key (ADMIN_API_KEY)"
+// @Param clientId path string true "Client identifier"
+// @Param secretId path string true "Secret identifier to revoke"
+// @Success 200 {object} clientResponse
+// @Failure 400 {object} clientResponse "Missing clientId or secretId path parameters"
+// @Failure 401 {object} map[string]string "Unauthorized. Invalid or missing X-Admin-API-Key header"
+// @Failure 500 {object} clientResponse "Internal Server Error"
+// @Failure 503 {object} map[string]string "Admin API disabled (ADMIN_API_KEY not set)"
+// @Router /admin/clients/{clientId}/secret/{secretId} [delete]
+func (h *ClientHandler) RevokeClientSecret(c echo.Context) error {
+	clientID := c.Param("clientId")
+	secretID := c.Param("secretId")
+	if clientID == "" || secretID == "" {
+		return c.JSON(http.StatusBadRequest, clientResponse{Status: "error", Message: "clientId and secretId path parameters are required"})
+	}
+
+	ctx := c.Request().Context()
+	if err := h.clientUsecase.RevokeClientSecret(ctx, clientID, secretID); err != nil {
+		return c.JSON(http.StatusInternalServerError, clientResponse{Status: "error", Message: err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, clientResponse{Status: "ok", Message: "secret revoked"})
 }
 
 // validateRSAPublicKeyPEM ensures the PEM parses as a PKIX-encoded RSA public

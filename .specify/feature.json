@@ -1,3 +1,3 @@
 {
-  "feature_directory": "specs/009-transfer-va-auth"
+  "feature_directory": "specs/010-merchant-hmac-signature"
 }
