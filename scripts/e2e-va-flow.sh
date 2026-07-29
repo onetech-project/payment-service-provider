@@ -224,14 +224,14 @@ echo
 echo "=================================================================="
 echo "Step 3/5: POST /openapi/v1.0/transfer-va/inquiry"
 echo "=================================================================="
-INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE" | jq .
 echo
 
 echo "=================================================================="
 echo "Step 4/5: POST /openapi/v1.0/transfer-va/payment"
 echo "=================================================================="
-PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT_RESPONSE" | jq .
 
 PAYMENT_CODE="$(echo "$PAYMENT_RESPONSE" | jq -r '.responseCode // empty')"

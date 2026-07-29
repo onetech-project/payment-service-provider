@@ -534,10 +534,7 @@ const docTemplate = `{
             "post": {
                 "security": [
                     {
-                        "SnapTimestamp": []
-                    },
-                    {
-                        "SnapSignature": []
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.\nTo register a payment-notification callback URL, set additionalInfo.dbUrlProcess (e.g. {\"additionalInfo\": {\"dbUrlProcess\": \"https://merchant.example.com/webhook/payment-callback\"}}) — per ASPI's VAUpsertRequest, this is the only defined key under additionalInfo; it is not a top-level request field.",
@@ -548,15 +545,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Request timestamp, ISO 8601",
-                        "name": "X-TIMESTAMP",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Symmetric signature; compute via POST /api/v1/utilities/signature-service",
-                        "name": "X-SIGNATURE",
+                        "description": "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b",
+                        "name": "Authorization",
                         "in": "header",
                         "required": true
                     },
@@ -591,7 +581,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized (mapped from downstream error)",
+                        "description": "Unauthorized: missing/invalid/expired accessToken",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantCreateVAResponse"
                         }
@@ -621,10 +611,7 @@ const docTemplate = `{
             "delete": {
                 "security": [
                     {
-                        "SnapTimestamp": []
-                    },
-                    {
-                        "SnapSignature": []
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Merchant-initiated deletion of a Virtual Account (ASPI DeleteVARequest). This performs a real state-changing action: it permanently removes/deactivates the Virtual Account record.",
@@ -635,15 +622,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Request timestamp, ISO 8601",
-                        "name": "X-TIMESTAMP",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Symmetric signature; compute via POST /api/v1/utilities/signature-service",
-                        "name": "X-SIGNATURE",
+                        "description": "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b",
+                        "name": "Authorization",
                         "in": "header",
                         "required": true
                     },
@@ -678,7 +658,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized (mapped from downstream error)",
+                        "description": "Unauthorized: missing/invalid/expired accessToken",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantDeleteVAResponse"
                         }
@@ -765,7 +745,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized (mapped from downstream error)",
+                        "description": "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
@@ -801,10 +781,7 @@ const docTemplate = `{
             "post": {
                 "security": [
                     {
-                        "SnapTimestamp": []
-                    },
-                    {
-                        "SnapSignature": []
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Merchant-initiated paginated listing of Virtual Account transactions, filterable by date range, status and VA number. Read-only.",
@@ -815,15 +792,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Request timestamp, ISO 8601",
-                        "name": "X-TIMESTAMP",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Symmetric signature; compute via POST /api/v1/utilities/signature-service",
-                        "name": "X-SIGNATURE",
+                        "description": "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b",
+                        "name": "Authorization",
                         "in": "header",
                         "required": true
                     },
@@ -858,7 +828,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized (mapped from downstream error)",
+                        "description": "Unauthorized: missing/invalid/expired accessToken",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantListVAResponse"
                         }
@@ -945,7 +915,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized (mapped from downstream error)",
+                        "description": "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
@@ -1038,7 +1008,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Unauthorized (mapped from downstream error)",
+                        "description": "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }

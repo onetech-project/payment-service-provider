@@ -145,7 +145,7 @@ echo
 echo "=================================================================="
 echo "Step 3/8: Cancel VA #1 while still pending -> expect success"
 echo "=================================================================="
-DELETE1_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_CANCEL" -v "$VA_NO_CANCEL" -u "$BASE_URL")"
+DELETE1_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_CANCEL" -v "$VA_NO_CANCEL" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
 echo "$DELETE1_RESPONSE" | jq .
 expect_code "cancel pending VA#1" "$DELETE1_RESPONSE" "200"
 echo
@@ -169,7 +169,7 @@ echo
 echo "=================================================================="
 echo "Step 6/8: Pay VA #2 -> status becomes paid (00)"
 echo "=================================================================="
-PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT_RESPONSE" | jq .
 expect_code "pay VA#2" "$PAYMENT_RESPONSE" "200"
 echo
@@ -177,7 +177,7 @@ echo
 echo "=================================================================="
 echo "Step 7/8: Try cancelling VA #2 (now paid) -> expect REJECTION"
 echo "=================================================================="
-DELETE2_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -u "$BASE_URL")"
+DELETE2_RESPONSE="$("$SCRIPT_DIR/merchant-delete-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -o "$ACCESS_TOKEN" -u "$BASE_URL")"
 echo "$DELETE2_RESPONSE" | jq .
 expect_code "cancel paid VA#2 (must be rejected)" "$DELETE2_RESPONSE" "405"
 echo
@@ -185,7 +185,7 @@ echo
 echo "=================================================================="
 echo "Step 8/8: Try paying VA #2 again with a NEW paymentRequestId -> expect REJECTION"
 echo "=================================================================="
-PAYMENT2_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -a "999999.00" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT2_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -a "999999.00" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT2_RESPONSE" | jq .
 expect_code "re-pay already-paid VA#2 (must be rejected)" "$PAYMENT2_RESPONSE" "409"
 echo

@@ -24,7 +24,11 @@ services:
       - ASYNQ_REDIS_DB=${ASYNQ_REDIS_DB:-1}
       - ASYNQ_CONCURRENCY=${ASYNQ_CONCURRENCY:-10}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      - CONFIG_DIR=${CONFIG_DIR:-/config}
+      # Hardcoded (not ${CONFIG_DIR:-/config}): the repo-root .env file sets
+      # CONFIG_DIR=. for local non-Docker runs, and docker compose loads that
+      # .env automatically for variable substitution — which would silently
+      # override the /config default here and break vendor config loading.
+      - CONFIG_DIR=/config
       - ADMIN_API_KEY=${ADMIN_API_KEY:-changeme}
       - APP_ENV=${APP_ENV:-dev}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
@@ -33,7 +37,7 @@ services:
       - postgres
       - redis
     volumes:
-      - ./..env.bca.va:/config/.env.bca.va:ro
+      - ./.env.bca.va:/config/.env.bca.va:ro
     deploy:
       resources:
         limits:

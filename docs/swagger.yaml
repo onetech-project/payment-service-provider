@@ -996,14 +996,9 @@ paths:
         Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.
         To register a payment-notification callback URL, set additionalInfo.dbUrlProcess (e.g. {"additionalInfo": {"dbUrlProcess": "https://merchant.example.com/webhook/payment-callback"}}) — per ASPI's VAUpsertRequest, this is the only defined key under additionalInfo; it is not a top-level request field.
       parameters:
-      - description: Request timestamp, ISO 8601
+      - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b
         in: header
-        name: X-TIMESTAMP
-        required: true
-        type: string
-      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
-        in: header
-        name: X-SIGNATURE
+        name: Authorization
         required: true
         type: string
       - description: Unique external ID for this request
@@ -1028,7 +1023,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "401":
-          description: Unauthorized (mapped from downstream error)
+          description: 'Unauthorized: missing/invalid/expired accessToken'
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
         "409":
@@ -1044,8 +1039,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantCreateVAResponse'
       security:
-      - SnapTimestamp: []
-      - SnapSignature: []
+      - BearerAuth: []
       summary: Create or update a Virtual Account
       tags:
       - Merchant VA Dashboard
@@ -1055,14 +1049,9 @@ paths:
         This performs a real state-changing action: it permanently removes/deactivates
         the Virtual Account record.'
       parameters:
-      - description: Request timestamp, ISO 8601
+      - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b
         in: header
-        name: X-TIMESTAMP
-        required: true
-        type: string
-      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
-        in: header
-        name: X-SIGNATURE
+        name: Authorization
         required: true
         type: string
       - description: Unique external ID for this request
@@ -1086,7 +1075,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "401":
-          description: Unauthorized (mapped from downstream error)
+          description: 'Unauthorized: missing/invalid/expired accessToken'
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
         "409":
@@ -1102,8 +1091,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantDeleteVAResponse'
       security:
-      - SnapTimestamp: []
-      - SnapSignature: []
+      - BearerAuth: []
       summary: Delete a Virtual Account
       tags:
       - Merchant VA Dashboard
@@ -1143,7 +1131,8 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "401":
-          description: Unauthorized (mapped from downstream error)
+          description: 'Unauthorized: invalid HMAC signature or X-TIMESTAMP outside
+            the ±5 minute freshness window'
           schema:
             $ref: '#/definitions/domain.VAInquiryResponse'
         "404":
@@ -1174,14 +1163,9 @@ paths:
       description: Merchant-initiated paginated listing of Virtual Account transactions,
         filterable by date range, status and VA number. Read-only.
       parameters:
-      - description: Request timestamp, ISO 8601
+      - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b
         in: header
-        name: X-TIMESTAMP
-        required: true
-        type: string
-      - description: Symmetric signature; compute via POST /api/v1/utilities/signature-service
-        in: header
-        name: X-SIGNATURE
+        name: Authorization
         required: true
         type: string
       - description: Unique external ID for this request
@@ -1205,7 +1189,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "401":
-          description: Unauthorized (mapped from downstream error)
+          description: 'Unauthorized: missing/invalid/expired accessToken'
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
         "409":
@@ -1221,8 +1205,7 @@ paths:
           schema:
             $ref: '#/definitions/domain.MerchantListVAResponse'
       security:
-      - SnapTimestamp: []
-      - SnapSignature: []
+      - BearerAuth: []
       summary: List Virtual Account transactions
       tags:
       - Merchant VA Dashboard
@@ -1262,7 +1245,8 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "401":
-          description: Unauthorized (mapped from downstream error)
+          description: 'Unauthorized: invalid HMAC signature or X-TIMESTAMP outside
+            the ±5 minute freshness window'
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "404":
@@ -1325,7 +1309,8 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAStatusResponse'
         "401":
-          description: Unauthorized (mapped from downstream error)
+          description: 'Unauthorized: invalid HMAC signature or X-TIMESTAMP outside
+            the ±5 minute freshness window'
           schema:
             $ref: '#/definitions/domain.VAStatusResponse'
         "404":

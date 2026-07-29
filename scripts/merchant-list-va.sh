@@ -8,7 +8,11 @@
 # to one virtualAccountNo.
 #
 # Usage:
-#   ./scripts/merchant-list-va.sh -s <partnerServiceId> [-v <virtualAccountNo>] [-u <base-url>]
+#   ./scripts/merchant-list-va.sh -s <partnerServiceId> [-v <virtualAccountNo>] [-o <access-token>] [-u <base-url>]
+#
+# -o <access-token> is required (feature 009-transfer-va-auth): this
+# endpoint now requires a valid Authorization: Bearer <accessToken> issued
+# by curl-b2b-token.sh / POST /access-token/b2b.
 #
 # Requires: curl, uuidgen
 set -euo pipefail
@@ -16,16 +20,18 @@ set -euo pipefail
 BASE_URL="http://localhost:8080"
 PARTNER_SERVICE_ID=""
 VA_NO=""
+ACCESS_TOKEN=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> [-v <virtualAccountNo>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> [-v <virtualAccountNo>] [-o <access-token>] [-u <base-url>]" >&2
 	exit 1
 }
 
-while getopts "s:v:u:h" opt; do
+while getopts "s:v:o:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	v) VA_NO="$OPTARG" ;;
+	o) ACCESS_TOKEN="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	h | *) usage ;;
 	esac
@@ -46,8 +52,14 @@ JSON
 echo "==> POST ${BASE_URL}/openapi/openapi/v1.0/transfer-va/list"
 echo
 
+AUTH_HEADER=()
+if [[ -n "$ACCESS_TOKEN" ]]; then
+	AUTH_HEADER=(-H "Authorization: Bearer ${ACCESS_TOKEN}")
+fi
+
 curl -sS -X POST "${BASE_URL}/openapi/openapi/v1.0/transfer-va/list" \
 	-H "Content-Type: application/json" \
 	-H "Idempotency-Key: $(uuidgen)" \
+	"${AUTH_HEADER[@]}" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)

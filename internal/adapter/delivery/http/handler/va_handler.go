@@ -31,7 +31,7 @@ func NewVAHandler(vaUsecase domain.VAUsecase) *VAHandler {
 // @Param request body domain.VAInquiryRequest true "VA inquiry request"
 // @Success 200 {object} domain.VAInquiryResponse
 // @Failure 400 {object} domain.VAInquiryResponse "Invalid Field Format / Invalid Mandatory Field"
-// @Failure 401 {object} domain.VAInquiryResponse "Unauthorized (mapped from downstream error)"
+// @Failure 401 {object} domain.VAInquiryResponse "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window"
 // @Failure 404 {object} domain.VAInquiryResponse "Not Found (mapped from downstream error), or 4042419 Expired Transaction (virtualAccountData.inquiryStatus=01, feature 007-merchant-expiry-callback)"
 // @Failure 409 {object} domain.VAInquiryResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
 // @Failure 422 {object} domain.VAInquiryResponse "X-EXTERNAL-ID reused with a different payload"
@@ -95,7 +95,7 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 // @Param request body domain.VAPaymentRequest true "VA payment notification"
 // @Success 200 {object} domain.VAPaymentResponse
 // @Failure 400 {object} domain.VAPaymentResponse "Invalid Field Format / Invalid Mandatory Field"
-// @Failure 401 {object} domain.VAPaymentResponse "Unauthorized (mapped from downstream error)"
+// @Failure 401 {object} domain.VAPaymentResponse "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window"
 // @Failure 404 {object} domain.VAPaymentResponse "Not Found (mapped from downstream error), or 4042519 Expired Transaction (virtualAccountData.paymentFlagStatus=01, feature 007-merchant-expiry-callback)"
 // @Failure 409 {object} domain.VAPaymentResponse "Conflict (mapped from downstream error, or in-flight request with same X-EXTERNAL-ID)"
 // @Failure 422 {object} domain.VAPaymentResponse "X-EXTERNAL-ID reused with a different payload"
@@ -160,7 +160,7 @@ func (h *VAHandler) Payment(c echo.Context) error {
 // @Param request body domain.VAStatusRequest true "VA status request"
 // @Success 200 {object} domain.VAStatusResponse
 // @Failure 400 {object} domain.VAStatusResponse "Invalid Field Format / Invalid Mandatory Field"
-// @Failure 401 {object} domain.VAStatusResponse "Unauthorized (mapped from downstream error)"
+// @Failure 401 {object} domain.VAStatusResponse "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window"
 // @Failure 404 {object} domain.VAStatusResponse "Not Found (mapped from downstream error)"
 // @Failure 409 {object} domain.VAStatusResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
 // @Failure 422 {object} domain.VAStatusResponse "X-EXTERNAL-ID reused with a different payload"

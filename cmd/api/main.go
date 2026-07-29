@@ -404,10 +404,15 @@ func main() {
 			transferVAGroup.POST("/status", vaHandler.Status)
 		}
 
-		// Merchant VA Dashboard endpoints (SNAP ASPI compliant)
-		transferVAGroup.POST("/create-va", merchantVAHandler.CreateVA)
-		transferVAGroup.POST("/list", merchantVAHandler.ListVA)
-		transferVAGroup.DELETE("/delete-va", merchantVAHandler.DeleteVA)
+		// Merchant VA Dashboard endpoints (SNAP ASPI compliant) — require a
+		// valid B2B accessToken (feature 009-transfer-va-auth), isolated in
+		// its own sub-group so MerchantAuthMiddleware never applies to the
+		// vendor routes above (and SNAPAuthMiddleware never applies here).
+		merchantGroup := transferVAGroup.Group("")
+		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer))
+		merchantGroup.POST("/create-va", merchantVAHandler.CreateVA)
+		merchantGroup.POST("/list", merchantVAHandler.ListVA)
+		merchantGroup.DELETE("/delete-va", merchantVAHandler.DeleteVA)
 
 		log.Printf("Registered SNAP routes under base path: %s", snapBasePath)
 	}

@@ -24,15 +24,13 @@ func NewMerchantVAHandler(merchantVAUsecase domain.MerchantVAUsecase) *MerchantV
 // @Summary Create or update a Virtual Account
 // @Description Merchant-initiated upsert of a Virtual Account (ASPI VAUpsertRequest). This performs a real state-changing action: it creates or updates a persistent Virtual Account record.
 // @Description To register a payment-notification callback URL, set additionalInfo.dbUrlProcess (e.g. {"additionalInfo": {"dbUrlProcess": "https://merchant.example.com/webhook/payment-callback"}}) — per ASPI's VAUpsertRequest, this is the only defined key under additionalInfo; it is not a top-level request field.
-// @Security SnapTimestamp
-// @Security SnapSignature
-// @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
-// @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
+// @Security BearerAuth
+// @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
 // @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
 // @Param request body domain.MerchantCreateVARequest true "VA create/update request. additionalInfo.dbUrlProcess carries the merchant payment-callback URL (see description)."
 // @Success 200 {object} domain.MerchantCreateVAResponse "additionalInfo.dbUrlProcess is echoed back in virtualAccountData.additionalInfo"
 // @Failure 400 {object} domain.MerchantCreateVAResponse "Invalid Field Format / Invalid Mandatory Field"
-// @Failure 401 {object} domain.MerchantCreateVAResponse "Unauthorized (mapped from downstream error)"
+// @Failure 401 {object} domain.MerchantCreateVAResponse "Unauthorized: missing/invalid/expired accessToken"
 // @Failure 409 {object} domain.MerchantCreateVAResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
 // @Failure 422 {object} domain.MerchantCreateVAResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.MerchantCreateVAResponse "Internal Server Error"
@@ -85,15 +83,13 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 // @Tags Merchant VA Dashboard
 // @Summary List Virtual Account transactions
 // @Description Merchant-initiated paginated listing of Virtual Account transactions, filterable by date range, status and VA number. Read-only.
-// @Security SnapTimestamp
-// @Security SnapSignature
-// @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
-// @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
+// @Security BearerAuth
+// @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
 // @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
 // @Param request body domain.MerchantListVARequest true "VA list filter/pagination request"
 // @Success 200 {object} domain.MerchantListVAResponse
 // @Failure 400 {object} domain.MerchantListVAResponse "Invalid Field Format"
-// @Failure 401 {object} domain.MerchantListVAResponse "Unauthorized (mapped from downstream error)"
+// @Failure 401 {object} domain.MerchantListVAResponse "Unauthorized: missing/invalid/expired accessToken"
 // @Failure 409 {object} domain.MerchantListVAResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
 // @Failure 422 {object} domain.MerchantListVAResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.MerchantListVAResponse "Internal Server Error"
@@ -131,15 +127,13 @@ func (h *MerchantVAHandler) ListVA(c echo.Context) error {
 // @Tags Merchant VA Dashboard
 // @Summary Delete a Virtual Account
 // @Description Merchant-initiated deletion of a Virtual Account (ASPI DeleteVARequest). This performs a real state-changing action: it permanently removes/deactivates the Virtual Account record.
-// @Security SnapTimestamp
-// @Security SnapSignature
-// @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
-// @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
+// @Security BearerAuth
+// @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
 // @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
 // @Param request body domain.MerchantDeleteVARequest true "VA delete request"
 // @Success 200 {object} domain.MerchantDeleteVAResponse
 // @Failure 400 {object} domain.MerchantDeleteVAResponse "Invalid Field Format / Invalid Mandatory Field"
-// @Failure 401 {object} domain.MerchantDeleteVAResponse "Unauthorized (mapped from downstream error)"
+// @Failure 401 {object} domain.MerchantDeleteVAResponse "Unauthorized: missing/invalid/expired accessToken"
 // @Failure 409 {object} domain.MerchantDeleteVAResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
 // @Failure 422 {object} domain.MerchantDeleteVAResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.MerchantDeleteVAResponse "Internal Server Error"

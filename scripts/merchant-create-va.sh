@@ -221,6 +221,15 @@ echo "==> Request body:" >&2
 echo "$BODY" | (command -v jq >/dev/null && jq . || cat) >&2
 echo >&2
 
+AUTH_HEADER=()
+if [[ -n "$ACCESS_TOKEN" ]]; then
+	AUTH_HEADER=(-H "Authorization: Bearer ${ACCESS_TOKEN}")
+fi
+
+# Merchant-facing endpoints (create-va/list/delete-va) require a valid
+# accessToken bearer header (feature 009-transfer-va-auth) — this is
+# separate from ACCESS_TOKEN's other role as a component of stringToSign
+# above (a SNAP convention that predates and is unrelated to this header).
 curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "Content-Type: application/json" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
@@ -229,5 +238,6 @@ curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "X-PARTNER-ID: ${PARTNER_ID}" \
 	-H "X-EXTERNAL-ID: ${EXTERNAL_ID}" \
 	-H "Idempotency-Key: $(uuidgen)" \
+	"${AUTH_HEADER[@]}" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)

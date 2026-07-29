@@ -212,7 +212,7 @@ echo "=================================================================="
 BASELINE_COUNT=0
 [[ -n "$WEBHOOK_TOKEN" ]] && BASELINE_COUNT="$(webhook_request_count)"
 
-INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE" | jq .
 
 INQUIRY_CODE="$(echo "$INQUIRY_RESPONSE" | jq -r '.responseCode // empty')"
@@ -227,7 +227,7 @@ echo
 echo "=================================================================="
 echo "Step 5/9: POST /openapi/v1.0/transfer-va/payment (expect 4042519)"
 echo "=================================================================="
-PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT_RESPONSE" | jq .
 
 PAYMENT_CODE="$(echo "$PAYMENT_RESPONSE" | jq -r '.responseCode // empty')"
@@ -254,7 +254,7 @@ echo
 echo "=================================================================="
 echo "Step 7/9: repeat inquiry (expect 4042419 again, NO second callback)"
 echo "=================================================================="
-INQUIRY_RESPONSE_2="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+INQUIRY_RESPONSE_2="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE_2" | jq .
 INQUIRY_CODE_2="$(echo "$INQUIRY_RESPONSE_2" | jq -r '.responseCode // empty')"
 [[ "$INQUIRY_CODE_2" == "4042419" ]] && echo "==> PASS: still returns 4042419" || echo "!! FAIL: expected 4042419, got ${INQUIRY_CODE_2:-<none>}" >&2

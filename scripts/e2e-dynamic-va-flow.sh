@@ -142,12 +142,12 @@ echo "==> derived virtualAccountNo: ${VA_NO_1}"
 echo
 
 echo "--- inquiry ---"
-INQUIRY_RESP_1="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s 15973 -c "$CUSTOMER_NO_1" -v "$VA_NO_1" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+INQUIRY_RESP_1="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s 15973 -c "$CUSTOMER_NO_1" -v "$VA_NO_1" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$INQUIRY_RESP_1" | jq .
 echo
 
 echo "--- payment (any amount accepted for no-bill) ---"
-PAYMENT_RESP_1="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15973 -c "$CUSTOMER_NO_1" -v "$VA_NO_1" -a "77000.00" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT_RESP_1="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15973 -c "$CUSTOMER_NO_1" -v "$VA_NO_1" -a "77000.00" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT_RESP_1" | jq .
 PAY_CODE_1="$(echo "$PAYMENT_RESP_1" | jq -r '.responseCode // empty')"
 check "payment succeeded (responseCode 2xx)" "$([[ "$PAY_CODE_1" == 2* ]] && echo true || echo false)"
@@ -175,12 +175,12 @@ echo "==> derived virtualAccountNo: ${VA_NO_2}"
 echo
 
 echo "--- inquiry ---"
-INQUIRY_RESP_2="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s 15975 -c "$CUSTOMER_NO_2" -v "$VA_NO_2" -a "$FIXED_AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+INQUIRY_RESP_2="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s 15975 -c "$CUSTOMER_NO_2" -v "$VA_NO_2" -a "$FIXED_AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$INQUIRY_RESP_2" | jq .
 echo
 
 echo "--- payment (exact fixed amount) ---"
-PAYMENT_RESP_2="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15975 -c "$CUSTOMER_NO_2" -v "$VA_NO_2" -a "$FIXED_AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT_RESP_2="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15975 -c "$CUSTOMER_NO_2" -v "$VA_NO_2" -a "$FIXED_AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT_RESP_2" | jq .
 PAY_CODE_2="$(echo "$PAYMENT_RESP_2" | jq -r '.responseCode // empty')"
 PAY_STATUS_2="$(echo "$PAYMENT_RESP_2" | jq -r '.virtualAccountData.paymentFlagStatus // empty')"
@@ -209,12 +209,12 @@ echo "==> derived virtualAccountNo: ${VA_NO_3}"
 echo
 
 echo "--- inquiry ---"
-INQUIRY_RESP_3="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s 15974 -c "$CUSTOMER_NO_3" -v "$VA_NO_3" -a "$TARGET_AMOUNT" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+INQUIRY_RESP_3="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s 15974 -c "$CUSTOMER_NO_3" -v "$VA_NO_3" -a "$TARGET_AMOUNT" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$INQUIRY_RESP_3" | jq .
 echo
 
 echo "--- payment 1/2: partial payment (60000.00 of 100000.00 target) ---"
-PAYMENT_RESP_3A="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15974 -c "$CUSTOMER_NO_3" -v "$VA_NO_3" -a "60000.00" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT_RESP_3A="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15974 -c "$CUSTOMER_NO_3" -v "$VA_NO_3" -a "60000.00" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT_RESP_3A" | jq .
 PAY_CODE_3A="$(echo "$PAYMENT_RESP_3A" | jq -r '.responseCode // empty')"
 PAY_STATUS_3A="$(echo "$PAYMENT_RESP_3A" | jq -r '.virtualAccountData.paymentFlagStatus // empty')"
@@ -225,7 +225,7 @@ check "cumulative paidAmount reflects the first payment (60000.00)" "$([[ "$PAID
 echo
 
 echo "--- payment 2/2: remaining payment (40000.00, reaches 100000.00 target) ---"
-PAYMENT_RESP_3B="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15974 -c "$CUSTOMER_NO_3" -v "$VA_NO_3" -a "40000.00" -e "$CLIENT_SECRET" -t "$ACCESS_TOKEN" -u "$BASE_URL")"
+PAYMENT_RESP_3B="$("$SCRIPT_DIR/vendor-payment-va.sh" -s 15974 -c "$CUSTOMER_NO_3" -v "$VA_NO_3" -a "40000.00" -e "$CLIENT_SECRET" -u "$BASE_URL")"
 echo "$PAYMENT_RESP_3B" | jq .
 PAY_CODE_3B="$(echo "$PAYMENT_RESP_3B" | jq -r '.responseCode // empty')"
 PAY_STATUS_3B="$(echo "$PAYMENT_RESP_3B" | jq -r '.virtualAccountData.paymentFlagStatus // empty')"
