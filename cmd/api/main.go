@@ -391,7 +391,7 @@ func main() {
 		// Existing SNAP VA endpoints (inquiry, payment, status)
 		for _, vc := range vendorConfigs {
 			vendorGroup := transferVAGroup.Group("")
-			vendorGroup.Use(customMiddleware.SNAPAuthMiddleware(vc))
+			vendorGroup.Use(customMiddleware.SNAPAuthMiddleware(vc, jwtIssuer))
 			vendorGroup.POST("/inquiry", vaHandler.Inquiry)
 			vendorGroup.POST("/payment", vaHandler.Payment)
 			vendorGroup.POST("/status", vaHandler.Status)

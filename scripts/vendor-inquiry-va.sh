@@ -4,25 +4,35 @@
 # Simulates the switching vendor calling this PSP to inquire a VA/bill before
 # the customer pays. Protected by SNAPAuthMiddleware (per-vendor config, see
 # .env.<vendor>.<channel>), which requires X-TIMESTAMP/X-SIGNATURE (plus
-# X-PARTNER-ID/X-EXTERNAL-ID per ASPI spec) — verified via HMAC-SHA512 only
-# (feature 009-transfer-va-auth). No accessToken and no X-CLIENT-KEY are
-# ever sent or checked on this endpoint: X-CLIENT-KEY is only used on the
-# access-token endpoint per ASPI spec, and no header on this endpoint ever
-# carries an accessToken, so the AccessToken component of stringToSign below
-# is always an empty string (see snap_auth.go's matching server-side
-# convention).
+# X-PARTNER-ID/X-EXTERNAL-ID per ASPI spec) — verified via HMAC-SHA512
+# (feature 009-transfer-va-auth).
+#
+# Auth (feature 011-vendor-access-token-signature): for vendors migrated to
+# ClientID-based onboarding (VENDOR_CLIENT_ID set in the vendor's
+# .env.<vendor>.<channel>), this endpoint ALSO requires a valid accessToken
+# (Authorization: Bearer), bound into the AccessToken component of
+# stringToSign — mirroring merchant-create-va.sh's convention. For
+# non-migrated (legacy) vendors, omit -f's VENDOR_CLIENT_ID/
+# VENDOR_PRIVATE_KEY_PATH (or pass no -o) and the empty-AccessToken legacy
+# convention is used unchanged.
 #
 # Usage:
 #   ./scripts/vendor-inquiry-va.sh -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> \
-#       (-e <client-secret> | -f <env-file>) [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]
+#       (-e <client-secret> | -f <env-file>) [-o <access-token>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]
 #
 # -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
 # (same raw-secret convention the server itself uses, see vendor_config.go),
 # so the secret never has to be typed as a plain CLI argument (visible in
 # shell history / `ps aux`). -e still wins if both are given.
 #
-# Requires: curl, openssl, uuidgen
+# -f also auto-fetches an accessToken via curl-b2b-token.sh when the env file
+# has VENDOR_CLIENT_ID + VENDOR_PRIVATE_KEY_PATH set (migrated vendor) — no
+# need to pass -o yourself in that case. Pass -o directly to override.
+#
+# Requires: curl, openssl, uuidgen, jq (for accessToken auto-fetch)
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BASE_URL="http://localhost:8080"
 ENDPOINT="/openapi/v1.0/transfer-va/inquiry"
@@ -34,9 +44,10 @@ CLIENT_SECRET=""
 ENV_FILE=""
 CHANNEL_ID="95231"
 PARTNER_ID="111111"
+ACCESS_TOKEN=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> (-e <client-secret> | -f <env-file>) [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -55,7 +66,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:v:a:e:f:i:p:u:h" opt; do
+while getopts "s:c:v:a:e:f:o:i:p:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -63,6 +74,7 @@ while getopts "s:c:v:a:e:f:i:p:u:h" opt; do
 	a) AMOUNT="$OPTARG" ;;
 	e) CLIENT_SECRET="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
+	o) ACCESS_TOKEN="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
@@ -77,6 +89,20 @@ if [[ -n "$ENV_FILE" ]]; then
 	# blank, e.g. "VENDOR_CLIENT_SECRET=" — flag that explicitly so it's not
 	# confused with "the -f flag itself is missing".
 	[[ -z "$CLIENT_SECRET" ]] && echo "!! ${ENV_FILE}: VENDOR_CLIENT_SECRET is empty — fill it in, or pass -e <client-secret> directly." >&2
+
+	if [[ -z "$ACCESS_TOKEN" ]]; then
+		VENDOR_CLIENT_ID="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
+		VENDOR_PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" VENDOR_PRIVATE_KEY_PATH || true)"
+		if [[ -n "$VENDOR_CLIENT_ID" && -n "$VENDOR_PRIVATE_KEY_PATH" ]]; then
+			echo "==> Fetching accessToken for vendor client ${VENDOR_CLIENT_ID}..." >&2
+			TOKEN_RESPONSE="$("$SCRIPT_DIR/curl-b2b-token.sh" -i "$VENDOR_CLIENT_ID" -p "$VENDOR_PRIVATE_KEY_PATH" -u "$BASE_URL")"
+			ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken // empty' 2>/dev/null || true)"
+			[[ -z "$ACCESS_TOKEN" ]] && { echo "!! Failed to obtain accessToken for ${VENDOR_CLIENT_ID} — aborting." >&2; exit 1; }
+		fi
+		# VENDOR_CLIENT_ID/VENDOR_PRIVATE_KEY_PATH absent means this vendor has
+		# not migrated to feature 011 yet — ACCESS_TOKEN stays empty and the
+		# legacy signing convention below is used unchanged.
+	fi
 fi
 
 [[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NO" || -z "$CLIENT_SECRET" ]] && usage
@@ -106,14 +132,16 @@ JSON
 
 # SNAP symmetric signature: HMAC_SHA512(clientSecret, stringToSign)
 # stringToSign = HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp
-# AccessToken is always "" here — no header on this endpoint ever carries one.
+# AccessToken is the real accessToken for migrated vendors (feature
+# 011-vendor-access-token-signature), or "" for legacy (non-migrated) vendors.
 BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -hex | awk '{print $NF}')"
-STRING_TO_SIGN="POST:${ENDPOINT}::${BODY_HASH}:${TIMESTAMP}"
+STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -hex | awk '{print $NF}')"
 
 # Diagnostics go to stderr so stdout stays clean JSON — this lets the script
 # be chained/captured by other scripts (see e2e-va-flow.sh).
 echo "==> POST ${BASE_URL}${ENDPOINT}" >&2
+[[ -n "$ACCESS_TOKEN" ]] && echo "==> Authorization: Bearer ${ACCESS_TOKEN}" >&2
 echo "==> X-TIMESTAMP: $TIMESTAMP" >&2
 echo "==> stringToSign: $STRING_TO_SIGN" >&2
 echo "==> X-SIGNATURE: $SIGNATURE" >&2
@@ -121,8 +149,15 @@ echo "==> Request body:" >&2
 echo "$BODY" | (command -v jq >/dev/null && jq . || cat) >&2
 echo >&2
 
+# Authorization header is only sent when an accessToken was obtained/passed
+# (migrated vendor) — kept out of the array entirely for legacy vendors,
+# matching stringToSign's "" AccessToken component above.
+AUTH_HEADER=()
+[[ -n "$ACCESS_TOKEN" ]] && AUTH_HEADER=(-H "Authorization: Bearer ${ACCESS_TOKEN}")
+
 curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "Content-Type: application/json" \
+	"${AUTH_HEADER[@]}" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
 	-H "X-SIGNATURE: ${SIGNATURE}" \
 	-H "CHANNEL-ID: ${CHANNEL_ID}" \

@@ -78,6 +78,8 @@ A merchant request must satisfy *both* the existing bearer-token check (feature 
 
 The vendor-facing endpoints (inquiry/payment/status) and their existing signature-verification behavior (feature 009, including the convention that the AccessToken component of their `stringToSign` is always empty) are untouched by this feature.
 
+> **Note (feature 011-vendor-access-token-signature)**: the "always empty" AccessToken convention described above was later made conditional — vendors migrated to `ClientID`-based onboarding now bind a real bearer token into the vendor-side `stringToSign` too. This statement remains accurate as a description of feature 010's own scope (it changed nothing here); see `specs/011-vendor-access-token-signature/` for the follow-up change.
+
 **Why this priority**: Regression-safety confirmation rather than new capability — this feature is scoped entirely to the merchant-facing endpoint group.
 
 **Independent Test**: Can be fully tested by re-running the existing vendor-side signature/timestamp test suite and end-to-end flows from feature 009 and confirming zero behavior change.

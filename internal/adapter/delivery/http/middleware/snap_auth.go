@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"backbone-new/internal/domain"
 	"backbone-new/internal/infrastructure/config"
 	"backbone-new/internal/infrastructure/crypto"
 
@@ -14,7 +15,7 @@ import (
 )
 
 // SNAPAuthMiddleware validates SNAP authentication headers based on vendor config
-func SNAPAuthMiddleware(vendorConfig *config.VendorConfig) echo.MiddlewareFunc {
+func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTIssuer) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			// Get required headers from config
@@ -106,6 +107,16 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig) echo.MiddlewareFunc {
 			// shared secret is unconfigured. The request body is read here
 			// and immediately re-buffered so the downstream handler can
 			// still bind it (same pattern as IdempotencyMiddleware).
+			// Access-token binding (feature 011-vendor-access-token-signature):
+			// vendors migrated to ClientID-based onboarding must present a
+			// valid bearer token, which becomes the AccessToken component of
+			// stringToSign below. Legacy vendors (no ClientID configured)
+			// keep today's empty-string convention unchanged.
+			accessToken, errResp := resolveVendorAccessToken(c, vendorConfig, jwtIssuer)
+			if errResp != nil {
+				return errResp(c)
+			}
+
 			bodyBytes, err := io.ReadAll(c.Request().Body)
 			if err != nil {
 				return c.JSON(http.StatusUnauthorized, map[string]string{
@@ -116,13 +127,7 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig) echo.MiddlewareFunc {
 			c.Request().Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 			bodyHash := crypto.HashSHA256Hex(string(bodyBytes))
-			// The accessToken component of stringToSign is not carried by
-			// any header on these symmetric-signed transactional endpoints
-			// (per the existing client tooling in scripts/vendor-*.sh, which
-			// never sends an Authorization header here) — it is always the
-			// empty string on the server side to match what was actually
-			// signed.
-			stringToSign := crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, "", bodyHash, timestamp)
+			stringToSign := crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, accessToken, bodyHash, timestamp)
 			signer := crypto.NewHMACSigner(vendorConfig.ClientSecret, vendorConfig.SignatureAlgorithm)
 			if vendorConfig.ClientSecret == "" || !signer.Verify(stringToSign, c.Request().Header.Get("X-SIGNATURE")) {
 				return c.JSON(http.StatusUnauthorized, map[string]string{
@@ -134,6 +139,51 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig) echo.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+// resolveVendorAccessToken implements feature 011-vendor-access-token-signature:
+// vendors migrated to ClientID-based onboarding (vendorConfig.ClientID set)
+// must present a valid `Authorization: Bearer <token>` header whose ClientID
+// claim matches this vendor config; the validated token string is returned
+// to be bound into stringToSign. Legacy vendors (ClientID empty) are
+// untouched — "", nil is returned immediately, preserving today's
+// empty-AccessToken-component convention.
+func resolveVendorAccessToken(c echo.Context, vendorConfig *config.VendorConfig, jwtIssuer domain.JWTIssuer) (string, func(echo.Context) error) {
+	if vendorConfig.ClientID == "" {
+		return "", nil
+	}
+
+	authHeader := c.Request().Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return "", func(c echo.Context) error {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"responseCode":    "4010000",
+				"responseMessage": "Unauthorized. [Missing or invalid Authorization header]",
+			})
+		}
+	}
+
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	claims, err := jwtIssuer.ValidateToken(token)
+	if err != nil {
+		return "", func(c echo.Context) error {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"responseCode":    "4010000",
+				"responseMessage": "Unauthorized. [Invalid or expired access token]",
+			})
+		}
+	}
+
+	if claims.ClientID != vendorConfig.ClientID {
+		return "", func(c echo.Context) error {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"responseCode":    "4010000",
+				"responseMessage": "Unauthorized. [Invalid signature]",
+			})
+		}
+	}
+
+	return token, nil
 }
 
 // isValidISO8601 validates ISO 8601 timestamp format
