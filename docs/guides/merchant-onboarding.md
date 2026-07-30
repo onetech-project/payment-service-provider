@@ -86,10 +86,14 @@ For every request to `create-va`, `list`, or `delete-va`:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
    ```
-   **Important**: unlike the vendor side, the `accessToken` slot here is the
-   **real token from Step 1** (not empty) — because you genuinely send it
-   via the `Authorization` header on this endpoint, both sides of the
-   signature computation need to agree on that same value.
+   **Important**: the `accessToken` slot here is always the **real token
+   from Step 1** (not empty) — because you genuinely send it via the
+   `Authorization` header on this endpoint, both sides of the signature
+   computation need to agree on that same value. (The vendor side has an
+   equivalent real-token convention too, but only for vendors who've
+   migrated to it — see
+   [vendor-onboarding.md](./vendor-onboarding.md#how-authentication-works);
+   legacy vendors still use an empty slot.)
 5. **Sign**: `signature = base64(HMAC-SHA512(yourSharedSecret, stringToSign))`.
 6. **Send these headers**:
 
