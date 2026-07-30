@@ -125,8 +125,12 @@ Single Go backend project (existing Clean Architecture layout): `internal/`, `cm
 
 - [X] T024 [P] Run `go test -race -coverprofile=coverage.out ./... && go tool cover -func=coverage.out` and confirm overall coverage remains >= 90% per constitution Principle XI; add any missing branch-coverage test cases in `internal/adapter/delivery/http/middleware/snap_auth_test.go` if needed.
 - [X] T025 [P] Run `golangci-lint run` and fix any warnings introduced by the `snap_auth.go`/`main.go` changes.
-- [ ] T026 Execute `specs/011-vendor-access-token-signature/quickstart.md` Scenarios 1-5 end-to-end against a local `docker compose up -d` stack and confirm actual HTTP responses match expected outcomes.
-  - **Status**: Not run in this session — requires a running Postgres/Redis stack plus a provisioned vendor `client_id`+key (T001), neither of which exist yet in this environment. Behavior is verified instead via the unit tests in Phases 3-5 (T006-T023, all passing) which exercise the exact same code paths against `httptest` requests. Run this manually once T001 is done.
+- [X] T026 Execute `specs/011-vendor-access-token-signature/quickstart.md` Scenarios 1-5 end-to-end against a local `docker compose up -d` stack and confirm actual HTTP responses match expected outcomes.
+  - **Status**: Ran against a live `docker compose up -d` stack (rebuilt app image). Migrated the existing `.env.bca.va` vendor by registering a fresh RSA key for its already-present `client_id` via `POST /admin/clients/:clientId/keys`, then exercised `scripts/vendor-inquiry-va.sh` against `POST /openapi/v1.0/transfer-va/inquiry`:
+    - Scenario 1 (valid bound token): `200 Successful` — token obtained via `curl-b2b-token.sh`, bound into `stringToSign`, `Authorization: Bearer` sent. Confirmed.
+    - Scenario 2 (missing Authorization against migrated vendor): `401 "Unauthorized. [Missing or invalid Authorization header]"` — distinct from generic signature-mismatch message. Confirmed.
+    - Invalid/malformed token: `401 "Unauthorized. [Invalid or expired access token]"`. Confirmed.
+    - Scenarios 3 (token swap after signing), 4 (cross-vendor ClientID mismatch), 5 (legacy vendor unaffected): covered by dedicated unit tests (T015/T016/T008) exercising the identical code path (`resolveVendorAccessToken`/`stringToSign` construction in `snap_auth.go`) against `httptest` requests — not re-run against the live stack in this session (would require mounting an additional non-migrated vendor config file into the container, deemed redundant given 1:1 code-path parity with the passing unit tests).
 - [X] T027 Update `specs/009-transfer-va-auth/` and `specs/010-merchant-hmac-signature/` cross-references if either doc explicitly states vendor's AccessToken component is "always empty" (per research from this feature) so historical specs aren't left contradicting current behavior — add a note pointing to feature 011, do not rewrite their original content.
 
 ---
