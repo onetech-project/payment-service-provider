@@ -81,7 +81,7 @@ For every request to `create-va`, `list`, or `delete-va`:
 
 1. **Build the request body** as a JSON object per the request's schema.
 2. **Compute the timestamp**: current time in ISO 8601.
-3. **Hash the body**: `bodyHash = lowercase(hex(SHA256(body)))`.
+3. **Hash the body**: `bodyHash = base64(SHA256(body))`.
 4. **Build `stringToSign`**:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
@@ -90,14 +90,14 @@ For every request to `create-va`, `list`, or `delete-va`:
    **real token from Step 1** (not empty) — because you genuinely send it
    via the `Authorization` header on this endpoint, both sides of the
    signature computation need to agree on that same value.
-5. **Sign**: `signature = hex(HMAC-SHA512(yourSharedSecret, stringToSign))`.
+5. **Sign**: `signature = base64(HMAC-SHA512(yourSharedSecret, stringToSign))`.
 6. **Send these headers**:
 
    | Header | Value |
    |---|---|
    | `Authorization` | `Bearer <accessToken>` from Step 1 |
    | `X-TIMESTAMP` | The same timestamp used in step 2 |
-   | `X-SIGNATURE` | The hex signature from step 5 |
+   | `X-SIGNATURE` | The base64 signature from step 5 |
    | `X-EXTERNAL-ID` | A unique ID per request (idempotency) |
 
 ### Timestamp freshness

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -73,7 +73,7 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 				req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			}
 			hash := sha256.Sum256(bodyBytes)
-			payloadHash := hex.EncodeToString(hash[:])
+			payloadHash := base64.StdEncoding.EncodeToString(hash[:])
 
 			ctx := req.Context()
 

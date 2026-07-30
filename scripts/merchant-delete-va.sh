@@ -96,9 +96,10 @@ EXTERNAL_ID="$(date +%Y%m%d%H%M%S)$RANDOM"
 # 010-merchant-hmac-signature): AccessToken component is the REAL bearer
 # token (unlike the vendor-side convention in vendor-payment-va.sh, which
 # always uses an empty string there since no header ever carries it).
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -hex | awk '{print $NF}')"
+# bodyHash/signature are base64-encoded (feature 012-base64-hash-encoding), not hex.
+BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | openssl base64 -A)"
 STRING_TO_SIGN="DELETE:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
-SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$MERCHANT_SECRET" -hex | awk '{print $NF}')"
+SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$MERCHANT_SECRET" -binary | openssl base64 -A)"
 
 # Diagnostics go to stderr so stdout stays clean JSON — this lets the script
 # be chained/captured by other scripts (see e2e-va-cancel-flow.sh).

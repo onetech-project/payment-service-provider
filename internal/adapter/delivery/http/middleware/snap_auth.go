@@ -126,7 +126,7 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTI
 			}
 			c.Request().Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-			bodyHash := crypto.HashSHA256Hex(string(bodyBytes))
+			bodyHash := crypto.HashSHA256Base64(string(bodyBytes))
 			stringToSign := crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, accessToken, bodyHash, timestamp)
 			signer := crypto.NewHMACSigner(vendorConfig.ClientSecret, vendorConfig.SignatureAlgorithm)
 			if vendorConfig.ClientSecret == "" || !signer.Verify(stringToSign, c.Request().Header.Get("X-SIGNATURE")) {

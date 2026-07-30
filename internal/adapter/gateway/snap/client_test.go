@@ -2,6 +2,7 @@ package snap
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,13 @@ func TestClient_Inquiry_Success(t *testing.T) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Contains(t, r.URL.Path, "/transfer-va/inquiry")
 		assert.NotEmpty(t, r.Header.Get("X-TIMESTAMP"))
-		assert.NotEmpty(t, r.Header.Get("X-SIGNATURE"))
+		signature := r.Header.Get("X-SIGNATURE")
+		assert.NotEmpty(t, signature)
+		// Feature 012-base64-hash-encoding: outbound signature must be
+		// standard base64 (HMAC-SHA256 -> 32 bytes -> 44 chars incl. padding).
+		assert.Len(t, signature, 44)
+		_, decodeErr := base64.StdEncoding.DecodeString(signature)
+		assert.NoError(t, decodeErr, "outbound X-SIGNATURE must be valid standard base64")
 
 		response := domain.VAInquiryResponse{
 			ResponseCode:    "2002400",

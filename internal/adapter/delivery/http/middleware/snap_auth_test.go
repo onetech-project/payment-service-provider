@@ -1,6 +1,10 @@
 package middleware
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +20,14 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+// sha256Sum is a small helper for constructing a hex-encoded (pre-migration
+// convention) body hash in TestSNAPAuthMiddleware_HexEncodedSignature_Rejected.
+func sha256Sum(data string) []byte {
+	h := sha256.New()
+	h.Write([]byte(data))
+	return h.Sum(nil)
+}
+
 // newSignedRequest builds a POST request with a correctly-computed
 // X-SIGNATURE (per the SNAP symmetric-signature convention already used by
 // scripts/vendor-inquiry-va.sh) for the given secret/body/timestamp, so
@@ -23,7 +35,7 @@ import (
 func newSignedRequest(t *testing.T, path, body, secret, timestamp string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	bodyHash := crypto.HashSHA256Hex(body)
+	bodyHash := crypto.HashSHA256Base64(body)
 	stringToSign := crypto.BuildStringToSign(http.MethodPost, path, "", bodyHash, timestamp)
 	signature := crypto.NewHMACSigner(secret, "HMAC-SHA512").Sign(stringToSign)
 	req.Header.Set("X-TIMESTAMP", timestamp)
@@ -202,6 +214,42 @@ func TestSNAPAuthMiddleware_InvalidSignature_Rejected(t *testing.T) {
 	assert.False(t, called, "handler must not be invoked for a mismatched signature")
 }
 
+func TestSNAPAuthMiddleware_HexEncodedSignature_Rejected(t *testing.T) {
+	// Feature 012-base64-hash-encoding: a request signed with the old hex
+	// convention (both bodyHash and HMAC signature) must be rejected now
+	// that the server only accepts base64.
+	e := echo.New()
+	timestamp := time.Now().Format(time.RFC3339)
+	body := `{"partnerServiceId":"15973"}`
+	bodyHashHex := hex.EncodeToString(sha256Sum(body))
+	stringToSign := crypto.BuildStringToSign(http.MethodPost, "/openapi/v1.0/transfer-va/inquiry", "", bodyHashHex, timestamp)
+	mac := hmac.New(sha512.New, []byte("correct-secret"))
+	mac.Write([]byte(stringToSign))
+	signatureHex := hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/inquiry", strings.NewReader(body))
+	req.Header.Set("X-TIMESTAMP", timestamp)
+	req.Header.Set("X-SIGNATURE", signatureHex)
+	req.Header.Set("X-EXTERNAL-ID", "123456")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	vendorConfig := &config.VendorConfig{ClientSecret: "correct-secret", SignatureAlgorithm: "HMAC-SHA512"}
+
+	middleware := SNAPAuthMiddleware(vendorConfig, nil)
+	called := false
+	handler := middleware(func(c echo.Context) error {
+		called = true
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.False(t, called, "handler must not be invoked for a hex-signed (pre-migration) request")
+}
+
 func TestSNAPAuthMiddleware_EmptySignatureValue_Rejected(t *testing.T) {
 	e := echo.New()
 	timestamp := time.Now().Format(time.RFC3339)
@@ -349,7 +397,7 @@ func TestSNAPAuthMiddleware_TimestampWithinWindow_PassesThrough(t *testing.T) {
 func newTokenBoundSignedRequest(t *testing.T, path, body, token, secret, timestamp string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	bodyHash := crypto.HashSHA256Hex(body)
+	bodyHash := crypto.HashSHA256Base64(body)
 	stringToSign := crypto.BuildStringToSign(http.MethodPost, path, token, bodyHash, timestamp)
 	signature := crypto.NewHMACSigner(secret, "HMAC-SHA512").Sign(stringToSign)
 	req.Header.Set("Authorization", "Bearer "+token)

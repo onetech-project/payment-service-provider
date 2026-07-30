@@ -5,7 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha512"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -100,7 +100,7 @@ func (w *PaymentNotificationWorker) HandlePaymentNotification(ctx context.Contex
 	timestamp := time.Now().Format(time.RFC3339)
 	mac := hmac.New(sha512.New, []byte(w.secret))
 	mac.Write(body)
-	signature := hex.EncodeToString(mac.Sum(nil))
+	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")

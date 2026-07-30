@@ -229,10 +229,11 @@ JSON
 )
 
 # SNAP symmetric signature: HMAC_SHA512(clientSecret, stringToSign)
-# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -hex | awk '{print $NF}')"
+# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Base64(SHA-256(minify(body))):Timestamp
+# bodyHash/signature are base64-encoded (feature 012-base64-hash-encoding), not hex.
+BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | openssl base64 -A)"
 STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
-SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -hex | awk '{print $NF}')"
+SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 
 # Diagnostics go to stderr so stdout stays clean JSON — this lets the script
 # be chained/captured by other scripts (see e2e-va-flow.sh).

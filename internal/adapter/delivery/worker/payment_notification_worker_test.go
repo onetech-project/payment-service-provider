@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,11 @@ func TestPaymentNotificationWorker_HandlePaymentNotification(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotEmpty(t, receivedSig)
 		assert.NotEmpty(t, receivedTS)
+		// Feature 012-base64-hash-encoding: X-Signature must be standard
+		// base64 (HMAC-SHA512 -> 64 bytes -> 88 chars incl. padding), not hex.
+		assert.Len(t, receivedSig, 88)
+		_, decodeErr := base64.StdEncoding.DecodeString(receivedSig)
+		assert.NoError(t, decodeErr, "X-Signature must be valid standard base64")
 	})
 
 	t.Run("Notification endpoint returns error status", func(t *testing.T) {

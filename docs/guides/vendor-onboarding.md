@@ -50,7 +50,7 @@ For every request to `inquiry`, `payment`, or `status`:
 1. **Build the request body** as a JSON object per the SNAP transfer-va spec.
 2. **Compute the timestamp**: current time in ISO 8601, e.g.
    `2026-07-30T10:15:00+07:00`.
-3. **Hash the body**: `bodyHash = lowercase(hex(SHA256(body)))`.
+3. **Hash the body**: `bodyHash = base64(SHA256(body))`.
 4. **Build `stringToSign`**:
    ```
    stringToSign = "{METHOD}:{PATH}::{bodyHash}:{timestamp}"
@@ -65,15 +65,15 @@ For every request to `inquiry`, `payment`, or `status`:
 
    Example for `POST /openapi/v1.0/transfer-va/inquiry`:
    ```
-   POST:/openapi/v1.0/transfer-va/inquiry::3a35563aee3eef5d...:2026-07-30T10:15:00+07:00
+   POST:/openapi/v1.0/transfer-va/inquiry::OjVWOu4+711dTdc7...:2026-07-30T10:15:00+07:00
    ```
-5. **Sign**: `signature = hex(HMAC-SHA512(yourSharedSecret, stringToSign))`.
+5. **Sign**: `signature = base64(HMAC-SHA512(yourSharedSecret, stringToSign))`.
 6. **Send these headers**:
 
    | Header | Value |
    |---|---|
    | `X-TIMESTAMP` | The same timestamp used in step 2 |
-   | `X-SIGNATURE` | The hex signature from step 5 |
+   | `X-SIGNATURE` | The base64 signature from step 5 |
    | `X-PARTNER-ID` | Your assigned partner ID |
    | `X-EXTERNAL-ID` | A unique ID per request (idempotency) |
    | `CHANNEL-ID` | Your assigned channel ID (if your config requires it) |

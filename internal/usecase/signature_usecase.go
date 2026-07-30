@@ -56,7 +56,7 @@ func (u *SignatureUsecase) GenerateServiceSignature(ctx context.Context, clientS
 		secret = string(decoded)
 	}
 
-	bodyHash := crypto.HashSHA256Hex(minifyJSON(requestBody))
+	bodyHash := crypto.HashSHA256Base64(minifyJSON(requestBody))
 	stringToSign := fmt.Sprintf("%s:%s:%s:%s:%s", httpMethod, endpointURL, accessToken, bodyHash, timestamp)
 
 	hmacSigner := crypto.NewHMACSigner(secret, "HMAC-SHA512")

@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"backbone-new/internal/usecase"
@@ -83,6 +84,11 @@ func TestSignatureUsecase_GenerateServiceSignature(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "2000000", resp.ResponseCode)
 		assert.NotEmpty(t, resp.Signature)
+		// Feature 012-base64-hash-encoding: signature must be standard base64
+		// (HMAC-SHA512 -> 64 bytes -> 88 chars incl. padding), not hex (128 chars).
+		assert.Len(t, resp.Signature, 88)
+		_, decodeErr := base64.StdEncoding.DecodeString(resp.Signature)
+		assert.NoError(t, decodeErr, "signature must be valid standard base64")
 	})
 
 	t.Run("Success with empty body", func(t *testing.T) {

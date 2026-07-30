@@ -94,7 +94,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body []
 	timestamp := time.Now().Format(time.RFC3339)
 
 	// Hash request body
-	bodyHash := crypto.HashSHA256Hex(string(body))
+	bodyHash := crypto.HashSHA256Base64(string(body))
 
 	// Build string to sign
 	stringToSign := crypto.BuildStringToSign(method, endpoint, "", bodyHash, timestamp)

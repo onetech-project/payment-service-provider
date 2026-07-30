@@ -2,6 +2,9 @@ package middleware
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha512"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,7 +88,7 @@ func (m *MockMerchantClientRepository) RevokeClientSecret(ctx context.Context, c
 func newSignedMerchantRequest(t *testing.T, path, body, token, secret, timestamp string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	bodyHash := crypto.HashSHA256Hex(body)
+	bodyHash := crypto.HashSHA256Base64(body)
 	stringToSign := crypto.BuildStringToSign(http.MethodPost, path, token, bodyHash, timestamp)
 	signature := crypto.NewHMACSigner(secret, "HMAC-SHA512").Sign(stringToSign)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -218,6 +221,48 @@ func TestMerchantAuthMiddleware_ValidTokenInvalidSignature_Rejected(t *testing.T
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.False(t, called)
+}
+
+func TestMerchantAuthMiddleware_HexEncodedSignature_Rejected(t *testing.T) {
+	// Feature 012-base64-hash-encoding: a request signed with the old hex
+	// convention (both bodyHash and HMAC signature) must be rejected now
+	// that the server only accepts base64.
+	e := echo.New()
+	timestamp := time.Now().Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	token := "good-token"
+	secret := "merchant-secret"
+
+	bodyHashHex := hex.EncodeToString(sha256Sum(body))
+	stringToSign := crypto.BuildStringToSign(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", token, bodyHashHex, timestamp)
+	mac := hmac.New(sha512.New, []byte(secret))
+	mac.Write([]byte(stringToSign))
+	signatureHex := hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/create-va", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-TIMESTAMP", timestamp)
+	req.Header.Set("X-SIGNATURE", signatureHex)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", token).Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return(secret, nil)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	called := false
+	handler := middleware(func(c echo.Context) error {
+		called = true
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.False(t, called, "handler must not be invoked for a hex-signed (pre-migration) request")
 }
 
 func TestMerchantAuthMiddleware_ValidTokenMissingSignature_Rejected(t *testing.T) {

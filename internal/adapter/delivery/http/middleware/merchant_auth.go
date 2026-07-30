@@ -83,7 +83,7 @@ func MerchantAuthMiddleware(jwtIssuer domain.JWTIssuer, clientRepo domain.Client
 			}
 			c.Request().Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-			bodyHash := crypto.HashSHA256Hex(string(bodyBytes))
+			bodyHash := crypto.HashSHA256Base64(string(bodyBytes))
 			stringToSign := crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, token, bodyHash, timestamp)
 			signer := crypto.NewHMACSigner(secret, "HMAC-SHA512")
 			if !signer.Verify(stringToSign, c.Request().Header.Get("X-SIGNATURE")) {
