@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"backbone-new/internal/domain"
@@ -173,16 +175,54 @@ func (r *VARepository) SavePayment(ctx context.Context, payment *domain.VAPaymen
 	}
 	payment.UpdatedAt = time.Now()
 
+	channelCode := ""
+	if payment.ChannelCode != 0 {
+		channelCode = strconv.Itoa(payment.ChannelCode)
+	}
+
+	// total_amount preserves the original bill total for a brand-new orphan
+	// row with no prior inquiry (falls back to paid_amount); on the common
+	// ON CONFLICT path total_amount is intentionally left out of DO UPDATE SET
+	// so the inquiry's original total is never overwritten by a payment.
+	totalAmount := payment.TotalAmount
+	if totalAmount == "" {
+		totalAmount = payment.PaidAmount
+	}
+
+	var freeTexts []byte
+	if len(payment.FreeTexts) > 0 {
+		var err error
+		freeTexts, err = json.Marshal(payment.FreeTexts)
+		if err != nil {
+			return err
+		}
+	}
+
 	query := `
-		INSERT INTO va_transactions (id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, payment_request_id, status, total_amount, paid_amount,
-			currency, reference_no, transaction_date, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		INSERT INTO va_transactions (id, partner_service_id, customer_no, customer_name, customer_email,
+			customer_phone, virtual_account_no, inquiry_request_id, trx_id, notification_url, payment_request_id,
+			status, total_amount, paid_amount, currency, reference_no, channel_code, hashed_source_account_no,
+			source_bank_code, journal_num, payment_type, flag_advise, paid_bills, sub_company, trx_date_time,
+			free_texts, transaction_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+			$22, $23, $24, $25, $26, $27, $28, $29)
 		ON CONFLICT (inquiry_request_id) DO UPDATE SET
 			payment_request_id = EXCLUDED.payment_request_id,
+			customer_email = EXCLUDED.customer_email,
+			customer_phone = EXCLUDED.customer_phone,
 			status = EXCLUDED.status,
 			paid_amount = EXCLUDED.paid_amount,
 			reference_no = EXCLUDED.reference_no,
+			channel_code = EXCLUDED.channel_code,
+			hashed_source_account_no = EXCLUDED.hashed_source_account_no,
+			source_bank_code = EXCLUDED.source_bank_code,
+			journal_num = EXCLUDED.journal_num,
+			payment_type = EXCLUDED.payment_type,
+			flag_advise = EXCLUDED.flag_advise,
+			paid_bills = EXCLUDED.paid_bills,
+			sub_company = EXCLUDED.sub_company,
+			trx_date_time = EXCLUDED.trx_date_time,
+			free_texts = EXCLUDED.free_texts,
 			transaction_date = EXCLUDED.transaction_date,
 			updated_at = EXCLUDED.updated_at`
 
@@ -191,16 +231,28 @@ func (r *VARepository) SavePayment(ctx context.Context, payment *domain.VAPaymen
 		payment.PartnerServiceID,
 		payment.CustomerNo,
 		payment.CustomerName,
+		payment.CustomerEmail,
+		payment.CustomerPhone,
 		payment.VirtualAccountNo,
 		payment.InquiryRequestID,
 		payment.TrxID,
 		payment.NotificationURL,
 		payment.PaymentRequestID,
 		payment.Status,
-		payment.PaidAmount, // Using paid_amount as total_amount for payment
+		totalAmount,
 		payment.PaidAmount,
 		payment.Currency,
 		payment.ReferenceNo,
+		channelCode,
+		payment.HashedSourceAccountNo,
+		payment.SourceBankCode,
+		payment.JournalNum,
+		payment.PaymentType,
+		payment.FlagAdvise,
+		payment.PaidBills,
+		payment.SubCompany,
+		payment.TrxDateTime,
+		freeTexts,
 		payment.TransactionDate,
 		payment.CreatedAt,
 		payment.UpdatedAt,
@@ -211,24 +263,45 @@ func (r *VARepository) SavePayment(ctx context.Context, payment *domain.VAPaymen
 // GetPayment retrieves a VA payment by payment request ID
 func (r *VARepository) GetPayment(ctx context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
 	query := `
-		SELECT id, partner_service_id, customer_no, virtual_account_no, 
-			inquiry_request_id, payment_request_id, paid_amount, currency, 
-			status, reference_no, transaction_date, created_at, updated_at
+		SELECT id, partner_service_id, customer_no, customer_name, COALESCE(customer_email, ''),
+			COALESCE(customer_phone, ''), virtual_account_no, inquiry_request_id, trx_id, payment_request_id,
+			COALESCE(total_amount, paid_amount), paid_amount, currency, status, reference_no,
+			COALESCE(channel_code, ''), COALESCE(hashed_source_account_no, ''), COALESCE(source_bank_code, ''),
+			COALESCE(journal_num, ''), COALESCE(payment_type, ''), COALESCE(flag_advise, ''),
+			COALESCE(paid_bills, ''), COALESCE(sub_company, ''), trx_date_time, free_texts,
+			transaction_date, created_at, updated_at
 		FROM va_transactions
 		WHERE payment_request_id = $1 OR inquiry_request_id = $1`
 
 	record := &domain.VAPaymentRecord{}
+	var channelCode string
+	var freeTexts []byte
 	err := r.pool.QueryRow(ctx, query, paymentRequestID).Scan(
 		&record.ID,
 		&record.PartnerServiceID,
 		&record.CustomerNo,
+		&record.CustomerName,
+		&record.CustomerEmail,
+		&record.CustomerPhone,
 		&record.VirtualAccountNo,
 		&record.InquiryRequestID,
+		&record.TrxID,
 		&record.PaymentRequestID,
+		&record.TotalAmount,
 		&record.PaidAmount,
 		&record.Currency,
 		&record.Status,
 		&record.ReferenceNo,
+		&channelCode,
+		&record.HashedSourceAccountNo,
+		&record.SourceBankCode,
+		&record.JournalNum,
+		&record.PaymentType,
+		&record.FlagAdvise,
+		&record.PaidBills,
+		&record.SubCompany,
+		&record.TrxDateTime,
+		&freeTexts,
 		&record.TransactionDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,
@@ -238,6 +311,12 @@ func (r *VARepository) GetPayment(ctx context.Context, paymentRequestID string) 
 	}
 	if err != nil {
 		return nil, err
+	}
+	if channelCode != "" {
+		record.ChannelCode, _ = strconv.Atoi(channelCode)
+	}
+	if len(freeTexts) > 0 {
+		_ = json.Unmarshal(freeTexts, &record.FreeTexts)
 	}
 	return record, nil
 }

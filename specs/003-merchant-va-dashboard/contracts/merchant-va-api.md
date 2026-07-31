@@ -232,8 +232,10 @@ Schema: `PaymentRequest` / `PaymentResponse`
 }
 ```
 
-**Required fields**: `paymentRequestId`, `paidAmount`
-**Optional fields**: `virtualAccountName`, `virtualAccountEmail`, `virtualAccountPhone`, `trxId`, `channelCode`, `hashedSourceAccountNo`, `sourceBankCode`, `cumulativePaymentAmount`, `paidBills`, `totalAmount`, `trxDateTime`, `referenceNo`, `journalNum`, `paymentType`, `flagAdvise`, `subCompany`, `billDetails`, `freeTexts`, `additionalInfo`
+**Required fields**: `trxId`, `paymentRequestId`, `paidAmount` (`trxId` reclassified from optional to
+required as of feature 004 Phase 7 — it's the ASPI sample's mandatory Payment identifier,
+replacing `inquiryRequestId` in that role; `inquiryRequestId` is still accepted, optional)
+**Optional fields**: `virtualAccountName`, `virtualAccountEmail`, `virtualAccountPhone`, `channelCode`, `hashedSourceAccountNo`, `sourceBankCode`, `cumulativePaymentAmount`, `paidBills`, `totalAmount`, `trxDateTime`, `referenceNo`, `journalNum`, `paymentType`, `flagAdvise`, `subCompany`, `billDetails`, `freeTexts`, `additionalInfo`
 
 ### Success Response (200)
 

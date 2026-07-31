@@ -97,3 +97,41 @@ After the three original bugs (US1/US2 above) shipped, further ad-hoc review aga
 - **Tooling**: `scripts/vendor-inquiry-va.sh`, `scripts/vendor-payment-va.sh`, `scripts/merchant-create-va.sh` reworked to match all of the above (spec-correct payloads/headers, `-f <env-file>` secret loading, `-b`/`-d` bill details), diagnostics moved to stderr so they chain cleanly, and a new `scripts/e2e-va-flow.sh` drives the full token → create-va → inquiry → payment → merchant-callback-verification flow in one command (with a throwaway local HTTP listener to prove the async callback actually arrives).
 
 Not picked up (still out of scope): Service Code 28–35 endpoints (`update-va`, `update-status`, `inquiry-va`, `inquiry-intrabank`, `payment-intrabank`, `notify-payment-intrabank`, `report`) — these remain a separate, larger feature requiring new DB schema decisions.
+
+## Addendum 2: Full SNAP Payment/Status ASPI Field Parity (Phase 7, 2026-07-31)
+
+Further ASPI compliance review (prompted by a vendor-provided sample request/response for both
+`/transfer-va/payment` and `/transfer-va/status`) found the Phase 6 field set was still incomplete
+for both endpoints, and that `/status` had never been brought into compliance at all. Fixed under
+this same branch:
+
+- **`trxId` is now the mandatory Payment identifier**: the ASPI sample never sends
+  `inquiryRequestId` on `/payment` — it sends `trxId`. `VAHandler.Payment`'s mandatory-field check
+  now requires `trxId` (not `inquiryRequestId`). `inquiryRequestId` remains an accepted, optional,
+  backward-compatible field: internally it's still the primary key used to link a payment row back
+  to its originating `create-va`/inquiry row (`inquiry_request_id` unique constraint in
+  `va_transactions`), falling back to `trxId` when absent/empty so the linkage key is never an empty
+  string.
+- **Full Payment field parity**: `VAPaymentRequest`/`VAPaymentStatus`/`VAPaymentRecord` gained
+  `virtualAccountName`, `virtualAccountEmail`, `virtualAccountPhone`, `channelCode`,
+  `hashedSourceAccountNo`, `sourceBankCode`, `cumulativePaymentAmount`, `journalNum`, `subCompany`,
+  and (previously request-only, now also echoed in the response) `paidBills`, `paymentType`,
+  `flagAdvise`. `billDetails` sent on `/payment` are now persisted (`SaveBillDetails`) and echoed
+  back in the response; `freeTexts` are persisted (new `free_texts` JSONB column) and echoed back.
+  New migration: `db/migrations/000011_add_va_payment_snap_fields` (adds `channel_code`,
+  `hashed_source_account_no`, `source_bank_code`, `sub_company` columns to `va_transactions`).
+- **`/status` field parity + bug fix**: `VAStatusData.TotalAmount` was incorrectly aliased to
+  `PaidAmount` both when persisted (`SavePayment`'s INSERT-only path) and when read back in
+  `Status()` — fixed so `totalAmount` reflects the actual bill total, independent of how much has
+  been paid. Added `trxDateTime` (now actually populated, via a new `trx_date_time` column separate
+  from the existing settlement-time `transaction_date`), a new `flagAdvise` field on `VAStatusData`
+  (didn't exist before), and `paymentType`/`paidBills` (already fetched from the DB but never copied
+  into the response). `billDetails` are now read back via `GetVABillDetails` and mapped into the
+  response for both the paid and pending (inquiry-only) branches; `freeTexts` are read back from the
+  same `free_texts` column `/payment` writes. `VAStatusRequest` gains an optional `paymentRequestId`
+  field (present in the ASPI sample, though `inquiryRequestId` remains the primary lookup key). New
+  migration: `db/migrations/000012_add_va_status_snap_fields` (adds `trx_date_time`, `free_texts`
+  columns to `va_transactions`).
+- **Verification**: all four `scripts/e2e-*.sh` flows (`e2e-va-flow.sh`, `e2e-dynamic-va-flow.sh`,
+  `e2e-expired-callback-flow.sh`, `e2e-va-cancel-flow.sh`) re-run end-to-end against these changes,
+  plus `scripts/vendor-payment-va.sh` updated to send `trxId` alongside `inquiryRequestId`.

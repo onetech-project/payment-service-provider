@@ -1058,7 +1058,7 @@ const docTemplate = `{
                         "SnapSignature": []
                     }
                 ],
-                "description": "Vendor-initiated notification that a payment against a Virtual Account has been received. State-changing: records the payment.",
+                "description": "Vendor-initiated notification that a payment against a Virtual Account has been received. State-changing: records the payment. Mandatory body fields per ASPI: partnerServiceId, customerNo, virtualAccountNo, trxId, paymentRequestId, paidAmount.",
                 "tags": [
                     "Virtual Account"
                 ],
@@ -1913,6 +1913,9 @@ const docTemplate = `{
                 "billSubCompany": {
                     "type": "string"
                 },
+                "billerReferenceId": {
+                    "type": "string"
+                },
                 "reason": {
                     "$ref": "#/definitions/domain.BilingualText"
                 },
@@ -1934,6 +1937,12 @@ const docTemplate = `{
                         "$ref": "#/definitions/domain.VAPaymentBillDetail"
                     }
                 },
+                "channelCode": {
+                    "type": "integer"
+                },
+                "cumulativePaymentAmount": {
+                    "$ref": "#/definitions/domain.Amount"
+                },
                 "customerNo": {
                     "type": "string"
                 },
@@ -1946,7 +1955,14 @@ const docTemplate = `{
                         "$ref": "#/definitions/domain.BilingualText"
                     }
                 },
+                "hashedSourceAccountNo": {
+                    "type": "string"
+                },
                 "inquiryRequestId": {
+                    "description": "InquiryRequestID is kept for backward compatibility with legacy vendors\nstill sending it; per ASPI spec, TrxID is the mandatory trace field on\nthis endpoint (inquiryRequestId is instead resolved internally from the\nmerchant's create-VA record, see va_usecase.go Payment()).",
+                    "type": "string"
+                },
+                "journalNum": {
                     "type": "string"
                 },
                 "paidAmount": {
@@ -1967,13 +1983,31 @@ const docTemplate = `{
                 "referenceNo": {
                     "type": "string"
                 },
+                "sourceBankCode": {
+                    "type": "string"
+                },
+                "subCompany": {
+                    "type": "string"
+                },
                 "totalAmount": {
                     "$ref": "#/definitions/domain.Amount"
                 },
                 "trxDateTime": {
                     "type": "string"
                 },
+                "trxId": {
+                    "type": "string"
+                },
+                "virtualAccountEmail": {
+                    "type": "string"
+                },
+                "virtualAccountName": {
+                    "type": "string"
+                },
                 "virtualAccountNo": {
+                    "type": "string"
+                },
+                "virtualAccountPhone": {
                     "type": "string"
                 }
             }
@@ -1995,11 +2029,32 @@ const docTemplate = `{
         "domain.VAPaymentStatus": {
             "type": "object",
             "properties": {
+                "billDetails": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.VAPaymentBillDetail"
+                    }
+                },
                 "customerNo": {
+                    "type": "string"
+                },
+                "flagAdvise": {
+                    "type": "string"
+                },
+                "freeTexts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.BilingualText"
+                    }
+                },
+                "journalNum": {
                     "type": "string"
                 },
                 "paidAmount": {
                     "$ref": "#/definitions/domain.Amount"
+                },
+                "paidBills": {
+                    "type": "string"
                 },
                 "partnerServiceId": {
                     "type": "string"
@@ -2011,6 +2066,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "paymentRequestId": {
+                    "type": "string"
+                },
+                "paymentType": {
                     "type": "string"
                 },
                 "referenceNo": {
@@ -2025,7 +2083,16 @@ const docTemplate = `{
                 "trxId": {
                     "type": "string"
                 },
+                "virtualAccountEmail": {
+                    "type": "string"
+                },
+                "virtualAccountName": {
+                    "type": "string"
+                },
                 "virtualAccountNo": {
+                    "type": "string"
+                },
+                "virtualAccountPhone": {
                     "type": "string"
                 }
             }
@@ -2083,6 +2150,9 @@ const docTemplate = `{
                     }
                 },
                 "customerNo": {
+                    "type": "string"
+                },
+                "flagAdvise": {
                     "type": "string"
                 },
                 "freeTexts": {
@@ -2146,6 +2216,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "partnerServiceId": {
+                    "type": "string"
+                },
+                "paymentRequestId": {
                     "type": "string"
                 },
                 "virtualAccountNo": {

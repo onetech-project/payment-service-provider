@@ -26,7 +26,7 @@ Add a second, mandatory verification layer to the merchant-facing endpoints (`cr
 
 **Performance Goals**: One additional indexed DB lookup (client secret by client_id) per merchant request, plus HMAC-SHA512 computation (single-digit microseconds) — negligible added latency, same order of magnitude as the existing bearer-token validation this feature runs alongside.
 
-**Constraints**: Must not change merchant endpoint request/response contracts or business logic (spec FR-008). Must not alter vendor-side (`SNAPAuthMiddleware`) behavior at all (spec FR-009). No enable/disable configuration — unconditional from deploy (spec FR-010), consistent with feature 009's precedent.
+**Constraints**: Must not change merchant endpoint request/response contracts or business logic (spec FR-008). Must not alter vendor-side (`SNAPAuthMiddleware`) behavior at all (spec FR-009). No enable/disable configuration — unconditional from deploy (spec FR-010), consistent with feature 009's precedent. (Amended later for the timestamp-freshness check only — see `specs/009-transfer-va-auth/research.md` Decision 4 Amendment.)
 
 **Scale/Scope**: New migration (`client_secrets` table), `internal/domain/client.go` (extend `ClientRepository` + add `ClientSecret` type), `internal/infrastructure/database/` (repository implementation), `internal/adapter/delivery/http/middleware/merchant_auth.go` (extend to add signature verification after token validation), plus an operator-facing provisioning path (CLI/seed script or admin endpoint — decided below). No changes to `internal/usecase/merchant_va_usecase.go`, handlers, or vendor-side code.
 

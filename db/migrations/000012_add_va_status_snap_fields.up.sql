@@ -1,0 +1,2 @@
+ALTER TABLE va_transactions ADD COLUMN IF NOT EXISTS trx_date_time TIMESTAMPTZ;
+ALTER TABLE va_transactions ADD COLUMN IF NOT EXISTS free_texts JSONB;

@@ -168,16 +168,23 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 			ResponseCode:    "2002400",
 			ResponseMessage: "Successful",
 			VirtualAccountData: &domain.VAPaymentStatus{
-				PartnerServiceID:  existing.PartnerServiceID,
-				CustomerNo:        existing.CustomerNo,
-				VirtualAccountNo:  existing.VirtualAccountNo,
-				TrxID:             existing.TrxID,
-				PaymentRequestID:  existing.PaymentRequestID,
-				PaidAmount:        &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
-				TrxDateTime:       &existingTxDate,
-				ReferenceNo:       existing.ReferenceNo,
-				PaymentFlagStatus: "00",
-				PaymentFlagReason: &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+				PartnerServiceID:    existing.PartnerServiceID,
+				CustomerNo:          existing.CustomerNo,
+				VirtualAccountNo:    existing.VirtualAccountNo,
+				VirtualAccountName:  existing.CustomerName,
+				VirtualAccountEmail: existing.CustomerEmail,
+				VirtualAccountPhone: existing.CustomerPhone,
+				TrxID:               existing.TrxID,
+				PaymentRequestID:    existing.PaymentRequestID,
+				PaidAmount:          &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
+				PaidBills:           existing.PaidBills,
+				TrxDateTime:         &existingTxDate,
+				ReferenceNo:         existing.ReferenceNo,
+				JournalNum:          existing.JournalNum,
+				PaymentType:         existing.PaymentType,
+				FlagAdvise:          existing.FlagAdvise,
+				PaymentFlagStatus:   "00",
+				PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
 			},
 		}, nil
 	}
@@ -187,8 +194,14 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// columns stay populated and the UPSERT below lands on that same row
 	// instead of an orphan row keyed by the vendor's own inquiryRequestId.
 	customerName := "Customer"
+	// inquiryRequestId is no longer sent by ASPI-compliant vendors on /payment;
+	// fall back to trxId (guaranteed non-empty) so the ON CONFLICT linkage key
+	// below never collides across unrelated payments as an empty string.
 	inquiryRequestID := req.InquiryRequestID
-	trxID := req.InquiryRequestID
+	if inquiryRequestID == "" {
+		inquiryRequestID = req.TrxID
+	}
+	trxID := req.TrxID
 	notificationURL := ""
 	merchantVA, _ := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
 
@@ -235,7 +248,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 
 		trxID := merchantVA.TrxID
 		if trxID == "" {
-			trxID = req.InquiryRequestID
+			trxID = req.TrxID
 		}
 
 		paymentFlagStatus := "03" // pending — cumulative total not yet reached
@@ -249,17 +262,26 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 			ResponseCode:    "2002400",
 			ResponseMessage: "Successful",
 			VirtualAccountData: &domain.VAPaymentStatus{
-				PartnerServiceID:  req.PartnerServiceID,
-				CustomerNo:        req.CustomerNo,
-				VirtualAccountNo:  req.VirtualAccountNo,
-				TrxID:             trxID,
-				PaymentRequestID:  req.PaymentRequestID,
-				PaidAmount:        &domain.Amount{Value: paidAmount, Currency: req.PaidAmount.Currency},
-				TotalAmount:       req.TotalAmount,
-				TrxDateTime:       &transactionDate,
-				ReferenceNo:       req.ReferenceNo,
-				PaymentFlagStatus: paymentFlagStatus,
-				PaymentFlagReason: getPaymentFlagReason(paymentFlagStatus),
+				PartnerServiceID:    req.PartnerServiceID,
+				CustomerNo:          req.CustomerNo,
+				VirtualAccountNo:    req.VirtualAccountNo,
+				VirtualAccountName:  req.VirtualAccountName,
+				VirtualAccountEmail: req.VirtualAccountEmail,
+				VirtualAccountPhone: req.VirtualAccountPhone,
+				TrxID:               trxID,
+				PaymentRequestID:    req.PaymentRequestID,
+				PaidAmount:          &domain.Amount{Value: paidAmount, Currency: req.PaidAmount.Currency},
+				PaidBills:           req.PaidBills,
+				TotalAmount:         req.TotalAmount,
+				TrxDateTime:         &transactionDate,
+				ReferenceNo:         req.ReferenceNo,
+				JournalNum:          req.JournalNum,
+				PaymentType:         req.PaymentType,
+				FlagAdvise:          req.FlagAdvise,
+				PaymentFlagStatus:   paymentFlagStatus,
+				PaymentFlagReason:   getPaymentFlagReason(paymentFlagStatus),
+				BillDetails:         echoPaymentBillDetails(req.BillDetails),
+				FreeTexts:           req.FreeTexts,
 			},
 		}, nil
 	}
@@ -281,6 +303,9 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		}
 		notificationURL = merchantVA.NotificationURL
 	}
+	if req.VirtualAccountName != "" {
+		customerName = req.VirtualAccountName
+	}
 
 	transactionDate := time.Now()
 	if req.TrxDateTime != nil {
@@ -289,23 +314,42 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 
 	// Save payment record
 	record := &domain.VAPaymentRecord{
-		PartnerServiceID: req.PartnerServiceID,
-		CustomerNo:       req.CustomerNo,
-		CustomerName:     customerName,
-		VirtualAccountNo: req.VirtualAccountNo,
-		InquiryRequestID: inquiryRequestID,
-		TrxID:            trxID,
-		NotificationURL:  notificationURL,
-		PaymentRequestID: req.PaymentRequestID,
-		PaidAmount:       req.PaidAmount.Value,
-		Currency:         req.PaidAmount.Currency,
-		Status:           "00",
-		ReferenceNo:      req.ReferenceNo,
-		TransactionDate:  transactionDate,
+		PartnerServiceID:      req.PartnerServiceID,
+		CustomerNo:            req.CustomerNo,
+		CustomerName:          customerName,
+		CustomerEmail:         req.VirtualAccountEmail,
+		CustomerPhone:         req.VirtualAccountPhone,
+		VirtualAccountNo:      req.VirtualAccountNo,
+		InquiryRequestID:      inquiryRequestID,
+		TrxID:                 trxID,
+		NotificationURL:       notificationURL,
+		PaymentRequestID:      req.PaymentRequestID,
+		PaidAmount:            req.PaidAmount.Value,
+		TotalAmount:           paymentTotalAmountValue(req),
+		Currency:              req.PaidAmount.Currency,
+		Status:                "00",
+		ReferenceNo:           req.ReferenceNo,
+		ChannelCode:           req.ChannelCode,
+		HashedSourceAccountNo: req.HashedSourceAccountNo,
+		SourceBankCode:        req.SourceBankCode,
+		JournalNum:            req.JournalNum,
+		PaymentType:           req.PaymentType,
+		FlagAdvise:            req.FlagAdvise,
+		PaidBills:             req.PaidBills,
+		SubCompany:            req.SubCompany,
+		TrxDateTime:           req.TrxDateTime,
+		FreeTexts:             req.FreeTexts,
+		TransactionDate:       transactionDate,
 	}
 
 	if err := u.repo.SavePayment(ctx, record); err != nil {
 		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+	}
+
+	if len(req.BillDetails) > 0 {
+		if err := u.repo.SaveBillDetails(ctx, record.ID, paymentBillDetailsToBillDetail(req.BillDetails)); err != nil {
+			return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+		}
 	}
 
 	// Notify the merchant asynchronously via their registered notificationUrl.
@@ -318,19 +362,90 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		ResponseCode:    "2002400",
 		ResponseMessage: "Successful",
 		VirtualAccountData: &domain.VAPaymentStatus{
-			PartnerServiceID:  req.PartnerServiceID,
-			CustomerNo:        req.CustomerNo,
-			VirtualAccountNo:  req.VirtualAccountNo,
-			TrxID:             trxID,
-			PaymentRequestID:  req.PaymentRequestID,
-			PaidAmount:        req.PaidAmount,
-			TotalAmount:       req.TotalAmount,
-			TrxDateTime:       req.TrxDateTime,
-			ReferenceNo:       req.ReferenceNo,
-			PaymentFlagStatus: "00",
-			PaymentFlagReason: &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+			PartnerServiceID:    req.PartnerServiceID,
+			CustomerNo:          req.CustomerNo,
+			VirtualAccountNo:    req.VirtualAccountNo,
+			VirtualAccountName:  customerName,
+			VirtualAccountEmail: req.VirtualAccountEmail,
+			VirtualAccountPhone: req.VirtualAccountPhone,
+			TrxID:               trxID,
+			PaymentRequestID:    req.PaymentRequestID,
+			PaidAmount:          req.PaidAmount,
+			PaidBills:           req.PaidBills,
+			TotalAmount:         req.TotalAmount,
+			TrxDateTime:         req.TrxDateTime,
+			ReferenceNo:         req.ReferenceNo,
+			JournalNum:          req.JournalNum,
+			PaymentType:         req.PaymentType,
+			FlagAdvise:          req.FlagAdvise,
+			PaymentFlagStatus:   "00",
+			PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+			BillDetails:         echoPaymentBillDetails(req.BillDetails),
+			FreeTexts:           req.FreeTexts,
 		},
 	}, nil
+}
+
+// paymentTotalAmountValue resolves the amount to persist as total_amount:
+// the vendor's own totalAmount when sent, else the paidAmount (single
+// full-settlement payments have no separate total).
+func paymentTotalAmountValue(req *domain.VAPaymentRequest) string {
+	if req.TotalAmount != nil {
+		return req.TotalAmount.Value
+	}
+	return req.PaidAmount.Value
+}
+
+// paymentBillDetailsToBillDetail maps the inbound SNAP payment bill-detail
+// shape to the shared BillDetail persistence type used by SaveBillDetails.
+func paymentBillDetailsToBillDetail(bills []domain.VAPaymentBillDetail) []domain.BillDetail {
+	out := make([]domain.BillDetail, 0, len(bills))
+	for _, b := range bills {
+		out = append(out, domain.BillDetail{
+			BillCode:          b.BillCode,
+			BillNo:            b.BillNo,
+			BillName:          b.BillName,
+			BillShortName:     b.BillShortName,
+			BillDescription:   b.BillDescription,
+			BillSubCompany:    b.BillSubCompany,
+			BillAmount:        b.BillAmount,
+			BillReferenceNo:   b.BillReferenceNo,
+			BillerReferenceID: b.BillerReferenceID,
+			Status:            b.Status,
+			Reason:            b.Reason,
+			AdditionalInfo:    b.AdditionalInfo,
+		})
+	}
+	return out
+}
+
+// echoPaymentBillDetails echoes the vendor's bill details back in the
+// response per ASPI PaymentResponse.virtualAccountData.billDetails,
+// defaulting status/reason/billerReferenceId for a successful payment.
+func echoPaymentBillDetails(bills []domain.VAPaymentBillDetail) []domain.VAPaymentBillDetail {
+	if len(bills) == 0 {
+		return nil
+	}
+	out := make([]domain.VAPaymentBillDetail, 0, len(bills))
+	for _, b := range bills {
+		billerReferenceID := b.BillerReferenceID
+		if billerReferenceID == "" {
+			billerReferenceID = b.BillNo
+		}
+		status := b.Status
+		if status == "" {
+			status = "00"
+		}
+		reason := b.Reason
+		if reason == nil {
+			reason = &domain.BilingualText{English: "Success", Indonesia: "Sukses"}
+		}
+		b.BillerReferenceID = billerReferenceID
+		b.Status = status
+		b.Reason = reason
+		out = append(out, b)
+	}
+	return out
 }
 
 // markExpiredAndNotify transitions merchantVA to expired ("02") and, if this
@@ -459,6 +574,9 @@ func (u *VAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest) (*d
 			return nil, domain.NewDomainError("4042419", "Invalid Bill/Virtual Account", nil)
 		}
 
+		// Best-effort: bill details persisted at create-VA/inquiry time, if any.
+		bills, _ := u.repo.GetVABillDetails(ctx, inquiry.ID)
+
 		// Return inquiry status (pending)
 		return &domain.VAStatusResponse{
 			ResponseCode:    "2002600",
@@ -471,8 +589,17 @@ func (u *VAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest) (*d
 				VirtualAccountNo:  inquiry.VirtualAccountNo,
 				InquiryRequestID:  inquiry.InquiryRequestID,
 				TotalAmount:       &domain.Amount{Value: inquiry.TotalAmount, Currency: inquiry.Currency},
+				BillDetails:       billDetailsToStatusBillDetail(bills),
 			},
 		}, nil
+	}
+
+	// Best-effort: bill details persisted alongside the payment (if any).
+	bills, _ := u.repo.GetVABillDetails(ctx, payment.ID)
+
+	totalAmount := payment.TotalAmount
+	if totalAmount == "" {
+		totalAmount = payment.PaidAmount
 	}
 
 	// Build status response
@@ -488,11 +615,42 @@ func (u *VAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest) (*d
 			InquiryRequestID:  payment.InquiryRequestID,
 			PaymentRequestID:  payment.PaymentRequestID,
 			PaidAmount:        &domain.Amount{Value: payment.PaidAmount, Currency: payment.Currency},
-			TotalAmount:       &domain.Amount{Value: payment.PaidAmount, Currency: payment.Currency},
+			PaidBills:         payment.PaidBills,
+			TotalAmount:       &domain.Amount{Value: totalAmount, Currency: payment.Currency},
+			TrxDateTime:       payment.TrxDateTime,
 			TransactionDate:   &payment.TransactionDate,
 			ReferenceNo:       payment.ReferenceNo,
+			PaymentType:       payment.PaymentType,
+			FlagAdvise:        payment.FlagAdvise,
+			BillDetails:       billDetailsToStatusBillDetail(bills),
+			FreeTexts:         payment.FreeTexts,
 		},
 	}, nil
+}
+
+// billDetailsToStatusBillDetail maps the shared persisted BillDetail shape to
+// the SNAP status-response bill-detail shape.
+func billDetailsToStatusBillDetail(bills []domain.BillDetail) []domain.VAStatusBillDetail {
+	if len(bills) == 0 {
+		return nil
+	}
+	out := make([]domain.VAStatusBillDetail, 0, len(bills))
+	for _, b := range bills {
+		out = append(out, domain.VAStatusBillDetail{
+			BillCode:        b.BillCode,
+			BillNo:          b.BillNo,
+			BillName:        b.BillName,
+			BillShortName:   b.BillShortName,
+			BillDescription: b.BillDescription,
+			BillSubCompany:  b.BillSubCompany,
+			BillAmount:      b.BillAmount,
+			BillReferenceNo: b.BillReferenceNo,
+			Status:          b.Status,
+			Reason:          b.Reason,
+			AdditionalInfo:  b.AdditionalInfo,
+		})
+	}
+	return out
 }
 
 func getPaymentFlagReason(status string) *domain.BilingualText {

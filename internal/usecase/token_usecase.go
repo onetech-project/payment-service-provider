@@ -10,20 +10,26 @@ import (
 )
 
 type TokenUsecase struct {
-	clientRepo  domain.ClientRepository
-	verifier    domain.RSASignatureVerifier
-	jwtIssuer   domain.JWTIssuer
+	clientRepo    domain.ClientRepository
+	verifier      domain.RSASignatureVerifier
+	jwtIssuer     domain.JWTIssuer
+	skipSkewCheck bool
 }
 
+// NewTokenUsecase constructs a TokenUsecase. skipSkewCheck disables the
+// ±5 minute X-TIMESTAMP freshness check — intended for APP_ENV=dev/uat only,
+// where replaying stale sample requests during testing is common.
 func NewTokenUsecase(
 	clientRepo domain.ClientRepository,
 	verifier domain.RSASignatureVerifier,
 	jwtIssuer domain.JWTIssuer,
+	skipSkewCheck bool,
 ) *TokenUsecase {
 	return &TokenUsecase{
-		clientRepo: clientRepo,
-		verifier:   verifier,
-		jwtIssuer:  jwtIssuer,
+		clientRepo:    clientRepo,
+		verifier:      verifier,
+		jwtIssuer:     jwtIssuer,
+		skipSkewCheck: skipSkewCheck,
 	}
 }
 
@@ -42,7 +48,7 @@ func (u *TokenUsecase) GenerateB2BToken(ctx context.Context, clientID, timestamp
 		return nil, domain.NewDomainError("4007300", "Bad Request. Invalid timestamp format (must be ISO 8601)", err)
 	}
 
-	if time.Since(parsedTime) > 5*time.Minute || time.Until(parsedTime) > 5*time.Minute {
+	if !u.skipSkewCheck && (time.Since(parsedTime) > 5*time.Minute || time.Until(parsedTime) > 5*time.Minute) {
 		return nil, domain.NewDomainError("4007300", "Bad Request. Timestamp skew exceeds 5 minutes", domain.ErrInvalidTimestamp)
 	}
 

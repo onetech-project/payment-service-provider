@@ -122,16 +122,20 @@ TRX_DATE="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 # reference_no column is varchar(11) — keep it short
 REFERENCE_NO="R$(date +%s | tail -c 10)"
 
-# paymentRequestId + paidAmount are the only mandatory fields per ASPI spec
-# (PaymentRequest.required); totalAmount is optional (checked for mismatch
-# only when present); transactionDate does not exist in the spec — only
-# trxDateTime does — so it is intentionally omitted here.
+# trxId + paymentRequestId + paidAmount are the mandatory fields per ASPI
+# spec; totalAmount is optional (checked for mismatch only when present);
+# transactionDate does not exist in the spec — only trxDateTime does — so it
+# is intentionally omitted here. inquiryRequestId is kept for backward
+# compatibility with the internal inquiry-row linkage (see
+# internal/usecase/va_usecase.go Payment()), though it is no longer the
+# vendor-mandatory trace field.
 BODY=$(cat <<JSON
 {
   "partnerServiceId": "${PARTNER_SERVICE_ID}",
   "customerNo": "${CUSTOMER_NO}",
   "virtualAccountNo": "${VA_NO}",
   "inquiryRequestId": "${INQUIRY_REQUEST_ID}",
+  "trxId": "${INQUIRY_REQUEST_ID}",
   "paymentRequestId": "${PAYMENT_REQUEST_ID}",
   "paidAmount": {"value": "${AMOUNT}", "currency": "IDR"},
   "totalAmount": {"value": "${AMOUNT}", "currency": "IDR"},

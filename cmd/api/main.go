@@ -152,6 +152,14 @@ func main() {
 
 	ctx := context.Background()
 
+	// load ENV (dev,uat,prod)
+	appEnv := getEnvOrDefault("APP_ENV", "dev")
+	// skipTimestampSkewCheck disables the ±5 minute X-TIMESTAMP freshness
+	// check across the B2B token endpoint and both SNAP/merchant auth
+	// middlewares, so local dev/UAT testing with stale sample requests
+	// doesn't get rejected. Never skipped in prod.
+	skipTimestampSkewCheck := appEnv == "dev" || appEnv == "uat"
+
 	// 1. Initialize Telemetry
 	otelEndpoint := getEnvOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	shutdownTracer, err := telemetry.InitTracer(ctx, "payment-integration-gateway", otelEndpoint)
@@ -213,7 +221,7 @@ func main() {
 	}
 
 	// 5. Usecase & Handler Initialization
-	tokenUsecase := usecase.NewTokenUsecase(clientRepo, rsaVerifier, jwtIssuer)
+	tokenUsecase := usecase.NewTokenUsecase(clientRepo, rsaVerifier, jwtIssuer, skipTimestampSkewCheck)
 	tokenHandler := handler.NewTokenHandler(tokenUsecase)
 
 	signatureUsecase := usecase.NewSignatureUsecase(rsaSigner)
@@ -304,9 +312,6 @@ func main() {
 		log.Printf("Warning: Failed to load vendor configs: %v", err)
 	}
 
-	// load ENV (dev,uat,prod)
-	appEnv := getEnvOrDefault("APP_ENV", "dev")
-
 	// 6. Echo Server Setup
 	e := echo.New()
 	e.HideBanner = true
@@ -391,7 +396,7 @@ func main() {
 		// Existing SNAP VA endpoints (inquiry, payment, status)
 		for _, vc := range vendorConfigs {
 			vendorGroup := transferVAGroup.Group("")
-			vendorGroup.Use(customMiddleware.SNAPAuthMiddleware(vc, jwtIssuer))
+			vendorGroup.Use(customMiddleware.SNAPAuthMiddleware(vc, jwtIssuer, skipTimestampSkewCheck))
 			vendorGroup.POST("/inquiry", vaHandler.Inquiry)
 			vendorGroup.POST("/payment", vaHandler.Payment)
 			vendorGroup.POST("/status", vaHandler.Status)
@@ -411,7 +416,7 @@ func main() {
 		// its own sub-group so MerchantAuthMiddleware never applies to the
 		// vendor routes above (and SNAPAuthMiddleware never applies here).
 		merchantGroup := transferVAGroup.Group("")
-		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo))
+		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo, skipTimestampSkewCheck))
 		merchantGroup.POST("/create-va", merchantVAHandler.CreateVA)
 		merchantGroup.POST("/list", merchantVAHandler.ListVA)
 		merchantGroup.DELETE("/delete-va", merchantVAHandler.DeleteVA)

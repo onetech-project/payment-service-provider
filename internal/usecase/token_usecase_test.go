@@ -91,7 +91,7 @@ func TestTokenUsecase_GenerateB2BToken(t *testing.T) {
 	mockVerifier := new(MockRSAVerifier)
 	mockIssuer := new(MockJWTIssuer)
 
-	uc := usecase.NewTokenUsecase(mockRepo, mockVerifier, mockIssuer)
+	uc := usecase.NewTokenUsecase(mockRepo, mockVerifier, mockIssuer, false)
 	ctx := context.Background()
 
 	clientID := "client-001"
@@ -250,7 +250,7 @@ func TestTokenUsecase_ValidateToken(t *testing.T) {
 	mockRepo := new(MockClientRepository)
 	mockVerifier := new(MockRSAVerifier)
 	mockIssuer := new(MockJWTIssuer)
-	uc := usecase.NewTokenUsecase(mockRepo, mockVerifier, mockIssuer)
+	uc := usecase.NewTokenUsecase(mockRepo, mockVerifier, mockIssuer, false)
 	ctx := context.Background()
 
 	t.Run("Success", func(t *testing.T) {
@@ -271,4 +271,34 @@ func TestTokenUsecase_ValidateToken(t *testing.T) {
 		assert.Nil(t, result)
 		mockIssuer.AssertExpectations(t)
 	})
+}
+
+func TestTokenUsecase_GenerateB2BToken_SkewCheckSkippedWhenFlagSet(t *testing.T) {
+	mockRepo := new(MockClientRepository)
+	mockVerifier := new(MockRSAVerifier)
+	mockIssuer := new(MockJWTIssuer)
+	uc := usecase.NewTokenUsecase(mockRepo, mockVerifier, mockIssuer, true)
+	ctx := context.Background()
+
+	clientID := "client-001"
+	staleTimestamp := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	signature := "valid-base64-sig"
+	pubKeyPEM := "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...\n-----END PUBLIC KEY-----"
+
+	mockRepo.On("GetClientByID", ctx, clientID).Return(&domain.ClientApp{
+		ClientID: clientID,
+		Status:   domain.ClientStatusActive,
+	}, nil).Once()
+	mockRepo.On("GetActiveClientPublicKey", ctx, clientID).Return(pubKeyPEM, nil).Once()
+	stringToSign := clientID + "|" + staleTimestamp
+	mockVerifier.On("VerifySignature", pubKeyPEM, stringToSign, signature).Return(nil).Once()
+	mockIssuer.On("GenerateB2BToken", clientID, 900*time.Second).Return("mock-jwt-token", "jti-123", nil).Once()
+
+	resp, err := uc.GenerateB2BToken(ctx, clientID, staleTimestamp, signature, "client_credentials")
+
+	assert.NoError(t, err)
+	assert.Equal(t, "mock-jwt-token", resp.AccessToken)
+	mockRepo.AssertExpectations(t)
+	mockVerifier.AssertExpectations(t)
+	mockIssuer.AssertExpectations(t)
 }

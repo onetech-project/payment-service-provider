@@ -8,7 +8,7 @@ Applies to vendor endpoints currently gated by `SNAPAuthMiddleware`:
 
 | Header | Required | Notes |
 |---|---|---|
-| `X-TIMESTAMP` | Yes (unchanged) | ISO8601, ±5min skew enforced. |
+| `X-TIMESTAMP` | Yes (unchanged) | ISO8601, ±5min skew enforced (skippable when `APP_ENV=dev`/`uat`, see `specs/009-transfer-va-auth/research.md` Decision 4 Amendment; never skipped in `prod`, and does not affect signature verification). |
 | `X-SIGNATURE` | Yes (unchanged) | HMAC over `stringToSign`. |
 | `CHANNEL-ID` | Conditional (unchanged) | Required if `VendorConfig.ChannelID` set. |
 | `X-PARTNER-ID` | Conditional (unchanged) | Required if `VendorConfig.PartnerID` set. |

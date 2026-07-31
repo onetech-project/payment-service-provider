@@ -48,36 +48,51 @@ type VAAccountData struct {
 
 // VAPaymentRequest represents inbound payment notification from vendor
 type VAPaymentRequest struct {
-	PartnerServiceID string                 `json:"partnerServiceId"`
-	CustomerNo       string                 `json:"customerNo"`
-	VirtualAccountNo string                 `json:"virtualAccountNo"`
-	InquiryRequestID string                 `json:"inquiryRequestId"`
-	PaymentRequestID string                 `json:"paymentRequestId"`
-	PaidAmount       *Amount                `json:"paidAmount"`
-	PaidBills        string                 `json:"paidBills,omitempty"`
-	TotalAmount      *Amount                `json:"totalAmount,omitempty"`
-	TrxDateTime      *time.Time             `json:"trxDateTime,omitempty"`
-	ReferenceNo      string                 `json:"referenceNo,omitempty"`
-	PaymentType      string                 `json:"paymentType,omitempty"`
-	FlagAdvise       string                 `json:"flagAdvise,omitempty"`
-	BillDetails      []VAPaymentBillDetail  `json:"billDetails,omitempty"`
-	FreeTexts        []BilingualText        `json:"freeTexts,omitempty"`
-	AdditionalInfo   map[string]interface{} `json:"additionalInfo,omitempty"`
+	PartnerServiceID string     `json:"partnerServiceId"`
+	CustomerNo       string     `json:"customerNo"`
+	VirtualAccountNo string     `json:"virtualAccountNo"`
+	// InquiryRequestID is kept for backward compatibility with legacy vendors
+	// still sending it; per ASPI spec, TrxID is the mandatory trace field on
+	// this endpoint (inquiryRequestId is instead resolved internally from the
+	// merchant's create-VA record, see va_usecase.go Payment()).
+	InquiryRequestID        string                 `json:"inquiryRequestId,omitempty"`
+	TrxID                   string                 `json:"trxId"`
+	PaymentRequestID        string                 `json:"paymentRequestId"`
+	VirtualAccountName      string                 `json:"virtualAccountName,omitempty"`
+	VirtualAccountEmail     string                 `json:"virtualAccountEmail,omitempty"`
+	VirtualAccountPhone     string                 `json:"virtualAccountPhone,omitempty"`
+	ChannelCode             int                    `json:"channelCode,omitempty"`
+	HashedSourceAccountNo   string                 `json:"hashedSourceAccountNo,omitempty"`
+	SourceBankCode          string                 `json:"sourceBankCode,omitempty"`
+	PaidAmount              *Amount                `json:"paidAmount"`
+	CumulativePaymentAmount *Amount                `json:"cumulativePaymentAmount,omitempty"`
+	PaidBills               string                 `json:"paidBills,omitempty"`
+	TotalAmount             *Amount                `json:"totalAmount,omitempty"`
+	TrxDateTime             *time.Time             `json:"trxDateTime,omitempty"`
+	ReferenceNo             string                 `json:"referenceNo,omitempty"`
+	JournalNum              string                 `json:"journalNum,omitempty"`
+	PaymentType             string                 `json:"paymentType,omitempty"`
+	FlagAdvise              string                 `json:"flagAdvise,omitempty"`
+	SubCompany              string                 `json:"subCompany,omitempty"`
+	BillDetails             []VAPaymentBillDetail  `json:"billDetails,omitempty"`
+	FreeTexts               []BilingualText        `json:"freeTexts,omitempty"`
+	AdditionalInfo          map[string]interface{} `json:"additionalInfo,omitempty"`
 }
 
 // VAPaymentBillDetail extends BillDetail with payment-specific fields
 type VAPaymentBillDetail struct {
-	BillCode        string                 `json:"billCode,omitempty"`
-	BillNo          string                 `json:"billNo"`
-	BillName        string                 `json:"billName,omitempty"`
-	BillShortName   string                 `json:"billShortName,omitempty"`
-	BillDescription *BilingualText         `json:"billDescription"`
-	BillSubCompany  string                 `json:"billSubCompany"`
-	BillAmount      *Amount                `json:"billAmount"`
-	AdditionalInfo  map[string]interface{} `json:"additionalInfo,omitempty"`
-	BillReferenceNo string                 `json:"billReferenceNo"`
-	Status          string                 `json:"status"`
-	Reason          *BilingualText         `json:"reason"`
+	BillCode          string                 `json:"billCode,omitempty"`
+	BillNo            string                 `json:"billNo"`
+	BillName          string                 `json:"billName,omitempty"`
+	BillShortName     string                 `json:"billShortName,omitempty"`
+	BillDescription   *BilingualText         `json:"billDescription"`
+	BillSubCompany    string                 `json:"billSubCompany"`
+	BillAmount        *Amount                `json:"billAmount"`
+	AdditionalInfo    map[string]interface{} `json:"additionalInfo,omitempty"`
+	BillReferenceNo   string                 `json:"billReferenceNo"`
+	BillerReferenceID string                 `json:"billerReferenceId,omitempty"`
+	Status            string                 `json:"status"`
+	Reason            *BilingualText         `json:"reason"`
 }
 
 // VAPaymentResponse represents response to vendor payment notification
@@ -90,17 +105,26 @@ type VAPaymentResponse struct {
 // VAPaymentStatus contains payment flag status and echoes back the
 // identity/amount fields from PaymentResponse.virtualAccountData per ASPI spec.
 type VAPaymentStatus struct {
-	PartnerServiceID  string         `json:"partnerServiceId"`
-	CustomerNo        string         `json:"customerNo"`
-	VirtualAccountNo  string         `json:"virtualAccountNo"`
-	TrxID             string         `json:"trxId,omitempty"`
-	PaymentRequestID  string         `json:"paymentRequestId"`
-	PaidAmount        *Amount        `json:"paidAmount"`
-	TotalAmount       *Amount        `json:"totalAmount,omitempty"`
-	TrxDateTime       *time.Time     `json:"trxDateTime,omitempty"`
-	ReferenceNo       string         `json:"referenceNo,omitempty"`
-	PaymentFlagStatus string         `json:"paymentFlagStatus"`
-	PaymentFlagReason *BilingualText `json:"paymentFlagReason"`
+	PartnerServiceID    string                `json:"partnerServiceId"`
+	CustomerNo          string                `json:"customerNo"`
+	VirtualAccountNo    string                `json:"virtualAccountNo"`
+	VirtualAccountName  string                `json:"virtualAccountName,omitempty"`
+	VirtualAccountEmail string                `json:"virtualAccountEmail,omitempty"`
+	VirtualAccountPhone string                `json:"virtualAccountPhone,omitempty"`
+	TrxID               string                `json:"trxId,omitempty"`
+	PaymentRequestID    string                `json:"paymentRequestId"`
+	PaidAmount          *Amount               `json:"paidAmount"`
+	PaidBills           string                `json:"paidBills,omitempty"`
+	TotalAmount         *Amount               `json:"totalAmount,omitempty"`
+	TrxDateTime         *time.Time            `json:"trxDateTime,omitempty"`
+	ReferenceNo         string                `json:"referenceNo,omitempty"`
+	JournalNum          string                `json:"journalNum,omitempty"`
+	PaymentType         string                `json:"paymentType,omitempty"`
+	FlagAdvise          string                `json:"flagAdvise,omitempty"`
+	PaymentFlagStatus   string                `json:"paymentFlagStatus"`
+	PaymentFlagReason   *BilingualText        `json:"paymentFlagReason"`
+	BillDetails         []VAPaymentBillDetail `json:"billDetails,omitempty"`
+	FreeTexts           []BilingualText       `json:"freeTexts,omitempty"`
 }
 
 // VA Status Request/Response types
@@ -111,6 +135,7 @@ type VAStatusRequest struct {
 	CustomerNo       string                 `json:"customerNo"`
 	VirtualAccountNo string                 `json:"virtualAccountNo"`
 	InquiryRequestID string                 `json:"inquiryRequestId"`
+	PaymentRequestID string                 `json:"paymentRequestId,omitempty"`
 	AdditionalInfo   map[string]interface{} `json:"additionalInfo,omitempty"`
 }
 
@@ -137,6 +162,7 @@ type VAStatusData struct {
 	TransactionDate   *time.Time             `json:"transactionDate"`
 	ReferenceNo       string                 `json:"referenceNo,omitempty"`
 	PaymentType       string                 `json:"paymentType,omitempty"`
+	FlagAdvise        string                 `json:"flagAdvise,omitempty"`
 	BillDetails       []VAStatusBillDetail   `json:"billDetails,omitempty"`
 	FreeTexts         []BilingualText        `json:"freeTexts,omitempty"`
 	AdditionalInfo    map[string]interface{} `json:"additionalInfo,omitempty"`
@@ -233,22 +259,35 @@ type VAInquiryRecord struct {
 
 // VAPaymentRecord represents a persisted payment
 type VAPaymentRecord struct {
-	ID               string
-	PartnerServiceID string
-	CustomerNo       string
-	CustomerName     string
-	VirtualAccountNo string
-	InquiryRequestID string
-	TrxID            string
-	NotificationURL  string
-	PaymentRequestID string
-	PaidAmount       string
-	Currency         string
-	Status           string
-	ReferenceNo      string
-	TransactionDate  time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                    string
+	PartnerServiceID      string
+	CustomerNo            string
+	CustomerName          string
+	CustomerEmail         string
+	CustomerPhone         string
+	VirtualAccountNo      string
+	InquiryRequestID      string
+	TrxID                 string
+	NotificationURL       string
+	PaymentRequestID      string
+	PaidAmount            string
+	TotalAmount           string
+	Currency              string
+	Status                string
+	ReferenceNo           string
+	ChannelCode           int
+	HashedSourceAccountNo string
+	SourceBankCode        string
+	JournalNum            string
+	PaymentType           string
+	FlagAdvise            string
+	PaidBills             string
+	SubCompany            string
+	TrxDateTime           *time.Time
+	FreeTexts             []BilingualText
+	TransactionDate       time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // VA Gateway Interface

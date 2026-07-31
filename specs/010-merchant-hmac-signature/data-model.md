@@ -50,7 +50,7 @@ Extends `MerchantAuthMiddleware` (feature 009), which today only validates the b
 
 1. Extract `claims.ClientID` from the already-validated token.
 2. `secret, err := clientRepo.GetActiveClientSecret(ctx, claims.ClientID)`. If `err != nil` or `secret == ""`: reject 401 (fail closed — FR-006), regardless of what `X-SIGNATURE` the request carries.
-3. Validate `X-TIMESTAMP` freshness (±5 minutes) — reject 401 if outside window (FR-005), independent of signature.
+3. Validate `X-TIMESTAMP` freshness (±5 minutes) — reject 401 if outside window (FR-005), independent of signature. Skippable when `APP_ENV=dev`/`uat` (see `specs/009-transfer-va-auth/research.md` Decision 4 Amendment); never skipped in `prod`, and does not affect signature verification (steps 4-6).
 4. Read and re-buffer the request body; compute `bodyHash := crypto.HashSHA256Hex(bodyBytes)`.
 5. Build `stringToSign := crypto.BuildStringToSign(method, path, token /* the actual bearer token, not "" */, bodyHash, timestamp)`.
 6. `crypto.NewHMACSigner(secret, "HMAC-SHA512").Verify(stringToSign, X-SIGNATURE header)` — reject 401 on mismatch (FR-003/FR-004).

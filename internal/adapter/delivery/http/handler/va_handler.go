@@ -86,7 +86,7 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 // Payment godoc
 // @Tags Virtual Account
 // @Summary VA payment notification
-// @Description Vendor-initiated notification that a payment against a Virtual Account has been received. State-changing: records the payment.
+// @Description Vendor-initiated notification that a payment against a Virtual Account has been received. State-changing: records the payment. Mandatory body fields per ASPI: partnerServiceId, customerNo, virtualAccountNo, trxId, paymentRequestId, paidAmount.
 // @Security SnapTimestamp
 // @Security SnapSignature
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
@@ -112,7 +112,7 @@ func (h *VAHandler) Payment(c echo.Context) error {
 
 	// Validate required fields
 	if req.PartnerServiceID == "" || req.CustomerNo == "" || req.VirtualAccountNo == "" ||
-		req.InquiryRequestID == "" || req.PaymentRequestID == "" {
+		req.TrxID == "" || req.PaymentRequestID == "" {
 		return c.JSON(http.StatusBadRequest, domain.VAPaymentResponse{
 			ResponseCode:    "4002402",
 			ResponseMessage: "Invalid Mandatory Field",

@@ -96,7 +96,7 @@ func TestVAHandler_Payment_Success(t *testing.T) {
 		PartnerServiceID: " 12345",
 		CustomerNo:       "123456789012345678",
 		VirtualAccountNo: " 12345123456789012345678",
-		InquiryRequestID: "202607221000001234500001",
+		TrxID:            "202607221000001234500001",
 		PaymentRequestID: "202607221000001234500001",
 		PaidAmount:       &domain.Amount{Value: "100000.00", Currency: "IDR"},
 		TotalAmount:      &domain.Amount{Value: "100000.00", Currency: "IDR"},

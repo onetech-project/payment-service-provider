@@ -106,7 +106,7 @@ func TestMerchantAuthMiddleware_MissingAuthorizationHeader_Rejected(t *testing.T
 	mockIssuer := new(MockJWTIssuer)
 	mockRepo := new(MockMerchantClientRepository)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -128,7 +128,7 @@ func TestMerchantAuthMiddleware_MalformedAuthorizationHeader_Rejected(t *testing
 	mockIssuer := new(MockJWTIssuer)
 	mockRepo := new(MockMerchantClientRepository)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -151,7 +151,7 @@ func TestMerchantAuthMiddleware_InvalidToken_Rejected(t *testing.T) {
 	mockIssuer.On("ValidateToken", "bad-token").Return(nil, assert.AnError)
 	mockRepo := new(MockMerchantClientRepository)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -179,7 +179,7 @@ func TestMerchantAuthMiddleware_ValidTokenAndSignature_PassesThrough(t *testing.
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	called := false
 	handler := middleware(func(c echo.Context) error {
 		called = true
@@ -209,7 +209,7 @@ func TestMerchantAuthMiddleware_ValidTokenInvalidSignature_Rejected(t *testing.T
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	called := false
 	handler := middleware(func(c echo.Context) error {
 		called = true
@@ -251,7 +251,7 @@ func TestMerchantAuthMiddleware_HexEncodedSignature_Rejected(t *testing.T) {
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return(secret, nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	called := false
 	handler := middleware(func(c echo.Context) error {
 		called = true
@@ -279,7 +279,7 @@ func TestMerchantAuthMiddleware_ValidTokenMissingSignature_Rejected(t *testing.T
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -305,7 +305,7 @@ func TestMerchantAuthMiddleware_NoProvisionedSecret_FailsClosed(t *testing.T) {
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "unprovisioned-client").Return("", assert.AnError)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	called := false
 	handler := middleware(func(c echo.Context) error {
 		called = true
@@ -332,7 +332,7 @@ func TestMerchantAuthMiddleware_StaleTimestamp_Rejected(t *testing.T) {
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -356,7 +356,7 @@ func TestMerchantAuthMiddleware_FutureTimestamp_Rejected(t *testing.T) {
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -380,7 +380,34 @@ func TestMerchantAuthMiddleware_TimestampWithinWindow_PassesThrough(t *testing.T
 	mockRepo := new(MockMerchantClientRepository)
 	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
+	called := false
+	handler := middleware(func(c echo.Context) error {
+		called = true
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	err := handler(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, called)
+}
+
+func TestMerchantAuthMiddleware_SkewCheckSkippedWhenFlagSet(t *testing.T) {
+	e := echo.New()
+	timestamp := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	body := `{"partnerServiceId":"088899"}`
+	req := newSignedMerchantRequest(t, "/openapi/v1.0/transfer-va/create-va", body, "good-token", "merchant-secret", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mockIssuer := new(MockJWTIssuer)
+	mockIssuer.On("ValidateToken", "good-token").Return(&domain.TokenClaims{ClientID: "test-client"}, nil)
+	mockRepo := new(MockMerchantClientRepository)
+	mockRepo.On("GetActiveClientSecret", mock.Anything, "test-client").Return("merchant-secret", nil)
+
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, true)
 	called := false
 	handler := middleware(func(c echo.Context) error {
 		called = true
@@ -410,7 +437,7 @@ func TestMerchantAuthMiddleware_InvalidTokenValidSignature_Rejected(t *testing.T
 	mockIssuer.On("ValidateToken", "bad-token").Return(nil, assert.AnError)
 	mockRepo := new(MockMerchantClientRepository)
 
-	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+	middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 	handler := middleware(func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -461,7 +488,7 @@ func TestMerchantAuthMiddleware_AllFourCombinations(t *testing.T) {
 				mockIssuer.On("ValidateToken", token).Return(nil, assert.AnError)
 			}
 
-			middleware := MerchantAuthMiddleware(mockIssuer, mockRepo)
+			middleware := MerchantAuthMiddleware(mockIssuer, mockRepo, false)
 			handler := middleware(func(c echo.Context) error {
 				return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 			})

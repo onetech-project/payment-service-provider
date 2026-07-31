@@ -107,7 +107,7 @@ The vendor-facing endpoints (inquiry/payment/status) and their existing signatur
 - **FR-007**: System MUST enforce the signature check (FR-003/FR-004) and the freshness check (FR-005) in addition to, not instead of, the existing bearer-token check from feature 009 — both must pass for a request to be admitted.
 - **FR-008**: System MUST NOT change the request/response contract, business logic, or outcomes of a successfully-admitted create-VA/list-VA/delete-VA request — this feature only changes whether a request is admitted.
 - **FR-009**: System MUST NOT change vendor-facing (inquiry/payment/status) signature verification behavior established by feature 009, including that endpoint group's convention of an empty AccessToken component in its own signing input.
-- **FR-010**: Enforcement (FR-003–FR-007) MUST apply unconditionally to every merchant from the moment this feature is deployed — no configuration exists to enable/disable it per merchant or globally.
+- **FR-010**: Enforcement (FR-003–FR-007) MUST apply unconditionally to every merchant from the moment this feature is deployed — no configuration exists to enable/disable it per merchant or globally. **Amended**: the timestamp-freshness check specifically (FR-005) later gained a single global (not per-merchant), `APP_ENV=dev`/`uat`-derived exception, off in prod — see `specs/009-transfer-va-auth/research.md` Decision 4 Amendment. Signature verification (FR-003/FR-004/FR-006/FR-007) remains unconditional with no toggle.
 
 ### Key Entities
 

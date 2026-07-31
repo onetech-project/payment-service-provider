@@ -18,9 +18,10 @@ import (
 // X-SIGNATURE (feature 010-merchant-hmac-signature) on every request. It
 // applies only to merchant-facing routes (create-va/list/delete-va) — the
 // vendor-facing routes use SNAPAuthMiddleware instead (feature
-// 009-transfer-va-auth). Both checks are unconditional — no configuration
-// exists to enable/disable either one.
-func MerchantAuthMiddleware(jwtIssuer domain.JWTIssuer, clientRepo domain.ClientRepository) echo.MiddlewareFunc {
+// 009-transfer-va-auth). Both the bearer token and signature checks are
+// always enforced; only the ±5 minute X-TIMESTAMP freshness check can be
+// disabled, via skipSkewCheck (intended for APP_ENV=dev/uat only).
+func MerchantAuthMiddleware(jwtIssuer domain.JWTIssuer, clientRepo domain.ClientRepository, skipSkewCheck bool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			authHeader := c.Request().Header.Get("Authorization")
@@ -52,7 +53,7 @@ func MerchantAuthMiddleware(jwtIssuer domain.JWTIssuer, clientRepo domain.Client
 			}
 
 			// Timestamp freshness — same ±5 minute tolerance as
-			// SNAPAuthMiddleware (feature 009).
+			// SNAPAuthMiddleware (feature 009), skippable via skipSkewCheck.
 			timestamp := c.Request().Header.Get("X-TIMESTAMP")
 			parsedTimestamp, err := time.Parse(time.RFC3339, timestamp)
 			if err != nil {
@@ -61,7 +62,7 @@ func MerchantAuthMiddleware(jwtIssuer domain.JWTIssuer, clientRepo domain.Client
 					"responseMessage": "Unauthorized. [Invalid or missing X-TIMESTAMP]",
 				})
 			}
-			if time.Since(parsedTimestamp) > 5*time.Minute || time.Until(parsedTimestamp) > 5*time.Minute {
+			if !skipSkewCheck && (time.Since(parsedTimestamp) > 5*time.Minute || time.Until(parsedTimestamp) > 5*time.Minute) {
 				return c.JSON(http.StatusUnauthorized, map[string]string{
 					"responseCode":    "4010000",
 					"responseMessage": "Unauthorized. [Timestamp skew exceeds 5 minutes]",

@@ -834,6 +834,7 @@ func TestVAUsecase_Status_Success(t *testing.T) {
 		InquiryRequestID: "202607221000001234500001",
 	}
 
+	trxDateTime := txDate.Add(-time.Minute)
 	payment := &domain.VAPaymentRecord{
 		ID:               "payment-id",
 		PartnerServiceID: " 12345",
@@ -842,20 +843,41 @@ func TestVAUsecase_Status_Success(t *testing.T) {
 		InquiryRequestID: req.InquiryRequestID,
 		PaymentRequestID: req.InquiryRequestID,
 		PaidAmount:       "100000.00",
+		TotalAmount:      "150000.00",
 		Currency:         "IDR",
 		Status:           "00",
 		ReferenceNo:      "12345678901",
+		PaymentType:      "1",
+		FlagAdvise:       "Y",
+		PaidBills:        "95000",
+		TrxDateTime:      &trxDateTime,
+		FreeTexts:        []domain.BilingualText{{English: "Free text", Indonesia: "Tulisan bebas"}},
 		TransactionDate:  txDate,
 	}
 
+	bills := []domain.BillDetail{
+		{BillNo: "123456789012345678", BillName: "Bill A for Jan", Status: "00"},
+	}
+
 	mockRepo.On("GetPayment", mock.Anything, req.InquiryRequestID).Return(payment, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, payment.ID).Return(bills, nil)
 
 	resp, err := usecase.Status(context.Background(), req)
 
 	assert.NoError(t, err)
 	assert.Equal(t, "2002600", resp.ResponseCode)
 	assert.NotNil(t, resp.VirtualAccountData)
-	assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
+	data := resp.VirtualAccountData
+	assert.Equal(t, "00", data.PaymentFlagStatus)
+	assert.Equal(t, "150000.00", data.TotalAmount.Value)
+	assert.Equal(t, "100000.00", data.PaidAmount.Value)
+	assert.Equal(t, "95000", data.PaidBills)
+	assert.Equal(t, "1", data.PaymentType)
+	assert.Equal(t, "Y", data.FlagAdvise)
+	assert.Equal(t, &trxDateTime, data.TrxDateTime)
+	assert.Equal(t, payment.FreeTexts, data.FreeTexts)
+	assert.Len(t, data.BillDetails, 1)
+	assert.Equal(t, "123456789012345678", data.BillDetails[0].BillNo)
 	mockRepo.AssertExpectations(t)
 }
 func TestVAUsecase_Status_Pending(t *testing.T) {
@@ -882,6 +904,7 @@ func TestVAUsecase_Status_Pending(t *testing.T) {
 
 	mockRepo.On("GetPayment", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
 	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(inquiry, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, inquiry.ID).Return([]domain.BillDetail(nil), nil)
 
 	resp, err := usecase.Status(context.Background(), req)
 

@@ -26,6 +26,28 @@ No `NEEDS CLARIFICATION` markers remain in the Technical Context. The items belo
 - **Rationale**: Explicit user correction during planning: a per-vendor/channel enable/disable toggle was originally proposed to de-risk rollout, but the user pointed out this defeats the purpose of the fix — enforcing signature validation correctly IS the goal, not an optional mode. Any vendor/channel whose client-side signing is currently incorrect (which is only possible because it was never checked) needs to be fixed before this deploys, not accommodated by a permanent bypass switch left in the codebase.
 - **Alternatives considered**: The originally-planned `SignatureEnforcementEnabled` toggle (see prior revision of this document). Rejected per the above — a lingering "verification off" switch is itself a security liability (it can be flipped off and forgotten, or misconfigured to "off" by default in a new environment) and contradicts the spec's own goal.
 
+### Amendment (2026-07-31): scoped, non-prod-only exception added for the timestamp-freshness sub-check
+
+- **What did NOT change**: HMAC signature verification (FR-001/FR-002) remains always-on and
+  unconditional in every environment. There is still no per-vendor/channel config toggle —
+  `config.VendorConfig` is unchanged, and this is deliberately NOT the previously-rejected
+  `SignatureEnforcementEnabled` toggle from the "Alternatives considered" above (that was
+  per-vendor/channel, persisted in config, and could silently vary by environment or onboarding
+  mistake).
+- **What changed**: a single process-wide `skipSkewCheck bool`, computed once in `main()` as
+  `appEnv == "dev" || appEnv == "uat"` (`cmd/api/main.go`, `APP_ENV` env var — already used
+  elsewhere in `main()` to decide extra SNAP base-path mirrors) and threaded into
+  `SNAPAuthMiddleware`, `MerchantAuthMiddleware`, and `TokenUsecase.GenerateB2BToken`, narrows only
+  the ±5-minute `X-TIMESTAMP` freshness sub-check (Decision 3) specifically — never the HMAC/JWT
+  verification itself. It is global (not per-vendor), derived from server-wide `APP_ENV` (not a
+  persisted config field anyone could accidentally leave "off" in prod), and off by default in
+  `prod`.
+- **Rationale**: replaying a fixed/stale ASPI sample timestamp (e.g. from vendor documentation)
+  during local dev/UAT testing was otherwise rejected by the same check meant to catch genuine
+  replay/clock-skew issues in production traffic — the check's value is specifically in catching
+  stale *production* requests, not in blocking developers from testing with canned timestamps.
+- **Affected files**: `internal/usecase/token_usecase.go`, `internal/adapter/delivery/http/middleware/snap_auth.go`, `internal/adapter/delivery/http/middleware/merchant_auth.go`, `cmd/api/main.go`.
+
 ## Decision 5: Fail-closed on missing secret
 
 - **Decision**: If `ClientSecret` is empty for a vendor/channel, the middleware rejects all requests for that vendor/channel (401), rather than silently skipping verification.

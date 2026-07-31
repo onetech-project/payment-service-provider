@@ -14,8 +14,10 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// SNAPAuthMiddleware validates SNAP authentication headers based on vendor config
-func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTIssuer) echo.MiddlewareFunc {
+// SNAPAuthMiddleware validates SNAP authentication headers based on vendor
+// config. skipSkewCheck disables the ±5 minute X-TIMESTAMP freshness check —
+// intended for APP_ENV=dev/uat only.
+func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTIssuer, skipSkewCheck bool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			// Get required headers from config
@@ -85,7 +87,7 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTI
 			// reject requests whose X-TIMESTAMP is stale or too far in the
 			// future, independent of signature validity. Same ±5 minute
 			// tolerance already used for the B2B token endpoint
-			// (internal/usecase/token_usecase.go).
+			// (internal/usecase/token_usecase.go), skippable via skipSkewCheck.
 			parsedTimestamp, err := time.Parse(time.RFC3339, timestamp)
 			if err != nil {
 				return c.JSON(http.StatusUnauthorized, map[string]string{
@@ -93,7 +95,7 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTI
 					"responseMessage": "Unauthorized. [Invalid X-TIMESTAMP]",
 				})
 			}
-			if time.Since(parsedTimestamp) > 5*time.Minute || time.Until(parsedTimestamp) > 5*time.Minute {
+			if !skipSkewCheck && (time.Since(parsedTimestamp) > 5*time.Minute || time.Until(parsedTimestamp) > 5*time.Minute) {
 				return c.JSON(http.StatusUnauthorized, map[string]string{
 					"responseCode":    "4010000",
 					"responseMessage": "Unauthorized. [Timestamp skew exceeds 5 minutes]",

@@ -38,7 +38,7 @@ Or drive each endpoint individually:
 
 1. Inquiry request with `txnDateInit` and `amount` → `200 OK`, `txnDateInit` value reflected/used internally (not nil).
 2. Inquiry request missing `amount` → `400` with mandatory-field error naming `amount`.
-3. Payment request with only `paymentRequestId` + `paidAmount` (no `transactionDate`, no `totalAmount`) → `200 OK` (previously `400`); response echoes identity/amount fields (Phase 6).
+3. Payment request with `trxId` + `paymentRequestId` + `paidAmount` (no `transactionDate`, no `totalAmount`) → `200 OK` (previously `400`); response echoes the full identity/amount/pass-through field set (Phase 6 + Phase 7). Note: as of Phase 7, `trxId` is also mandatory — `paymentRequestId` + `paidAmount` alone is no longer sufficient (`inquiryRequestId` remains accepted but is no longer the mandatory identifier).
 4. Payment request missing `paymentRequestId` → `400` naming `paymentRequestId`.
 5. Payment request missing `paidAmount` → `400` naming `paidAmount`.
 6. Create-va with a `billDetails` entry, then inquiry against the same `virtualAccountNo`, → the bill detail appears in the inquiry response (Phase 6).

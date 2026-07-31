@@ -29,7 +29,7 @@ Unconditional from deployment — no toggle:
 
 1. If `vendorConfig.ClientSecret == ""`: reject all requests (401) — fail closed.
 2. Otherwise, recompute `stringToSign` from the raw request body + timestamp per the existing client-side convention, and reject (401) if `HMACSigner.Verify(secret, stringToSign, X-SIGNATURE header) == false`.
-3. Reject (401) if `X-TIMESTAMP` is older than 5 minutes or more than 5 minutes in the future relative to server time.
+3. Reject (401) if `X-TIMESTAMP` is older than 5 minutes or more than 5 minutes in the future relative to server time. **Amended (see research.md Decision 4 Amendment)**: skippable via a process-wide `skipSkewCheck` flag, on only when `APP_ENV=dev` or `uat`; never skipped in `prod`, and does not affect signature verification (item 2).
 
 ### Merchant-facing (create-VA/list-VA/delete-VA)
 

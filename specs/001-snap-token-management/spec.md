@@ -67,7 +67,7 @@ As an internal payment gateway service, I want to validate incoming Bearer token
 ### Functional Requirements
 
 - **FR-001**: System MUST expose a SNAP-compliant B2B token endpoint at `POST /v1.0/access-token/b2b`.
-- **FR-002**: System MUST validate `X-CLIENT-KEY`, `X-TIMESTAMP` (ISO 8601 format within ±5 minutes tolerance), and `X-SIGNATURE` (SHA256withRSA signature over string component `client_id|X-TIMESTAMP`).
+- **FR-002**: System MUST validate `X-CLIENT-KEY`, `X-TIMESTAMP` (ISO 8601 format within ±5 minutes tolerance — skippable when `APP_ENV=dev`/`uat`, see `specs/009-transfer-va-auth/research.md` Decision 4 Amendment; never skipped in `prod`), and `X-SIGNATURE` (SHA256withRSA signature over string component `client_id|X-TIMESTAMP`).
 - **FR-003**: System MUST support `grantType: "client_credentials"` as specified in SNAP standards.
 - **FR-004**: System MUST issue a signed JWT access token with a configurable default expiration time of 900 seconds (15 minutes).
 - **FR-005**: System MUST return SNAP-standard JSON response structure:

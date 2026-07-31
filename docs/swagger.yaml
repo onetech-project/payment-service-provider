@@ -454,6 +454,8 @@ definitions:
         type: string
       billSubCompany:
         type: string
+      billerReferenceId:
+        type: string
       reason:
         $ref: '#/definitions/domain.BilingualText'
       status:
@@ -468,6 +470,10 @@ definitions:
         items:
           $ref: '#/definitions/domain.VAPaymentBillDetail'
         type: array
+      channelCode:
+        type: integer
+      cumulativePaymentAmount:
+        $ref: '#/definitions/domain.Amount'
       customerNo:
         type: string
       flagAdvise:
@@ -476,7 +482,16 @@ definitions:
         items:
           $ref: '#/definitions/domain.BilingualText'
         type: array
+      hashedSourceAccountNo:
+        type: string
       inquiryRequestId:
+        description: |-
+          InquiryRequestID is kept for backward compatibility with legacy vendors
+          still sending it; per ASPI spec, TrxID is the mandatory trace field on
+          this endpoint (inquiryRequestId is instead resolved internally from the
+          merchant's create-VA record, see va_usecase.go Payment()).
+        type: string
+      journalNum:
         type: string
       paidAmount:
         $ref: '#/definitions/domain.Amount'
@@ -490,11 +505,23 @@ definitions:
         type: string
       referenceNo:
         type: string
+      sourceBankCode:
+        type: string
+      subCompany:
+        type: string
       totalAmount:
         $ref: '#/definitions/domain.Amount'
       trxDateTime:
         type: string
+      trxId:
+        type: string
+      virtualAccountEmail:
+        type: string
+      virtualAccountName:
+        type: string
       virtualAccountNo:
+        type: string
+      virtualAccountPhone:
         type: string
     type: object
   domain.VAPaymentResponse:
@@ -508,10 +535,24 @@ definitions:
     type: object
   domain.VAPaymentStatus:
     properties:
+      billDetails:
+        items:
+          $ref: '#/definitions/domain.VAPaymentBillDetail'
+        type: array
       customerNo:
+        type: string
+      flagAdvise:
+        type: string
+      freeTexts:
+        items:
+          $ref: '#/definitions/domain.BilingualText'
+        type: array
+      journalNum:
         type: string
       paidAmount:
         $ref: '#/definitions/domain.Amount'
+      paidBills:
+        type: string
       partnerServiceId:
         type: string
       paymentFlagReason:
@@ -519,6 +560,8 @@ definitions:
       paymentFlagStatus:
         type: string
       paymentRequestId:
+        type: string
+      paymentType:
         type: string
       referenceNo:
         type: string
@@ -528,7 +571,13 @@ definitions:
         type: string
       trxId:
         type: string
+      virtualAccountEmail:
+        type: string
+      virtualAccountName:
+        type: string
       virtualAccountNo:
+        type: string
+      virtualAccountPhone:
         type: string
     type: object
   domain.VAStatusBillDetail:
@@ -567,6 +616,8 @@ definitions:
           $ref: '#/definitions/domain.VAStatusBillDetail'
         type: array
       customerNo:
+        type: string
+      flagAdvise:
         type: string
       freeTexts:
         items:
@@ -609,6 +660,8 @@ definitions:
       inquiryRequestId:
         type: string
       partnerServiceId:
+        type: string
+      paymentRequestId:
         type: string
       virtualAccountNo:
         type: string
@@ -1378,7 +1431,9 @@ paths:
   /openapi/v1.0/transfer-va/payment:
     post:
       description: 'Vendor-initiated notification that a payment against a Virtual
-        Account has been received. State-changing: records the payment.'
+        Account has been received. State-changing: records the payment. Mandatory
+        body fields per ASPI: partnerServiceId, customerNo, virtualAccountNo, trxId,
+        paymentRequestId, paidAmount.'
       parameters:
       - description: Request timestamp, ISO 8601
         in: header
