@@ -25,9 +25,12 @@ func NewVAHandler(vaUsecase domain.VAUsecase) *VAHandler {
 // @Description Vendor-initiated inquiry for Virtual Account bill/customer details prior to payment. Read-only.
 // @Security SnapTimestamp
 // @Security SnapSignature
+// @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
-// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param X-PARTNER-ID header string true "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID"
+// @Param X-EXTERNAL-ID header string true "Numeric string, unique per calendar day. Doubles as the idempotency key"
+// @Param CHANNEL-ID header string true "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAInquiryRequest true "VA inquiry request"
 // @Success 200 {object} domain.VAInquiryResponse
 // @Failure 400 {object} domain.VAInquiryResponse "Invalid Field Format / Invalid Mandatory Field"
@@ -89,9 +92,12 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 // @Description Vendor-initiated notification that a payment against a Virtual Account has been received. State-changing: records the payment. Mandatory body fields per ASPI: partnerServiceId, customerNo, virtualAccountNo, trxId, paymentRequestId, paidAmount.
 // @Security SnapTimestamp
 // @Security SnapSignature
+// @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
-// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param X-PARTNER-ID header string true "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID"
+// @Param X-EXTERNAL-ID header string true "Numeric string, unique per calendar day. Doubles as the idempotency key"
+// @Param CHANNEL-ID header string true "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAPaymentRequest true "VA payment notification"
 // @Success 200 {object} domain.VAPaymentResponse
 // @Failure 400 {object} domain.VAPaymentResponse "Invalid Field Format / Invalid Mandatory Field"
@@ -154,9 +160,12 @@ func (h *VAHandler) Payment(c echo.Context) error {
 // @Description Vendor-initiated inquiry of the current payment status of a Virtual Account transaction. Read-only.
 // @Security SnapTimestamp
 // @Security SnapSignature
+// @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
-// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param X-PARTNER-ID header string true "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID"
+// @Param X-EXTERNAL-ID header string true "Numeric string, unique per calendar day. Doubles as the idempotency key"
+// @Param CHANNEL-ID header string true "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAStatusRequest true "VA status request"
 // @Success 200 {object} domain.VAStatusResponse
 // @Failure 400 {object} domain.VAStatusResponse "Invalid Field Format / Invalid Mandatory Field"

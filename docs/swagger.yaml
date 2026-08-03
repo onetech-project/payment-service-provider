@@ -1196,10 +1196,21 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Unique external ID for this request
+      - description: Numeric string, unique per calendar day. Doubles as the idempotency
+          key
         in: header
         name: X-EXTERNAL-ID
         required: true
+        type: string
+      - description: Partner identifier. Mandatory per the ASPI spec but NOT enforced
+          on merchant routes — send it for SNAP conformance
+        in: header
+        name: X-PARTNER-ID
+        type: string
+      - description: PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT
+          enforced on merchant routes — send it for SNAP conformance
+        in: header
+        name: CHANNEL-ID
         type: string
       - description: VA create/update request. additionalInfo.dbUrlProcess carries
           the merchant payment-callback URL (see description).
@@ -1262,10 +1273,21 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Unique external ID for this request
+      - description: Numeric string, unique per calendar day. Doubles as the idempotency
+          key
         in: header
         name: X-EXTERNAL-ID
         required: true
+        type: string
+      - description: Partner identifier. Mandatory per the ASPI spec but NOT enforced
+          on merchant routes — send it for SNAP conformance
+        in: header
+        name: X-PARTNER-ID
+        type: string
+      - description: PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT
+          enforced on merchant routes — send it for SNAP conformance
+        in: header
+        name: CHANNEL-ID
         type: string
       - description: VA delete request
         in: body
@@ -1310,6 +1332,13 @@ paths:
       description: Vendor-initiated inquiry for Virtual Account bill/customer details
         prior to payment. Read-only.
       parameters:
+      - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b.
+          Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also
+          bound into the AccessToken component of stringToSign
+        in: header
+        name: Authorization
+        required: true
+        type: string
       - description: Request timestamp, ISO 8601
         in: header
         name: X-TIMESTAMP
@@ -1320,9 +1349,22 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Unique external ID for this request
+      - description: Partner identifier, max 36 chars. Enforced whenever the vendor
+          config sets VENDOR_PARTNER_ID
+        in: header
+        name: X-PARTNER-ID
+        required: true
+        type: string
+      - description: Numeric string, unique per calendar day. Doubles as the idempotency
+          key
         in: header
         name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: PJP channel id, 5 chars. Mandatory per the ASPI security standard,
+          and enforced whenever the vendor config sets VENDOR_CHANNEL_ID
+        in: header
+        name: CHANNEL-ID
         required: true
         type: string
       - description: VA inquiry request
@@ -1389,10 +1431,21 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Unique external ID for this request
+      - description: Numeric string, unique per calendar day. Doubles as the idempotency
+          key
         in: header
         name: X-EXTERNAL-ID
         required: true
+        type: string
+      - description: Partner identifier. Mandatory per the ASPI spec but NOT enforced
+          on merchant routes — send it for SNAP conformance
+        in: header
+        name: X-PARTNER-ID
+        type: string
+      - description: PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT
+          enforced on merchant routes — send it for SNAP conformance
+        in: header
+        name: CHANNEL-ID
         type: string
       - description: VA list filter/pagination request
         in: body
@@ -1439,6 +1492,13 @@ paths:
         body fields per ASPI: partnerServiceId, customerNo, virtualAccountNo, trxId,
         paymentRequestId, paidAmount.'
       parameters:
+      - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b.
+          Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also
+          bound into the AccessToken component of stringToSign
+        in: header
+        name: Authorization
+        required: true
+        type: string
       - description: Request timestamp, ISO 8601
         in: header
         name: X-TIMESTAMP
@@ -1449,9 +1509,22 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Unique external ID for this request
+      - description: Partner identifier, max 36 chars. Enforced whenever the vendor
+          config sets VENDOR_PARTNER_ID
+        in: header
+        name: X-PARTNER-ID
+        required: true
+        type: string
+      - description: Numeric string, unique per calendar day. Doubles as the idempotency
+          key
         in: header
         name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: PJP channel id, 5 chars. Mandatory per the ASPI security standard,
+          and enforced whenever the vendor config sets VENDOR_CHANNEL_ID
+        in: header
+        name: CHANNEL-ID
         required: true
         type: string
       - description: VA payment notification
@@ -1503,6 +1576,13 @@ paths:
       description: Vendor-initiated inquiry of the current payment status of a Virtual
         Account transaction. Read-only.
       parameters:
+      - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b.
+          Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also
+          bound into the AccessToken component of stringToSign
+        in: header
+        name: Authorization
+        required: true
+        type: string
       - description: Request timestamp, ISO 8601
         in: header
         name: X-TIMESTAMP
@@ -1513,9 +1593,22 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Unique external ID for this request
+      - description: Partner identifier, max 36 chars. Enforced whenever the vendor
+          config sets VENDOR_PARTNER_ID
+        in: header
+        name: X-PARTNER-ID
+        required: true
+        type: string
+      - description: Numeric string, unique per calendar day. Doubles as the idempotency
+          key
         in: header
         name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: PJP channel id, 5 chars. Mandatory per the ASPI security standard,
+          and enforced whenever the vendor config sets VENDOR_CHANNEL_ID
+        in: header
+        name: CHANNEL-ID
         required: true
         type: string
       - description: VA status request

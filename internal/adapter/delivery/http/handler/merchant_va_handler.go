@@ -27,8 +27,10 @@ func NewMerchantVAHandler(merchantVAUsecase domain.MerchantVAUsecase) *MerchantV
 // @Security BearerAuth
 // @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601, must be within ±5 minutes of server time"
-// @Param X-SIGNATURE header string true "HMAC-SHA512(merchantSecret, \"POST:<path>:<accessToken>:<sha256hex(body)>:<timestamp>\"), hex-encoded — merchantSecret provisioned via POST /admin/clients/{clientId}/secret"
-// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param X-SIGNATURE header string true "HMAC-SHA512(merchantSecret, \"POST:<path>:<accessToken>:<base64(sha256(body))>:<timestamp>\"), base64-encoded — merchantSecret provisioned via POST /admin/clients/{clientId}/secret"
+// @Param X-EXTERNAL-ID header string true "Numeric string, unique per calendar day. Doubles as the idempotency key"
+// @Param X-PARTNER-ID header string false "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
+// @Param CHANNEL-ID header string false "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
 // @Param request body domain.MerchantCreateVARequest true "VA create/update request. additionalInfo.dbUrlProcess carries the merchant payment-callback URL (see description)."
 // @Success 200 {object} domain.MerchantCreateVAResponse "additionalInfo.dbUrlProcess is echoed back in virtualAccountData.additionalInfo"
 // @Failure 400 {object} domain.MerchantCreateVAResponse "Invalid Field Format / Invalid Mandatory Field"
@@ -88,8 +90,10 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 // @Security BearerAuth
 // @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601, must be within ±5 minutes of server time"
-// @Param X-SIGNATURE header string true "HMAC-SHA512(merchantSecret, \"POST:<path>:<accessToken>:<sha256hex(body)>:<timestamp>\"), hex-encoded — merchantSecret provisioned via POST /admin/clients/{clientId}/secret"
-// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param X-SIGNATURE header string true "HMAC-SHA512(merchantSecret, \"POST:<path>:<accessToken>:<base64(sha256(body))>:<timestamp>\"), base64-encoded — merchantSecret provisioned via POST /admin/clients/{clientId}/secret"
+// @Param X-EXTERNAL-ID header string true "Numeric string, unique per calendar day. Doubles as the idempotency key"
+// @Param X-PARTNER-ID header string false "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
+// @Param CHANNEL-ID header string false "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
 // @Param request body domain.MerchantListVARequest true "VA list filter/pagination request"
 // @Success 200 {object} domain.MerchantListVAResponse
 // @Failure 400 {object} domain.MerchantListVAResponse "Invalid Field Format"
@@ -134,8 +138,10 @@ func (h *MerchantVAHandler) ListVA(c echo.Context) error {
 // @Security BearerAuth
 // @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601, must be within ±5 minutes of server time"
-// @Param X-SIGNATURE header string true "HMAC-SHA512(merchantSecret, \"DELETE:<path>:<accessToken>:<sha256hex(body)>:<timestamp>\"), hex-encoded — merchantSecret provisioned via POST /admin/clients/{clientId}/secret"
-// @Param X-EXTERNAL-ID header string true "Unique external ID for this request"
+// @Param X-SIGNATURE header string true "HMAC-SHA512(merchantSecret, \"DELETE:<path>:<accessToken>:<base64(sha256(body))>:<timestamp>\"), base64-encoded — merchantSecret provisioned via POST /admin/clients/{clientId}/secret"
+// @Param X-EXTERNAL-ID header string true "Numeric string, unique per calendar day. Doubles as the idempotency key"
+// @Param X-PARTNER-ID header string false "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
+// @Param CHANNEL-ID header string false "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
 // @Param request body domain.MerchantDeleteVARequest true "VA delete request"
 // @Success 200 {object} domain.MerchantDeleteVAResponse
 // @Failure 400 {object} domain.MerchantDeleteVAResponse "Invalid Field Format / Invalid Mandatory Field"

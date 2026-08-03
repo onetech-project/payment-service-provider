@@ -718,10 +718,22 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Unique external ID for this request",
+                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "X-PARTNER-ID",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "CHANNEL-ID",
+                        "in": "header"
                     },
                     {
                         "description": "VA create/update request. additionalInfo.dbUrlProcess carries the merchant payment-callback URL (see description).",
@@ -809,10 +821,22 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Unique external ID for this request",
+                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "X-PARTNER-ID",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "CHANNEL-ID",
+                        "in": "header"
                     },
                     {
                         "description": "VA delete request",
@@ -882,6 +906,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Request timestamp, ISO 8601",
                         "name": "X-TIMESTAMP",
                         "in": "header",
@@ -896,8 +927,22 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Unique external ID for this request",
+                        "description": "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID",
+                        "name": "X-PARTNER-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID",
+                        "name": "CHANNEL-ID",
                         "in": "header",
                         "required": true
                     },
@@ -993,10 +1038,22 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Unique external ID for this request",
+                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "X-PARTNER-ID",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "CHANNEL-ID",
+                        "in": "header"
                     },
                     {
                         "description": "VA list filter/pagination request",
@@ -1066,6 +1123,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Request timestamp, ISO 8601",
                         "name": "X-TIMESTAMP",
                         "in": "header",
@@ -1080,8 +1144,22 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Unique external ID for this request",
+                        "description": "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID",
+                        "name": "X-PARTNER-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID",
+                        "name": "CHANNEL-ID",
                         "in": "header",
                         "required": true
                     },
@@ -1159,6 +1237,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Request timestamp, ISO 8601",
                         "name": "X-TIMESTAMP",
                         "in": "header",
@@ -1173,8 +1258,22 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Unique external ID for this request",
+                        "description": "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID",
+                        "name": "X-PARTNER-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID",
+                        "name": "CHANNEL-ID",
                         "in": "header",
                         "required": true
                     },
