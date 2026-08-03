@@ -46,9 +46,12 @@ ENV_FILE=""
 CHANNEL_ID="95231"
 PARTNER_ID="111111"
 ACCESS_TOKEN=""
+CLIENT_KEY=""
+TRX_ID=""
+PAYMENT_REQUEST_ID=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> -a <amount> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> -a <amount> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-k <client-key>] [-t <trxId>] [-q <paymentRequestId>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -67,7 +70,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:v:a:e:f:o:i:p:u:h" opt; do
+while getopts "s:c:v:a:e:f:o:k:t:q:i:p:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -76,6 +79,9 @@ while getopts "s:c:v:a:e:f:o:i:p:u:h" opt; do
 	e) CLIENT_SECRET="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
 	o) ACCESS_TOKEN="$OPTARG" ;;
+	k) CLIENT_KEY="$OPTARG" ;;
+	t) TRX_ID="$OPTARG" ;;
+	q) PAYMENT_REQUEST_ID="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
@@ -91,8 +97,15 @@ if [[ -n "$ENV_FILE" ]]; then
 	# confused with "the -f flag itself is missing".
 	[[ -z "$CLIENT_SECRET" ]] && echo "!! ${ENV_FILE}: VENDOR_CLIENT_SECRET is empty — fill it in, or pass -e <client-secret> directly." >&2
 
+	VENDOR_CLIENT_ID="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
+	# X-CLIENT-KEY is not an ASPI transaction-request header, but a deployment
+	# is free to list it in VENDOR_REQUIRED_HEADERS, and the UAT instance does
+	# — SNAPAuthMiddleware then rejects inquiry/payment/status without it
+	# ("Missing required header: X-CLIENT-KEY"). Default it to the vendor's
+	# clientId so those deployments work; -k overrides.
+	[[ -z "$CLIENT_KEY" ]] && CLIENT_KEY="$VENDOR_CLIENT_ID"
+
 	if [[ -z "$ACCESS_TOKEN" ]]; then
-		VENDOR_CLIENT_ID="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
 		VENDOR_PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" VENDOR_PRIVATE_KEY_PATH || true)"
 		if [[ -n "$VENDOR_CLIENT_ID" && -n "$VENDOR_PRIVATE_KEY_PATH" ]]; then
 			echo "==> Fetching accessToken for vendor client ${VENDOR_CLIENT_ID}..." >&2
@@ -115,27 +128,33 @@ TIMESTAMP="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 # idempotent replay of the SAME payment instead of a genuinely new attempt.
 # $RANDOM makes each run's id unique regardless of timing (payment_request_id
 # column is VARCHAR(30); "PAY-" + 10-digit epoch + up to 5-digit $RANDOM fits).
-INQUIRY_REQUEST_ID="INQ-$(date +%s)$RANDOM"
-PAYMENT_REQUEST_ID="PAY-$(date +%s)$RANDOM"
+[[ -z "$PAYMENT_REQUEST_ID" ]] && PAYMENT_REQUEST_ID="PAY-$(date +%s)$RANDOM"
 EXTERNAL_ID="$(date +%Y%m%d%H%M%S)$RANDOM"
 TRX_DATE="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 # reference_no column is varchar(11) — keep it short
 REFERENCE_NO="R$(date +%s | tail -c 10)"
 
-# trxId + paymentRequestId + paidAmount are the mandatory fields per ASPI
-# spec; totalAmount is optional (checked for mismatch only when present);
-# transactionDate does not exist in the spec — only trxDateTime does — so it
-# is intentionally omitted here. inquiryRequestId is kept for backward
-# compatibility with the internal inquiry-row linkage (see
-# internal/usecase/va_usecase.go Payment()), though it is no longer the
-# vendor-mandatory trace field.
+# Fields follow the ASPI PaymentRequest table (Transfer Kredit > Virtual
+# Account, service code 25):
+#   - paymentRequestId (M): "If Payment comes from the Inquiry process, this
+#     value must be the same with inquiryRequestId" — pass the inquiry's id
+#     via -q for that flow.
+#   - trxId (C): "Mandatory if Payment comes from the Create VA Request" —
+#     pass the create-va trxId via -t. Omitted entirely when it doesn't
+#     apply, rather than filling in a locally invented id.
+#   - totalAmount (O): only checked for mismatch when present.
+#   - inquiryRequestId is NOT a PaymentRequest field in the spec (it only
+#     appears in paymentRequestId's description) and transactionDate does not
+#     exist on this endpoint — only trxDateTime does. Both are omitted.
+TRX_ID_FIELD=""
+[[ -n "$TRX_ID" ]] && TRX_ID_FIELD="\"trxId\": \"${TRX_ID}\","
+
 BODY=$(cat <<JSON
 {
   "partnerServiceId": "${PARTNER_SERVICE_ID}",
   "customerNo": "${CUSTOMER_NO}",
   "virtualAccountNo": "${VA_NO}",
-  "inquiryRequestId": "${INQUIRY_REQUEST_ID}",
-  "trxId": "${INQUIRY_REQUEST_ID}",
+  ${TRX_ID_FIELD}
   "paymentRequestId": "${PAYMENT_REQUEST_ID}",
   "paidAmount": {"value": "${AMOUNT}", "currency": "IDR"},
   "totalAmount": {"value": "${AMOUNT}", "currency": "IDR"},
@@ -173,9 +192,15 @@ echo >&2
 AUTH_HEADER=()
 [[ -n "$ACCESS_TOKEN" ]] && AUTH_HEADER=(-H "Authorization: Bearer ${ACCESS_TOKEN}")
 
+# X-CLIENT-KEY is sent only when known — it is never part of stringToSign, so
+# adding it is inert on deployments that don't list it as required.
+CLIENT_KEY_HEADER=()
+[[ -n "$CLIENT_KEY" ]] && CLIENT_KEY_HEADER=(-H "X-CLIENT-KEY: ${CLIENT_KEY}")
+
 curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "Content-Type: application/json" \
 	"${AUTH_HEADER[@]}" \
+	"${CLIENT_KEY_HEADER[@]}" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
 	-H "X-SIGNATURE: ${SIGNATURE}" \
 	-H "CHANNEL-ID: ${CHANNEL_ID}" \

@@ -216,7 +216,6 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 			VirtualAccountTrxType: req.VirtualAccountTrxType,
 			FeeAmount:             req.FeeAmount,
 			ExpiredDate:           req.ExpiredDate,
-			LastUpdateDate:        &now,
 			AdditionalInfo:        req.AdditionalInfo,
 		},
 	}

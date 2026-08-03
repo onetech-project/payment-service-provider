@@ -252,7 +252,7 @@ func TestVAUsecase_Payment_Success(t *testing.T) {
 	resp, err := usecase.Payment(context.Background(), req)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "2002400", resp.ResponseCode)
+	assert.Equal(t, "2002500", resp.ResponseCode)
 	assert.NotNil(t, resp.VirtualAccountData)
 	assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
 	assert.Equal(t, req.PartnerServiceID, resp.VirtualAccountData.PartnerServiceID)
@@ -320,7 +320,7 @@ func TestVAUsecase_Payment_MissingPaymentRequestID(t *testing.T) {
 	assert.Nil(t, resp)
 	var domainErr *domain.DomainError
 	assert.ErrorAs(t, err, &domainErr)
-	assert.Equal(t, "4002402", domainErr.SNAPCode)
+	assert.Equal(t, "4002502", domainErr.SNAPCode)
 }
 
 func TestVAUsecase_Payment_MissingPaidAmount(t *testing.T) {
@@ -341,7 +341,7 @@ func TestVAUsecase_Payment_MissingPaidAmount(t *testing.T) {
 	assert.Nil(t, resp)
 	var domainErr *domain.DomainError
 	assert.ErrorAs(t, err, &domainErr)
-	assert.Equal(t, "4002402", domainErr.SNAPCode)
+	assert.Equal(t, "4002502", domainErr.SNAPCode)
 }
 
 func TestVAUsecase_Payment_AlreadyPaidVA_RejectsAndDoesNotOverwrite(t *testing.T) {
@@ -423,7 +423,7 @@ func TestVAUsecase_Payment_NotifiesMerchant(t *testing.T) {
 	resp, err := usecase.Payment(context.Background(), req)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "2002400", resp.ResponseCode)
+	assert.Equal(t, "2002500", resp.ResponseCode)
 	mockRepo.AssertExpectations(t)
 	mockNotifier.AssertExpectations(t)
 }
@@ -449,7 +449,7 @@ func TestVAUsecase_Payment_NoNotificationURL_SkipsCallback(t *testing.T) {
 	resp, err := usecase.Payment(context.Background(), req)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "2002400", resp.ResponseCode)
+	assert.Equal(t, "2002500", resp.ResponseCode)
 	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification")
 }
 
@@ -724,7 +724,7 @@ func TestVAUsecase_Payment_AmountMismatch(t *testing.T) {
 	assert.Nil(t, resp)
 	var domainErr *domain.DomainError
 	assert.ErrorAs(t, err, &domainErr)
-	assert.Equal(t, "4002401", domainErr.SNAPCode)
+	assert.Equal(t, "4002501", domainErr.SNAPCode)
 }
 
 func TestVAUsecase_Payment_OptionalTotalAmount_NoMismatchCheck(t *testing.T) {

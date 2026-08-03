@@ -105,7 +105,7 @@ func (h *VAHandler) Payment(c echo.Context) error {
 	var req domain.VAPaymentRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, domain.VAPaymentResponse{
-			ResponseCode:    "4002401",
+			ResponseCode:    "4002501",
 			ResponseMessage: "Invalid Field Format",
 		})
 	}
@@ -114,7 +114,7 @@ func (h *VAHandler) Payment(c echo.Context) error {
 	if req.PartnerServiceID == "" || req.CustomerNo == "" || req.VirtualAccountNo == "" ||
 		req.TrxID == "" || req.PaymentRequestID == "" {
 		return c.JSON(http.StatusBadRequest, domain.VAPaymentResponse{
-			ResponseCode:    "4002402",
+			ResponseCode:    "4002502",
 			ResponseMessage: "Invalid Mandatory Field",
 		})
 	}
@@ -140,7 +140,7 @@ func (h *VAHandler) Payment(c echo.Context) error {
 			return c.JSON(statusCode, paymentResp)
 		}
 		return c.JSON(http.StatusInternalServerError, domain.VAPaymentResponse{
-			ResponseCode:    "5002400",
+			ResponseCode:    "5002500",
 			ResponseMessage: "Internal Server Error",
 		})
 	}
@@ -170,7 +170,7 @@ func (h *VAHandler) Status(c echo.Context) error {
 	var req domain.VAStatusRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, domain.VAStatusResponse{
-			ResponseCode:    "4002401",
+			ResponseCode:    "4002601",
 			ResponseMessage: "Invalid Field Format",
 		})
 	}
@@ -178,7 +178,7 @@ func (h *VAHandler) Status(c echo.Context) error {
 	// Validate required fields
 	if req.PartnerServiceID == "" || req.CustomerNo == "" || req.VirtualAccountNo == "" || req.InquiryRequestID == "" {
 		return c.JSON(http.StatusBadRequest, domain.VAStatusResponse{
-			ResponseCode:    "4002402",
+			ResponseCode:    "4002602",
 			ResponseMessage: "Invalid Mandatory Field",
 		})
 	}
@@ -195,7 +195,7 @@ func (h *VAHandler) Status(c echo.Context) error {
 			})
 		}
 		return c.JSON(http.StatusInternalServerError, domain.VAStatusResponse{
-			ResponseCode:    "5002400",
+			ResponseCode:    "5002600",
 			ResponseMessage: "Internal Server Error",
 		})
 	}

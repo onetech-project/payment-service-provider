@@ -260,11 +260,15 @@ definitions:
         items:
           $ref: '#/definitions/domain.BilingualText'
         type: array
-      lastUpdateDate:
-        type: string
       partnerServiceId:
         type: string
       paymentDate:
+        description: |-
+          lastUpdateDate is deliberately absent: per the ASPI portal it belongs to
+          the update-va / update-status / inquiry-va responses, NOT to create-va
+          (service code 27), which is the only response this struct serves. The
+          local aspi-open-api-va.yaml carries it only because it models create and
+          update with one shared VAUpsertResponse schema.
         type: string
       totalAmount:
         $ref: '#/definitions/domain.Amount'

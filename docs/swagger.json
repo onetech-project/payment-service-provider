@@ -1612,13 +1612,11 @@
                         "$ref": "#/definitions/domain.BilingualText"
                     }
                 },
-                "lastUpdateDate": {
-                    "type": "string"
-                },
                 "partnerServiceId": {
                     "type": "string"
                 },
                 "paymentDate": {
+                    "description": "lastUpdateDate is deliberately absent: per the ASPI portal it belongs to\nthe update-va / update-status / inquiry-va responses, NOT to create-va\n(service code 27), which is the only response this struct serves. The\nlocal aspi-open-api-va.yaml carries it only because it models create and\nupdate with one shared VAUpsertResponse schema.",
                     "type": "string"
                 },
                 "totalAmount": {

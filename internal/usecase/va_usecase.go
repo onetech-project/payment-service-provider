@@ -2,12 +2,26 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"backbone-new/internal/domain"
 )
+
+// isNotFound reports whether a repository lookup failed because the row does
+// not exist, as opposed to the query itself failing (missing column, closed
+// pool, timeout...). The repository layer maps pgx.ErrNoRows to a sentinel —
+// ErrVAInvalidBill for GetInquiry/GetPayment, ErrMerchantVANotFound for
+// GetVAByVirtualAccountNo — and returns the driver error verbatim otherwise,
+// so callers MUST distinguish the two: treating a broken query as "not found"
+// silently degrades into wrong answers — e.g. reporting a paid VA as still
+// pending, or skipping the already-paid guard on /payment — instead of
+// surfacing a 500.
+func isNotFound(err error) bool {
+	return errors.Is(err, domain.ErrVAInvalidBill) || errors.Is(err, domain.ErrMerchantVANotFound)
+}
 
 // VAUsecase implements domain.VAUsecase
 type VAUsecase struct {
@@ -43,7 +57,10 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 	}
 
 	// Check if inquiry already exists (idempotency)
-	existing, _ := u.repo.GetInquiry(ctx, req.InquiryRequestID)
+	existing, err := u.repo.GetInquiry(ctx, req.InquiryRequestID)
+	if err != nil && !isNotFound(err) {
+		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+	}
 	if existing != nil {
 		// Return cached response for idempotent requests
 		return &domain.VAInquiryResponse{
@@ -66,7 +83,11 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 	// inquiry reflects that existing VA and MUST NOT insert another row keyed
 	// by the vendor's own (possibly brand-new) inquiryRequestId — otherwise
 	// every inquiry against the same VA creates a duplicate, phantom record.
-	if merchantVA, merr := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo); merr == nil && merchantVA != nil {
+	merchantVA, merr := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
+	if merr != nil && !isNotFound(merr) {
+		return nil, domain.NewDomainError("5002400", "Internal Server Error", merr)
+	}
+	if merchantVA != nil {
 		// Expiry detection (feature 007-merchant-expiry-callback, contracts/
 		// inquiry-expired.md): a pending ("03") VA whose expired_date has
 		// passed is expired, detected inline with no background scanner.
@@ -151,21 +172,24 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (*domain.VAPaymentResponse, error) {
 	// Validate required fields
 	if req.PaymentRequestID == "" {
-		return nil, domain.NewDomainError("4002402", "Invalid Mandatory Field [paymentRequestId]", nil)
+		return nil, domain.NewDomainError("4002502", "Invalid Mandatory Field [paymentRequestId]", nil)
 	}
 
 	if req.PaidAmount == nil {
-		return nil, domain.NewDomainError("4002402", "Invalid Mandatory Field [paidAmount]", nil)
+		return nil, domain.NewDomainError("4002502", "Invalid Mandatory Field [paidAmount]", nil)
 	}
 
 	// Check if payment already exists (idempotency)
-	existing, _ := u.repo.GetPayment(ctx, req.PaymentRequestID)
+	existing, err := u.repo.GetPayment(ctx, req.PaymentRequestID)
+	if err != nil && !isNotFound(err) {
+		return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
+	}
 	if existing != nil {
 		// Return existing payment status, echoing the identity/amount fields
 		// persisted with the original request per PaymentResponse.virtualAccountData.
 		existingTxDate := existing.TransactionDate
 		return &domain.VAPaymentResponse{
-			ResponseCode:    "2002400",
+			ResponseCode:    "2002500",
 			ResponseMessage: "Successful",
 			VirtualAccountData: &domain.VAPaymentStatus{
 				PartnerServiceID:    existing.PartnerServiceID,
@@ -194,16 +218,25 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// columns stay populated and the UPSERT below lands on that same row
 	// instead of an orphan row keyed by the vendor's own inquiryRequestId.
 	customerName := "Customer"
-	// inquiryRequestId is no longer sent by ASPI-compliant vendors on /payment;
-	// fall back to trxId (guaranteed non-empty) so the ON CONFLICT linkage key
-	// below never collides across unrelated payments as an empty string.
+	// inquiryRequestId is not a field of the ASPI PaymentRequest at all, and
+	// trxId is only Conditional ("Mandatory if Payment comes from the Create VA
+	// Request") — so neither is guaranteed to arrive. Fall back finally to
+	// paymentRequestId, which IS Mandatory and unique: the ON CONFLICT linkage
+	// key below must never degrade to an empty string, or two unrelated orphan
+	// payments would collide onto the same va_transactions row.
 	inquiryRequestID := req.InquiryRequestID
 	if inquiryRequestID == "" {
 		inquiryRequestID = req.TrxID
 	}
+	if inquiryRequestID == "" {
+		inquiryRequestID = req.PaymentRequestID
+	}
 	trxID := req.TrxID
 	notificationURL := ""
-	merchantVA, _ := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
+	merchantVA, merr := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
+	if merr != nil && !isNotFound(merr) {
+		return nil, domain.NewDomainError("5002500", "Internal Server Error", merr)
+	}
 
 	// A payment may only land on a transaction that is currently PENDING
 	// ("03"). Without this guard, a payment with a brand-new paymentRequestId
@@ -238,7 +271,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	if merchantVA != nil && (merchantVA.VAType == "02" || merchantVA.VAType == "05") {
 		paidAmount, status, err := u.repo.SaveVAPayment(ctx, merchantVA.ID, req.PaidAmount.Value, req.ReferenceNo)
 		if err != nil {
-			return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+			return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
 		}
 
 		transactionDate := time.Now()
@@ -259,7 +292,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		u.notifyMerchantWithVA(ctx, req, merchantVA, trxID, merchantVA.NotificationURL)
 
 		return &domain.VAPaymentResponse{
-			ResponseCode:    "2002400",
+			ResponseCode:    "2002500",
 			ResponseMessage: "Successful",
 			VirtualAccountData: &domain.VAPaymentStatus{
 				PartnerServiceID:    req.PartnerServiceID,
@@ -288,7 +321,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 
 	// Validate amount match (totalAmount is optional per spec; only checked when present)
 	if req.TotalAmount != nil && req.PaidAmount.Value != req.TotalAmount.Value {
-		return nil, domain.NewDomainError("4002401", "Invalid Field Format [amount mismatch]", nil)
+		return nil, domain.NewDomainError("4002501", "Invalid Field Format [amount mismatch]", nil)
 	}
 
 	if merchantVA != nil {
@@ -343,12 +376,12 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	}
 
 	if err := u.repo.SavePayment(ctx, record); err != nil {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
 	}
 
 	if len(req.BillDetails) > 0 {
 		if err := u.repo.SaveBillDetails(ctx, record.ID, paymentBillDetailsToBillDetail(req.BillDetails)); err != nil {
-			return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+			return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
 		}
 	}
 
@@ -359,7 +392,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// Build success response, echoing the identity/amount fields per
 	// PaymentResponse.virtualAccountData.
 	return &domain.VAPaymentResponse{
-		ResponseCode:    "2002400",
+		ResponseCode:    "2002500",
 		ResponseMessage: "Successful",
 		VirtualAccountData: &domain.VAPaymentStatus{
 			PartnerServiceID:    req.PartnerServiceID,
@@ -565,13 +598,21 @@ func (u *VAUsecase) notifyMerchantWithVA(ctx context.Context, req *domain.VAPaym
 
 // Status handles VA status inquiry from vendor
 func (u *VAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest) (*domain.VAStatusResponse, error) {
-	// Get payment record
+	// Get payment record. Only a genuine "no such row" may fall through to the
+	// pending/inquiry branch below — a failing query must surface as a 500,
+	// otherwise a paid VA is reported back to the vendor as still pending.
 	payment, err := u.repo.GetPayment(ctx, req.InquiryRequestID)
+	if err != nil && !isNotFound(err) {
+		return nil, domain.NewDomainError("5002600", "Internal Server Error", err)
+	}
 	if err != nil {
 		// If no payment found, check inquiry
 		inquiry, inquiryErr := u.repo.GetInquiry(ctx, req.InquiryRequestID)
+		if inquiryErr != nil && !isNotFound(inquiryErr) {
+			return nil, domain.NewDomainError("5002600", "Internal Server Error", inquiryErr)
+		}
 		if inquiryErr != nil {
-			return nil, domain.NewDomainError("4042419", "Invalid Bill/Virtual Account", nil)
+			return nil, domain.NewDomainError("4042619", "Invalid Bill/Virtual Account", nil)
 		}
 
 		// Best-effort: bill details persisted at create-VA/inquiry time, if any.

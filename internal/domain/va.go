@@ -48,9 +48,9 @@ type VAAccountData struct {
 
 // VAPaymentRequest represents inbound payment notification from vendor
 type VAPaymentRequest struct {
-	PartnerServiceID string     `json:"partnerServiceId"`
-	CustomerNo       string     `json:"customerNo"`
-	VirtualAccountNo string     `json:"virtualAccountNo"`
+	PartnerServiceID string `json:"partnerServiceId"`
+	CustomerNo       string `json:"customerNo"`
+	VirtualAccountNo string `json:"virtualAccountNo"`
 	// InquiryRequestID is kept for backward compatibility with legacy vendors
 	// still sending it; per ASPI spec, TrxID is the mandatory trace field on
 	// this endpoint (inquiryRequestId is instead resolved internally from the
@@ -366,8 +366,12 @@ type MerchantVAData struct {
 	VirtualAccountTrxType string          `json:"virtualAccountTrxType,omitempty"`
 	FeeAmount             *Amount         `json:"feeAmount,omitempty"`
 	ExpiredDate           *time.Time      `json:"expiredDate,omitempty"`
-	LastUpdateDate        *time.Time      `json:"lastUpdateDate,omitempty"`
-	PaymentDate           *time.Time      `json:"paymentDate,omitempty"`
+	// lastUpdateDate is deliberately absent: per the ASPI portal it belongs to
+	// the update-va / update-status / inquiry-va responses, NOT to create-va
+	// (service code 27), which is the only response this struct serves. The
+	// local aspi-open-api-va.yaml carries it only because it models create and
+	// update with one shared VAUpsertResponse schema.
+	PaymentDate *time.Time `json:"paymentDate,omitempty"`
 	// AdditionalInfo echoes back additionalInfo.dbUrlProcess per ASPI
 	// VAUpsertResponse (aspi-open-api-va.yaml:348-351).
 	AdditionalInfo map[string]interface{} `json:"additionalInfo,omitempty"`

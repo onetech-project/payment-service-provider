@@ -174,6 +174,13 @@ elif [[ -z "$VA_NO" ]]; then
 	VA_NO="${PARTNER_SERVICE_ID}${CUSTOMER_NO}"
 fi
 echo "==> virtualAccountNo: ${VA_NO}"
+
+# The create-va trxId is what step 3 must send back as PaymentRequest.trxId —
+# per ASPI that field is "Mandatory if Payment comes from the Create VA
+# Request", which is exactly this flow. Inventing a fresh id there instead
+# would leave the payment unlinked to the VA the merchant created.
+CONFIRMED_TRX_ID="$(echo "$CREATE_VA_RESPONSE" | jq -r '.virtualAccountData.trxId // empty')"
+echo "==> trxId: ${CONFIRMED_TRX_ID}"
 echo
 
 echo "=================================================================="
@@ -181,12 +188,21 @@ echo "Step 2/4: POST /openapi/v1.0/transfer-va/inquiry (vendor identity)"
 echo "=================================================================="
 INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE" | jq .
+
+# ASPI PaymentRequest.paymentRequestId: "If Payment comes from the Inquiry
+# process, this value must be the same with inquiryRequestId" — which is this
+# flow, so step 3 reuses the id this inquiry was keyed on.
+CONFIRMED_INQUIRY_REQUEST_ID="$(echo "$INQUIRY_RESPONSE" | jq -r '.virtualAccountData.inquiryRequestId // empty')"
 echo
 
 echo "=================================================================="
 echo "Step 3/4: POST /openapi/v1.0/transfer-va/payment (vendor identity)"
 echo "=================================================================="
-PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
+PAYMENT_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")
+[[ -n "$CONFIRMED_TRX_ID" ]] && PAYMENT_ARGS+=(-t "$CONFIRMED_TRX_ID")
+[[ -n "$CONFIRMED_INQUIRY_REQUEST_ID" ]] && PAYMENT_ARGS+=(-q "$CONFIRMED_INQUIRY_REQUEST_ID")
+
+PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" "${PAYMENT_ARGS[@]}")"
 echo "$PAYMENT_RESPONSE" | jq .
 
 PAYMENT_CODE="$(echo "$PAYMENT_RESPONSE" | jq -r '.responseCode // empty')"
