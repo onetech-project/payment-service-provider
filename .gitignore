@@ -22,6 +22,9 @@ coverage.html
 coverage.inscope.out
 
 # Environment & Secrets
+# e2e-*.log: transcripts written by scripts/e2e-va-flow.sh -O, which embed
+# live bearer accessTokens in their stringToSign/Authorization diagnostics.
+e2e-*.log
 .env
 .env.*
 !.env.example

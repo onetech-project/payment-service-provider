@@ -102,7 +102,9 @@ STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$MERCHANT_SECRET" -binary | openssl base64 -A)"
 
 echo "==> POST ${BASE_URL}${ENDPOINT}" >&2
+echo "==> Authorization: Bearer ${ACCESS_TOKEN}" >&2
 echo "==> X-TIMESTAMP: $TIMESTAMP" >&2
+echo "==> stringToSign: $STRING_TO_SIGN" >&2
 echo "==> X-SIGNATURE: $SIGNATURE" >&2
 echo >&2
 

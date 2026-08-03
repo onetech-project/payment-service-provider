@@ -105,7 +105,9 @@ SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$MERCHA
 # be chained/captured by other scripts (see e2e-va-cancel-flow.sh).
 echo "==> DELETE ${BASE_URL}${ENDPOINT}" >&2
 echo "==> virtualAccountNo: ${VA_NO}" >&2
+echo "==> Authorization: Bearer ${ACCESS_TOKEN}" >&2
 echo "==> X-TIMESTAMP: $TIMESTAMP" >&2
+echo "==> stringToSign: $STRING_TO_SIGN" >&2
 echo "==> X-SIGNATURE: $SIGNATURE" >&2
 echo >&2
 

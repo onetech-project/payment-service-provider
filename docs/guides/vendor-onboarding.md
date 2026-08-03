@@ -10,6 +10,50 @@ calling in to notify about inquiries/payments), see
 [merchant-onboarding.md](./merchant-onboarding.md) instead — the two roles
 use completely different, independent credentials.
 
+## Flow at a glance
+
+The full lifecycle of one VA, showing where your calls (vendor) sit relative
+to the merchant's. Steps 1–2 are the merchant's (see
+[merchant-onboarding.md](./merchant-onboarding.md)); steps 3–8 are yours.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Merchant
+    participant P as PSP (this service)
+    participant V as Vendor / Bank (you)
+    participant C as Customer
+
+    Note over M,P: Merchant side — see merchant-onboarding.md
+    M->>P: POST /access-token/b2b (RSA-signed)
+    P-->>M: accessToken (900s)
+    M->>P: POST /transfer-va/create-va
+    P-->>M: 2002700 + virtualAccountData
+
+    Note over V,P: Vendor side — migrated path
+    V->>P: POST /access-token/b2b (RSA-signed, X-CLIENT-KEY)
+    P-->>V: accessToken (900s)
+
+    C->>V: Enters VA number at your channel
+    V->>P: POST /transfer-va/inquiry
+    P-->>V: 2002400 + totalAmount, billDetails
+    V-->>C: Shows bill
+
+    C->>V: Confirms payment
+    V->>P: POST /transfer-va/payment
+    P-->>V: 2002500 + paymentFlagStatus "00"
+
+    P-)M: async callback to notificationUrl (Asynq worker)
+
+    opt Reconciliation
+        V->>P: POST /transfer-va/status
+        P-->>V: 2002600 + paymentFlagStatus
+    end
+```
+
+On the **legacy path**, drop the two `/access-token/b2b` messages on the
+vendor side — everything else is identical.
+
 ## Two onboarding paths
 
 - **Legacy (shared-secret only)**: the original, simplest path — a symmetric
@@ -123,6 +167,12 @@ For every request to `inquiry`, `payment`, or `status`:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
    ```
+   `{PATH}` must be the **exact path of the URL you actually request**,
+   including any prefix. We verify against the path as received, so if you
+   call `https://host/openapi/v1.0/transfer-va/inquiry` you sign
+   `/openapi/v1.0/transfer-va/inquiry` — and if a gateway in front of us
+   rewrites the path, sign the rewritten one. A mismatch here surfaces as
+   `[Invalid signature]`, which is easy to misdiagnose as a wrong secret.
    - **Legacy path**: the `{accessToken}` slot is always the **empty
      string** — no header on these endpoints carries one, so both colons
      sit next to each other:
@@ -145,16 +195,37 @@ For every request to `inquiry`, `payment`, or `status`:
 
    | Header | Value | Required on |
    |---|---|---|
+   | `Content-Type` | `application/json` | Both |
    | `Authorization` | `Bearer <accessToken>` from Step 1 | Migrated path only |
    | `X-TIMESTAMP` | The same timestamp used in step 2 | Both |
    | `X-SIGNATURE` | The base64 signature from step 5 | Both |
-   | `X-PARTNER-ID` | Your assigned partner ID | Both |
-   | `X-EXTERNAL-ID` | A unique ID per request (idempotency) | Both |
-   | `CHANNEL-ID` | Your assigned channel ID (if your config requires it) | Both |
+   | `X-PARTNER-ID` | Your assigned partner ID (max 36 chars) | Both |
+   | `X-EXTERNAL-ID` | Numeric string, unique per calendar day (idempotency key) | Both |
+   | `CHANNEL-ID` | Your assigned channel ID (5 chars) | Both |
+   | `X-CLIENT-KEY` | Your `VENDOR_CLIENT_ID` | Only if your config demands it — see below |
 
-   **Do not send `X-CLIENT-KEY`** on `inquiry`/`payment`/`status` — per the
-   SNAP spec, that header is only used on the `/access-token/b2b` endpoint,
-   and sending it here has no effect.
+   Per the ASPI *Standar Teknis dan Keamanan*, `CHANNEL-ID` is **Mandatory**
+   on transaction requests (not optional), and `X-EXTERNAL-ID` must be a
+   numeric string unique within the same calendar day.
+
+#### About `X-CLIENT-KEY`
+
+Per the ASPI spec, `X-CLIENT-KEY` belongs to `/access-token/b2b` **only** and
+has no meaning on `inquiry`/`payment`/`status`. However, the header set we
+enforce on those endpoints is driven by `VENDOR_REQUIRED_HEADERS` in your
+`.env.<vendor>.<channel>` config, and a deployment is free to list
+`X-CLIENT-KEY` there. When it is listed, omitting the header fails the
+request before any signature check:
+
+```json
+{"responseCode":"4010000","responseMessage":"Unauthorized. [Missing required header: X-CLIENT-KEY]"}
+```
+
+Ask operations for the exact `VENDOR_REQUIRED_HEADERS` value provisioned for
+your channel. If in doubt, **sending `X-CLIENT-KEY` is always safe**: it is
+never part of `stringToSign`, so it is simply ignored where it isn't
+required. Our reference scripts send it automatically, defaulting to
+`VENDOR_CLIENT_ID` (override with `-k`).
 
 ### Timestamp freshness
 
@@ -173,6 +244,80 @@ NTP-synchronized.
 | No `Authorization` header at all | `401 Unauthorized. [Missing or invalid Authorization header]` | Migrated path only |
 | Token invalid, malformed, or expired | `401 Unauthorized. [Invalid or expired access token]` | Migrated path only |
 | Token was issued for a different `clientId` than yours, or was swapped after signing | `401 Unauthorized. [Invalid signature]` (same generic message — not distinguished from a plain signature mismatch) | Migrated path only |
+| `X-EXTERNAL-ID` reused with a *different* body | `422 Unprocessable Entity. X-EXTERNAL-ID payload mismatch.` (`4227300`) | Both |
+| `X-EXTERNAL-ID` reused while the first request is still in flight | `409 Conflict. Request currently in progress for this X-EXTERNAL-ID.` (`4097300`) | Both |
+
+Reusing an `X-EXTERNAL-ID` with the *same* body is safe — you get the
+original response back, tagged with an `X-Cache-Replay: true` header. Note
+the idempotency key is the `X-EXTERNAL-ID` value alone, not scoped per
+endpoint, so the same value must not be reused across different endpoints
+either.
+
+## Request payloads
+
+Field names and obligations below come from the ASPI portal's
+[Virtual Account](https://apidevportal.aspi-indonesia.or.id/api-services/transfer-kredit/virtual-account)
+tables. `additionalInfo` is an open extension slot and is not covered here.
+
+### `POST /transfer-va/inquiry` (service code 24)
+
+| Field | Obligation | Notes |
+|---|---|---|
+| `partnerServiceId` | M | 8 chars, **left-padded with spaces** |
+| `customerNo` | M | up to 20 digits |
+| `virtualAccountNo` | M | `partnerServiceId` + `customerNo`, 28 chars |
+| `inquiryRequestId` | M | unique per inquiry, up to 128 chars |
+| `trxDateInit` | O | ISO-8601 with timezone, 25 chars |
+| `amount` | O | `{value, currency}`; `value` has 2 decimals |
+| `channelCode`, `language`, `hashedSourceAccountNo`, `sourceBankCode`, `passApp` | O | |
+
+> The ASPI page spells this field `trxDateInit` in its field table but
+> `txnDateInit` in its sample request. We accept **`txnDateInit`**, matching
+> `aspi-open-api-va.yaml`. It is optional either way.
+
+### `POST /transfer-va/payment` (service code 25)
+
+| Field | Obligation | Notes |
+|---|---|---|
+| `partnerServiceId`, `customerNo`, `virtualAccountNo` | M | as above |
+| `paymentRequestId` | M | **If the payment follows an inquiry, this must equal that inquiry's `inquiryRequestId`.** |
+| `trxId` | C | **Mandatory if the payment follows a create-VA request** — send the `trxId` we returned from `create-va`, not one you generate |
+| `paidAmount` | M | `{value, currency}` |
+| `totalAmount` | O | when present, must equal `paidAmount` or you get `4002501 Invalid Field Format [amount mismatch]` |
+| `trxDateTime` | O | ISO-8601 with timezone |
+| `referenceNo`, `journalNum`, `paymentType`, `flagAdvise`, `paidBills`, `subCompany`, `billDetails`, `freeTexts` | O | |
+
+**Do not send `inquiryRequestId`** — it is not a field of the ASPI
+PaymentRequest. It appears only inside the *description* of
+`paymentRequestId`, as the rule quoted above. We still accept it for
+backward compatibility with legacy vendors, but new integrations should omit
+it.
+
+There is also no `transactionDate` on this endpoint — only `trxDateTime`.
+
+### `POST /transfer-va/status` (service code 26)
+
+| Field | Obligation |
+|---|---|
+| `partnerServiceId`, `customerNo`, `virtualAccountNo` | M |
+| `inquiryRequestId` | M |
+| `paymentRequestId` | M |
+
+## Response codes
+
+We follow the ASPI `AAABBCC` format — `AAA` = HTTP status, `BB` = service
+code, `CC` = case code. Note the service code differs **per endpoint**, so
+`/payment` never returns a `…24…` code:
+
+| Endpoint | Success | Common failures |
+|---|---|---|
+| `/access-token/b2b` | `2007300` | `4017300` unknown client / bad signature |
+| `/inquiry` (24) | `2002400` | `4002401` field format · `4002402` missing mandatory · `4042419` invalid/expired bill · `5002400` |
+| `/payment` (25) | `2002500` | `4002501` field format / amount mismatch · `4002502` missing mandatory · `4042519` VA expired · `4092500` already paid or inactive · `5002500` |
+| `/status` (26) | `2002600` | `4042619` invalid bill/VA · `5002600` |
+
+`paymentFlagStatus` in a `/payment` or `/status` success body is `"00"` for
+settled and `"03"` for pending (a partial payment on a variable-bill VA).
 
 There is **no opt-out or grace period** once you're on a given path —
 enforcement is unconditional from the moment your `.env.<vendor>.<channel>`
@@ -191,6 +336,18 @@ both as a reference and for testing against a local instance. When your
 [`scripts/curl-b2b-token.sh`](../../scripts/curl-b2b-token.sh) and bind it in
 automatically — no need to pass one yourself. Omit both to exercise the
 legacy path unchanged.
+
+Flags worth knowing on `vendor-payment-va.sh`:
+
+| Flag | Purpose |
+|---|---|
+| `-t <trxId>` | the create-va `trxId`, sent as `PaymentRequest.trxId`. Omitted from the body entirely when not given |
+| `-q <paymentRequestId>` | use the inquiry's `inquiryRequestId` here when the payment follows an inquiry |
+| `-k <client-key>` | override the `X-CLIENT-KEY` value (defaults to `VENDOR_CLIENT_ID`) |
+
+[`scripts/e2e-va-flow.sh`](../../scripts/e2e-va-flow.sh) chains create-va →
+inquiry → payment → callback and wires `-t`/`-q` from the previous steps'
+responses automatically, so it exercises the spec-correct linkage end to end.
 
 ## Rotating your shared secret
 

@@ -23,7 +23,14 @@
 #   ./scripts/e2e-va-flow.sh -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> \
 #       -m <.env.merchant.NAME> -f <.env.vendor.channel> \
 #       [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] \
-#       [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>]
+#       [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>] \
+#       [-O <transcript-file>]
+#
+# -O writes a full transcript of every request (URL, headers, stringToSign,
+# body) and response to <transcript-file> while still printing to the
+# terminal — useful as evidence when comparing behaviour against the ASPI
+# spec or when reporting an issue to a vendor. NOTE: it contains live
+# accessTokens; treat the file as sensitive.
 #
 # -m is passed straight through to merchant-create-va.sh's -f.
 # -f is passed straight through to vendor-inquiry-va.sh / vendor-payment-va.sh's -f.
@@ -60,13 +67,14 @@ BILL_NAME=""
 MERCHANT_ENV_FILE=""
 VENDOR_ENV_FILE=""
 LISTENER_PORT="8099"
+OUTPUT_FILE=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -m <.env.merchant.NAME> -f <.env.vendor.channel> [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -m <.env.merchant.NAME> -f <.env.vendor.channel> [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>] [-O <transcript-file>]" >&2
 	exit 1
 }
 
-while getopts "s:c:n:a:v:t:w:m:f:b:d:L:u:h" opt; do
+while getopts "s:c:n:a:v:t:w:m:f:b:d:L:u:O:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -81,9 +89,24 @@ while getopts "s:c:n:a:v:t:w:m:f:b:d:L:u:h" opt; do
 	d) BILL_NAME="$OPTARG" ;;
 	L) LISTENER_PORT="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
+	O) OUTPUT_FILE="$OPTARG" ;;
 	h | *) usage ;;
 	esac
 done
+
+# -O captures the whole run — every request (URL, headers, stringToSign, body)
+# and every response — into one transcript, while still streaming to the
+# terminal. The sub-scripts already print their request diagnostics to stderr
+# and their response JSON to stdout, so both streams are merged here rather
+# than reimplementing the logging inside each script.
+#
+# The transcript contains live bearer accessTokens (inside stringToSign and
+# the Authorization diagnostics). They expire in 15 minutes, but treat the
+# file as sensitive — don't paste it into a public issue verbatim.
+if [[ -n "$OUTPUT_FILE" ]]; then
+	: >"$OUTPUT_FILE" || { echo "cannot write transcript: $OUTPUT_FILE" >&2; exit 1; }
+	exec > >(tee -a "$OUTPUT_FILE") 2>&1
+fi
 
 [[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$MERCHANT_ENV_FILE" || -z "$VENDOR_ENV_FILE" ]] && usage
 [[ -f "$MERCHANT_ENV_FILE" ]] || { echo "merchant env file not found: $MERCHANT_ENV_FILE (run onboard-merchant.sh first)" >&2; exit 1; }
@@ -99,7 +122,13 @@ cleanup() {
 		kill "$LISTENER_PID" 2>/dev/null || true
 		wait "$LISTENER_PID" 2>/dev/null || true
 	fi
-	[[ -n "$CALLBACK_LOG" && -f "$CALLBACK_LOG" ]] && rm -f "$CALLBACK_LOG"
+	# Must be an `if`, not `[[ ... ]] && rm`: an EXIT trap's final command
+	# status becomes the script's exit status, so the && form returned 1 —
+	# and reported failure — on every otherwise-successful run that passed
+	# -w (no local listener, so CALLBACK_LOG is empty and the test is false).
+	if [[ -n "$CALLBACK_LOG" && -f "$CALLBACK_LOG" ]]; then
+		rm -f "$CALLBACK_LOG"
+	fi
 }
 trap cleanup EXIT
 

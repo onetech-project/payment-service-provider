@@ -237,9 +237,17 @@ SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT
 
 # Diagnostics go to stderr so stdout stays clean JSON — this lets the script
 # be chained/captured by other scripts (see e2e-va-flow.sh).
+# Authorization and stringToSign are echoed unconditionally: unlike the vendor
+# scripts (where a legacy vendor genuinely has no token), an accessToken is
+# mandatory here — the usage check above already aborted without one. Printing
+# both makes an -O transcript self-contained: the token in the Authorization
+# header must match the one embedded in stringToSign, and seeing them side by
+# side is what makes a signature mismatch diagnosable.
 echo "==> POST ${BASE_URL}${ENDPOINT}" >&2
 echo "==> virtualAccountNo: ${VA_NO}" >&2
+echo "==> Authorization: Bearer ${ACCESS_TOKEN}" >&2
 echo "==> X-TIMESTAMP: $TIMESTAMP" >&2
+echo "==> stringToSign: $STRING_TO_SIGN" >&2
 echo "==> X-SIGNATURE: $SIGNATURE" >&2
 echo "==> Request body:" >&2
 echo "$BODY" | (command -v jq >/dev/null && jq . || cat) >&2

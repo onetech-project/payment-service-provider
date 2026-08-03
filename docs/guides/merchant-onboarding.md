@@ -9,6 +9,40 @@ against a VA (not managing VAs directly), see
 [vendor-onboarding.md](./vendor-onboarding.md) instead — the two roles use
 completely different, independent credentials.
 
+## Flow at a glance
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Merchant (you)
+    participant P as PSP (this service)
+    participant V as Vendor / Bank
+    participant W as Your notificationUrl
+
+    rect rgb(240, 246, 252)
+        Note over M,P: Every call — token first, then a signed request
+        M->>P: POST /access-token/b2b<br/>X-CLIENT-KEY, X-SIGNATURE = RSA(clientId|timestamp)
+        P-->>M: accessToken (valid 900s)
+        M->>P: POST /transfer-va/create-va<br/>Authorization: Bearer + X-SIGNATURE = HMAC(secret, stringToSign)
+        P-->>M: 2002700 + virtualAccountData
+    end
+
+    Note over V,P: Later — the customer pays at the bank/vendor
+    V->>P: POST /transfer-va/inquiry
+    V->>P: POST /transfer-va/payment
+    P-)W: async callback (payment.received) to the<br/>notificationUrl registered at create-va
+
+    opt Cancel an unpaid VA
+        M->>P: DELETE /transfer-va/delete-va
+        P-->>M: 2003100
+    end
+```
+
+The two signatures use **different algorithms and different keys**: the token
+request is RSA-signed with your private key, the API request is HMAC-signed
+with your shared secret. Both are needed — see
+[How authentication works](#how-authentication-works).
+
 ## What you need to provide us
 
 An **RSA public key** (2048-bit or stronger), generated from a keypair you
@@ -38,7 +72,7 @@ Both are provisioned together by our operations team running:
 
 (Or, if you already generated your own keypair per the previous section,
 operations can register it directly via the admin API — see
-[Manual registration](#manual-registration-without-onboard-mergchantsh) below.)
+[Manual registration](#manual-registration-without-onboard-merchantsh) below.)
 
 ## How authentication works
 
@@ -86,6 +120,12 @@ For every request to `create-va`, `list`, or `delete-va`:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
    ```
+   `{METHOD}` is the real HTTP method — `POST` for `create-va` and `list`,
+   but **`DELETE`** for `delete-va`. `{PATH}` is the exact path of the URL you
+   actually request, including any prefix; we verify against the path as
+   received, so a gateway that rewrites the path means you sign the rewritten
+   one. Getting either wrong surfaces as `[Invalid signature]`, which is easy
+   to misdiagnose as a wrong secret.
    **Important**: the `accessToken` slot here is always the **real token
    from Step 1** (not empty) — because you genuinely send it via the
    `Authorization` header on this endpoint, both sides of the signature
@@ -99,10 +139,18 @@ For every request to `create-va`, `list`, or `delete-va`:
 
    | Header | Value |
    |---|---|
+   | `Content-Type` | `application/json` |
    | `Authorization` | `Bearer <accessToken>` from Step 1 |
    | `X-TIMESTAMP` | The same timestamp used in step 2 |
    | `X-SIGNATURE` | The base64 signature from step 5 |
-   | `X-EXTERNAL-ID` | A unique ID per request (idempotency) |
+   | `X-EXTERNAL-ID` | Numeric string, unique per calendar day (idempotency key) |
+
+   Unlike the vendor endpoints, `CHANNEL-ID` and `X-PARTNER-ID` are **not**
+   enforced on `create-va`/`list`/`delete-va` — you may send them for SNAP
+   consistency, but they are neither required nor part of `stringToSign`.
+   The vendor endpoints do require them; see
+   [vendor-onboarding.md](./vendor-onboarding.md#request-signing-steps) if you
+   also operate on that side.
 
 ### Timestamp freshness
 
@@ -124,6 +172,105 @@ There is **no opt-out** — both checks are unconditional from deployment.
 Make sure you're provisioned (Step 0 above) **before** attempting any
 create-va/list/delete-va call, or every request will fail closed regardless
 of how correctly it's signed.
+
+Idempotency is keyed on `X-EXTERNAL-ID` alone (not scoped per endpoint):
+replaying the same value with the **same** body returns the original
+response with an `X-Cache-Replay: true` header; with a **different** body you
+get `422 Unprocessable Entity` (`4227300`), and while the first request is
+still in flight you get `409 Conflict` (`4097300`).
+
+## Response codes
+
+We follow the ASPI `AAABBCC` format — `AAA` = HTTP status, `BB` = service
+code, `CC` = case code. The service code differs **per endpoint**:
+
+| Endpoint | Method | Success | Common failures |
+|---|---|---|---|
+| `/access-token/b2b` | POST | `2007300` | `4017300` unknown client or bad RSA signature |
+| `/transfer-va/create-va` (27) | POST | `2002700` | `4002700` field format · `4002701` missing mandatory · `5002700` |
+| `/transfer-va/delete-va` (31) | DELETE | `2003100` | `4003101` field format / missing mandatory · `5003100` |
+| `/transfer-va/list` | POST | `2002400` | not an ASPI-defined endpoint — a dashboard convenience API |
+
+Auth failures on any of these are `401` with `4010000`, per the table above.
+
+## Payload notes
+
+Request and response bodies follow the ASPI
+[Virtual Account](https://apidevportal.aspi-indonesia.or.id/api-services/transfer-kredit/virtual-account)
+schemas (`additionalInfo` aside, which is an open extension slot). Two things
+worth calling out:
+
+- **`partnerServiceId` is 8 characters, left-padded with spaces**, and
+  `virtualAccountNo` is `partnerServiceId` + `customerNo` — so
+  `"   12345"` + `"0001234567"` gives `"   123450001234567"`. Sending an
+  unpadded `partnerServiceId` is the single most common create-va mistake.
+- **`additionalInfo.dbUrlProcess`** is where you register the callback URL
+  for this VA. When the vendor later reports a payment, we POST a
+  `payment.received` notification there asynchronously. Without it, the VA
+  works but you get no callback.
+
+The create-va response echoes your submitted fields back inside
+`virtualAccountData`. It does **not** include `lastUpdateDate` — per the ASPI
+portal that field belongs to the `update-va` / `update-status` /
+`inquiry-va` responses, not to `create-va`.
+
+## Receiving callbacks
+
+When a vendor reports a payment against one of your VAs, we `POST` a
+notification to the `additionalInfo.dbUrlProcess` URL you registered at
+create-va time. Delivery is asynchronous (queued, then sent by a background
+worker) and typically lands within a second of the vendor's `/payment` call.
+
+This callback is **our own extension, not an ASPI-defined message** — the
+SNAP VA spec has no PJP→merchant notification. The shape is:
+
+```json
+{
+  "eventType": "payment.received",
+  "timestamp": "2026-08-03T03:06:39Z",
+  "data": {
+    "virtualAccountNo": "   1234510063781",
+    "customerNo": "10063781",
+    "trxId": "TRX-178572639726193",
+    "paymentRequestId": "INQ-178572639822823",
+    "paidAmount": { "value": "150000.00", "currency": "IDR" },
+    "trxDateTime": "2026-08-03T10:06:38+07:00",
+    "referenceNo": "R785726398",
+    "status": "00"
+  }
+}
+```
+
+A second event type, `va.expired`, is sent when a VA passes its
+`expiredDate` unpaid. Its `data` carries `virtualAccountNo`, `customerNo`,
+`trxId`, `expiredAt`, and `status: "02"`.
+
+**Verify the signature.** Each callback carries:
+
+| Header | Value |
+|---|---|
+| `X-Signature` | `base64(HMAC-SHA512(notificationSecret, rawRequestBody))` |
+| `X-Timestamp` | Send time, ISO 8601 |
+
+Two differences from the request-signing scheme above, both easy to trip on:
+
+- The HMAC is computed over the **raw body bytes only**, not over a
+  `stringToSign`. Compare against the exact bytes you received, before
+  parsing the JSON.
+- The key is a **separate, service-wide notification secret**
+  (`NOTIFICATION_SECRET`), *not* the shared secret you use to sign create-va
+  requests. Ask operations for its value.
+
+Your endpoint should respond `2xx` promptly. Return non-`2xx` and the
+delivery is recorded as failed; ask operations to replay it via
+`POST /admin/transactions/{virtualAccountNo}/resend-callback`.
+
+Two things to plan for:
+
+- **The URL must be reachable from our servers.** A `localhost` or private
+  address won't work from a deployed environment — a common surprise when
+  moving from local testing to UAT.
+- **Handle duplicates idempotently**, keyed on `paymentRequestId`.
 
 ## Reference implementation
 

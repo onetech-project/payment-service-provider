@@ -323,8 +323,18 @@ func main() {
 	// (dev/uat/prod) can whitelist its own frontend origin(s) and headers
 	// without a code change.
 	corsAllowedOrigins := splitAndTrim(getEnvOrDefault("CORS_ALLOWED_ORIGINS", ""))
+	// This list must cover EVERY header a spec-conformant SNAP client may send,
+	// not just the ones we enforce. A browser blocks the whole request when any
+	// header named in the preflight's Access-Control-Request-Headers is missing
+	// from our Access-Control-Allow-Headers response — even if the origin is
+	// allowed and even if we would have ignored the header server-side. The
+	// B2B2C entries (Authorization-Customer, X-IP-ADDRESS, X-DEVICE-ID,
+	// X-LATITUDE, X-LONGITUDE) and X-ORIGIN appear in the ASPI portal's own
+	// sample requests, so any client built from those samples sends them.
 	defaultCORSHeaders := strings.Join([]string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization,
+		"Authorization-Customer",
 		"X-TIMESTAMP", "X-SIGNATURE", "X-CLIENT-KEY", "X-PARTNER-ID", "X-EXTERNAL-ID", "CHANNEL-ID",
+		"X-ORIGIN", "X-IP-ADDRESS", "X-DEVICE-ID", "X-LATITUDE", "X-LONGITUDE",
 		"X-Admin-API-Key"}, ",")
 	corsAllowedHeaders := splitAndTrim(getEnvOrDefault("CORS_ALLOWED_HEADERS", defaultCORSHeaders))
 	if len(corsAllowedOrigins) > 0 {

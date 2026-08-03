@@ -181,6 +181,7 @@ echo "==> POST ${BASE_URL}${ENDPOINT}" >&2
 echo "==> virtualAccountNo: ${VA_NO}" >&2
 echo "==> paymentRequestId: ${PAYMENT_REQUEST_ID}" >&2
 echo "==> X-TIMESTAMP: $TIMESTAMP" >&2
+echo "==> stringToSign: $STRING_TO_SIGN" >&2
 echo "==> X-SIGNATURE: $SIGNATURE" >&2
 echo "==> Request body:" >&2
 echo "$BODY" | (command -v jq >/dev/null && jq . || cat) >&2
