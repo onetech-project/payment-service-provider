@@ -219,17 +219,157 @@ func TestVAUsecase_Inquiry_Idempotent(t *testing.T) {
 
 	existing := &domain.VAInquiryRecord{
 		ID:               "existing-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		CustomerName:     "Faris",
+		VirtualAccountNo: req.VirtualAccountNo,
 		InquiryRequestID: req.InquiryRequestID,
-		Status:           "00",
+		Status:           "03",
+		TotalAmount:      "100000.00",
+		Currency:         "IDR",
+		SubCompany:       "00001",
 	}
 
 	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(existing, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, existing.ID).Return([]domain.BillDetail(nil), nil)
 
 	resp, err := usecase.Inquiry(context.Background(), req)
 
 	assert.NoError(t, err)
 	assert.Equal(t, "2002400", resp.ResponseCode)
+	// The replay is answered from the stored row, not from constants.
+	assert.Equal(t, "Faris", resp.VirtualAccountData.VirtualAccountName)
+	assert.Equal(t, "100000.00", resp.VirtualAccountData.TotalAmount.Value)
+	assert.Equal(t, "00001", resp.VirtualAccountData.SubCompany)
 	mockRepo.AssertNotCalled(t, "SaveInquiry")
+	mockRepo.AssertNotCalled(t, "GetVAByVirtualAccountNo")
+}
+
+func TestVAUsecase_Inquiry_PaidBill_Rejected(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-after-payment",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	paid := &domain.VAInquiryRecord{
+		ID:               "paid-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		Status:           "00",
+		TotalAmount:      "10000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(paid, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042414", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry")
+}
+
+func TestVAUsecase_Inquiry_DeletedVA_Rejected(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-after-delete",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	deleted := &domain.VAInquiryRecord{
+		ID:               "deleted-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		Status:           "04",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(deleted, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042412", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry")
+}
+
+func TestVAUsecase_Inquiry_SubCompanyFallsBackToBillDetails(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-subcompany",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	// No sub_company on the transaction itself — create-va carries the code on
+	// the bill rows, which is where it must then be read from.
+	merchantVA := &domain.VAInquiryRecord{
+		ID:               "existing-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		CustomerName:     "Faris",
+		Status:           "03",
+		TotalAmount:      "10000.00",
+		Currency:         "IDR",
+	}
+	bills := []domain.BillDetail{
+		{BillNo: "INV-001", BillSubCompany: "00002", BillAmount: &domain.Amount{Value: "10000.00", Currency: "IDR"}},
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return(bills, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "00002", resp.VirtualAccountData.SubCompany)
+}
+
+func TestVAUsecase_Inquiry_AdHoc_PersistsRequestedAmountAsPending(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-adhoc-0001",
+		Amount:           &domain.Amount{Value: "75000.00", Currency: "IDR"},
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
+		// "03" (pending), never "00" — a bill that was inquired is not a bill
+		// that was paid, and Payment() only settles a "03" transaction.
+		return r.Status == "03" && r.TotalAmount == "75000.00" && r.Currency == "IDR"
+	})).Return(nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "00", resp.VirtualAccountData.InquiryStatus)
+	assert.Equal(t, "75000.00", resp.VirtualAccountData.TotalAmount.Value)
+	assert.Empty(t, resp.VirtualAccountData.SubCompany)
+	mockRepo.AssertExpectations(t)
 }
 
 func TestVAUsecase_Payment_Success(t *testing.T) {

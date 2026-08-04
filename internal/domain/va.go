@@ -251,7 +251,14 @@ type VAInquiryRecord struct {
 	Currency         string
 	// VAType classifies the VA per feature 006-static-dynamic-va (01-06);
 	// empty for VAs created before this feature or outside its partnerServiceId set.
-	VAType      string
+	VAType string
+	// SubCompany is the biller's registered sub-company code (ASPI
+	// InquiryResponse.virtualAccountData.subCompany, maxLength 5). Persisted in
+	// va_transactions.sub_company — written by the merchant at create-va time
+	// (additionalInfo.subCompany) or by the vendor's payment notification — and
+	// echoed back on inquiry. Empty when the biller has no sub-company, in which
+	// case the field is omitted from the response.
+	SubCompany  string
 	ExpiredDate *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

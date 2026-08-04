@@ -312,12 +312,20 @@ code, `CC` = case code. Note the service code differs **per endpoint**, so
 | Endpoint | Success | Common failures |
 |---|---|---|
 | `/access-token/b2b` | `2007300` | `4017300` unknown client / bad signature |
-| `/inquiry` (24) | `2002400` | `4002401` field format · `4002402` missing mandatory · `4042419` invalid/expired bill · `5002400` |
+| `/inquiry` (24) | `2002400` | `4002401` field format · `4002402` missing mandatory · `4042419` expired bill · `4042414` bill already paid · `4042412` invalid/deleted VA · `5002400` |
 | `/payment` (25) | `2002500` | `4002501` field format / amount mismatch · `4002502` missing mandatory · `4042519` VA expired · `4092500` already paid or inactive · `5002500` |
 | `/status` (26) | `2002600` | `4042619` invalid bill/VA · `5002600` |
 
 `paymentFlagStatus` in a `/payment` or `/status` success body is `"00"` for
 settled and `"03"` for pending (a partial payment on a variable-bill VA).
+
+`inquiryStatus` in an `/inquiry` body reflects the VA's stored state: `"00"`
+on the `2002400` success body, `"01"` on every `404…` body above, alongside an
+`inquiryReason` saying which of the three it was. `subCompany` and
+`totalAmount` are likewise read back from the stored transaction (or its bill
+details), so an inquiry replay always reports the same figures as the first
+inquiry did; `subCompany` is omitted entirely when the biller has none
+registered.
 
 There is **no opt-out or grace period** once you're on a given path —
 enforcement is unconditional from the moment your `.env.<vendor>.<channel>`

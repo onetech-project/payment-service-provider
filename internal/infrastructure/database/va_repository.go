@@ -98,13 +98,19 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 	}
 	inquiry.UpdatedAt = time.Now()
 
+	// sub_company is only overwritten when the incoming record actually carries
+	// one: a payment notification (SavePayment) may already have stored the
+	// vendor's subCompany on this row, and a later create-va/inquiry upsert that
+	// simply has nothing to say about it must not blank that value out.
 	query := `
 		INSERT INTO va_transactions (id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, va_type, expired_date, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, va_type, sub_company,
+			expired_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (inquiry_request_id) DO UPDATE SET
 			status = EXCLUDED.status,
 			notification_url = EXCLUDED.notification_url,
+			sub_company = COALESCE(NULLIF(EXCLUDED.sub_company, ''), va_transactions.sub_company),
 			expired_date = EXCLUDED.expired_date,
 			updated_at = EXCLUDED.updated_at
 		RETURNING id`
@@ -126,6 +132,7 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 		inquiry.TotalAmount,
 		inquiry.Currency,
 		inquiry.VAType,
+		inquiry.SubCompany,
 		inquiry.ExpiredDate,
 		inquiry.CreatedAt,
 		inquiry.UpdatedAt,
@@ -134,9 +141,15 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 
 // GetInquiry retrieves a VA inquiry by inquiry request ID
 func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) (*domain.VAInquiryRecord, error) {
+	// Selects the same column set as GetVAByVirtualAccountNo: both feed the same
+	// VAUsecase.Inquiry response builder, which needs sub_company, va_type and
+	// expired_date to derive subCompany and the expiry outcome — a record
+	// reached by inquiryRequestId must not answer differently from the very same
+	// row reached by virtualAccountNo.
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, created_at, updated_at
+			inquiry_request_id, trx_id, notification_url, status, total_amount, currency,
+			COALESCE(va_type, ''), COALESCE(sub_company, ''), expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE inquiry_request_id = $1`
 
@@ -153,6 +166,9 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 		&record.Status,
 		&record.TotalAmount,
 		&record.Currency,
+		&record.VAType,
+		&record.SubCompany,
+		&record.ExpiredDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -208,6 +224,8 @@ func (r *VARepository) SavePayment(ctx context.Context, payment *domain.VAPaymen
 			$22, $23, $24, $25, $26, $27, $28, $29)
 		ON CONFLICT (inquiry_request_id) DO UPDATE SET
 			payment_request_id = EXCLUDED.payment_request_id,
+			customer_name = COALESCE(NULLIF(va_transactions.customer_name, ''), NULLIF(EXCLUDED.customer_name, ''),
+				va_transactions.customer_name),
 			customer_email = EXCLUDED.customer_email,
 			customer_phone = EXCLUDED.customer_phone,
 			status = EXCLUDED.status,
@@ -611,7 +629,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
 			inquiry_request_id, trx_id, notification_url, status, total_amount, currency,
-			COALESCE(va_type, ''), expired_date, created_at, updated_at
+			COALESCE(va_type, ''), COALESCE(sub_company, ''), expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE virtual_account_no = $1
 		ORDER BY created_at DESC
@@ -631,6 +649,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		&record.TotalAmount,
 		&record.Currency,
 		&record.VAType,
+		&record.SubCompany,
 		&record.ExpiredDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,

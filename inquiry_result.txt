@@ -1,0 +1,65 @@
+============================================================
+INQUIRY REQUEST
+============================================================
+Endpoint: POST https://uatbca.manjo.co.id/openapi/v1.0/transfer-va/inquiry
+Timestamp: 2026-08-03T16:44:02+07:00
+InquiryRequestId: INQ-17857502422637
+VirtualAccountNo: 1597366666666
+
+--- HEADERS ---
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJhOTYxMjY1MS05MTgxLTQ0NjEtYWYyMC00ZWY2NTk4YTkzZjUiLCJleHAiOjE3ODU3NTExNDIsImlhdCI6MTc4NTc1MDI0MiwiaXNzIjoicGF5bWVudC1nYXRld2F5IiwianRpIjoiNDg0ODFjOTYtZTc1YS00NDEyLTg0ZjYtZWY1YWY1NzE3YTkwIn0.rHJCuRscQXLZ7PIQDqH4ZPrFCbHTpOkkiTMcrQ6By_Zrn-zsQSBPU_CM7fEzX0fZ_9XklDQ_dxZ9mA89a8Bh4Y7zxRvS1U2FI3sPgWuM3B6xU8KeOK2CCK557CFmdoVIc9RP8Mrj0gVx5IsVqG1DvKhlxwN_qLKm1I7-gyYPzb3DHX1YE6wa-0_MjC1_nhHWO_R5c_1mxmTN71yexi7W-ZWYz7jW92Qm0kgroTo02RHchgk1RwyjieRetFrS5qiYRfWVZ2boxccvyqyXAP4JCA50_r2zVjJ8HeBiQyS0fJILi_5btUreh34HplnB82C1RtCPbSBveL82GmM_0exOsw
+X-TIMESTAMP: 2026-08-03T16:44:02+07:00
+X-SIGNATURE: 3nqYHlHoTDtak59UDsImR1zALAijtM7qDExMCMpkDCm30MkFy1OqHZEyvYrQ2msd5gEj/eqd7GdnpoVtR1Nbfw==
+X-PARTNER-ID: 1-MANJO-SNAP
+X-EXTERNAL-ID: 17857502423304
+CHANNEL-ID: 95231
+
+--- REQUEST BODY ---
+{
+  "partnerServiceId": "   12345",
+  "customerNo": "66666666",
+  "virtualAccountNo": "1597366666666",
+  "txnDateInit": "2026-08-03T16:44:02+07:00",
+  "amount": {
+    "value": "150000.00",
+    "currency": "IDR"
+  },
+  "inquiryRequestId": "INQ-17857502422637"
+}
+
+--- CURL COMMAND ---
+curl -sS -X POST 'https://uatbca.manjo.co.id/openapi/v1.0/transfer-va/inquiry' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiJhOTYxMjY1MS05MTgxLTQ0NjEtYWYyMC00ZWY2NTk4YTkzZjUiLCJleHAiOjE3ODU3NTExNDIsImlhdCI6MTc4NTc1MDI0MiwiaXNzIjoicGF5bWVudC1nYXRld2F5IiwianRpIjoiNDg0ODFjOTYtZTc1YS00NDEyLTg0ZjYtZWY1YWY1NzE3YTkwIn0.rHJCuRscQXLZ7PIQDqH4ZPrFCbHTpOkkiTMcrQ6By_Zrn-zsQSBPU_CM7fEzX0fZ_9XklDQ_dxZ9mA89a8Bh4Y7zxRvS1U2FI3sPgWuM3B6xU8KeOK2CCK557CFmdoVIc9RP8Mrj0gVx5IsVqG1DvKhlxwN_qLKm1I7-gyYPzb3DHX1YE6wa-0_MjC1_nhHWO_R5c_1mxmTN71yexi7W-ZWYz7jW92Qm0kgroTo02RHchgk1RwyjieRetFrS5qiYRfWVZ2boxccvyqyXAP4JCA50_r2zVjJ8HeBiQyS0fJILi_5btUreh34HplnB82C1RtCPbSBveL82GmM_0exOsw' \
+  -H 'X-TIMESTAMP: 2026-08-03T16:44:02+07:00' \
+  -H 'X-SIGNATURE: 3nqYHlHoTDtak59UDsImR1zALAijtM7qDExMCMpkDCm30MkFy1OqHZEyvYrQ2msd5gEj/eqd7GdnpoVtR1Nbfw==' \
+  -H 'X-PARTNER-ID: 1-MANJO-SNAP' \
+  -H 'X-EXTERNAL-ID: 17857502423304' \
+  -H 'CHANNEL-ID: 95231' \
+  -d '{"partnerServiceId":"   12345","customerNo":"66666666","virtualAccountNo":"1597366666666","txnDateInit":"2026-08-03T16:44:02+07:00","amount":{"value":"150000.00","currency":"IDR"},"inquiryRequestId":"INQ-17857502422637"}'
+
+============================================================
+INQUIRY RESPONSE
+============================================================
+{
+  "responseCode": "2002400",
+  "responseMessage": "Successful",
+  "virtualAccountData": {
+    "inquiryStatus": "00",
+    "inquiryReason": {
+      "english": "Success",
+      "indonesia": "Sukses"
+    },
+    "partnerServiceId": "15973",
+    "customerNo": "66666666",
+    "virtualAccountNo": "1597366666666",
+    "virtualAccountName": "test lagi",
+    "inquiryRequestId": "INQ-17857502422637",
+    "totalAmount": {
+      "value": "0",
+      "currency": "IDR"
+    },
+    "subCompany": "00000"
+  }
+}
