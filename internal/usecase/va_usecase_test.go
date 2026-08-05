@@ -31,6 +31,11 @@ func (m *MockVARepository) GetInquiry(ctx context.Context, inquiryRequestID stri
 	return args.Get(0).(*domain.VAInquiryRecord), args.Error(1)
 }
 
+func (m *MockVARepository) ClaimInquiryRequestID(ctx context.Context, id string, inquiryRequestID string) error {
+	args := m.Called(ctx, id, inquiryRequestID)
+	return args.Error(0)
+}
+
 func (m *MockVARepository) SavePayment(ctx context.Context, payment *domain.VAPaymentRecord) error {
 	args := m.Called(ctx, payment)
 	return args.Error(0)
@@ -92,7 +97,10 @@ func (m *MockVARepository) SaveVAPayment(ctx context.Context, transactionID stri
 	return args.String(0), args.String(1), args.Error(2)
 }
 
-func TestVAUsecase_Inquiry_Success(t *testing.T) {
+// An inquiry for a VA that neither an inquiryRequestId nor a virtualAccountNo
+// lookup can find is answered 4042412 (404). It must NOT persist a row: only
+// the merchant's create-va brings a VA into existence.
+func TestVAUsecase_Inquiry_VANotFound(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	usecase := NewVAUsecase(mockRepo, nil)
 
@@ -107,15 +115,15 @@ func TestVAUsecase_Inquiry_Success(t *testing.T) {
 
 	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
-	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
 
 	resp, err := usecase.Inquiry(context.Background(), req)
 
-	assert.NoError(t, err)
-	assert.Equal(t, "2002400", resp.ResponseCode)
-	assert.Equal(t, "Successful", resp.ResponseMessage)
-	assert.NotNil(t, resp.VirtualAccountData)
-	assert.Equal(t, "00", resp.VirtualAccountData.InquiryStatus)
+	assert.Nil(t, resp)
+	require.Error(t, err)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042412", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry")
 	mockRepo.AssertExpectations(t)
 }
 
@@ -152,6 +160,7 @@ func TestVAUsecase_Inquiry_ExistingMerchantVA_DoesNotDuplicateRecord(t *testing.
 
 	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("ClaimInquiryRequestID", mock.Anything, merchantVA.ID, req.InquiryRequestID).Return(nil)
 	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return(bills, nil)
 
 	resp, err := usecase.Inquiry(context.Background(), req)
@@ -164,6 +173,49 @@ func TestVAUsecase_Inquiry_ExistingMerchantVA_DoesNotDuplicateRecord(t *testing.
 	assert.Len(t, resp.VirtualAccountData.BillDetails, 1)
 	assert.Equal(t, "INV-001", resp.VirtualAccountData.BillDetails[0].BillNo)
 	mockRepo.AssertNotCalled(t, "SaveInquiry")
+	// The merchant row was created with no inquiryRequestId; this inquiry is
+	// what supplies it, so it must be stamped onto that same row rather than
+	// a second row being inserted.
+	mockRepo.AssertCalled(t, "ClaimInquiryRequestID", mock.Anything, merchantVA.ID, req.InquiryRequestID)
+}
+
+// A row that already carries an inquiryRequestId must not have it rewritten by
+// a later inquiry using a different id — Status and Payment resolve the
+// transaction by the id stored at first claim.
+func TestVAUsecase_Inquiry_AlreadyClaimedInquiryRequestID_NotReclaimed(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-second-attempt",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	merchantVA := &domain.VAInquiryRecord{
+		ID:               "existing-transaction-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		CustomerName:     "Faris",
+		VirtualAccountNo: req.VirtualAccountNo,
+		InquiryRequestID: "INQ-claimed-first",
+		TrxID:            "TRX-original",
+		Status:           "03",
+		TotalAmount:      "10000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return([]domain.BillDetail{}, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2002400", resp.ResponseCode)
+	mockRepo.AssertNotCalled(t, "ClaimInquiryRequestID")
 }
 
 func TestVAUsecase_Inquiry_MissingAmount(t *testing.T) {
@@ -183,7 +235,7 @@ func TestVAUsecase_Inquiry_MissingAmount(t *testing.T) {
 	assert.Nil(t, resp)
 	var domainErr *domain.DomainError
 	assert.ErrorAs(t, err, &domainErr)
-	assert.Equal(t, "4002402", domainErr.SNAPCode)
+	assert.Equal(t, "4002400", domainErr.SNAPCode)
 }
 
 func TestVAInquiryRequest_UnmarshalsSpecCompliantFields(t *testing.T) {
@@ -219,17 +271,173 @@ func TestVAUsecase_Inquiry_Idempotent(t *testing.T) {
 
 	existing := &domain.VAInquiryRecord{
 		ID:               "existing-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		CustomerName:     "Faris",
+		VirtualAccountNo: req.VirtualAccountNo,
 		InquiryRequestID: req.InquiryRequestID,
-		Status:           "00",
+		Status:           "03",
+		TotalAmount:      "100000.00",
+		Currency:         "IDR",
+		SubCompany:       "00001",
 	}
 
 	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(existing, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, existing.ID).Return([]domain.BillDetail(nil), nil)
 
 	resp, err := usecase.Inquiry(context.Background(), req)
 
 	assert.NoError(t, err)
 	assert.Equal(t, "2002400", resp.ResponseCode)
+	// The replay is answered from the stored row, not from constants.
+	assert.Equal(t, "Faris", resp.VirtualAccountData.VirtualAccountName)
+	assert.Equal(t, "100000.00", resp.VirtualAccountData.TotalAmount.Value)
+	assert.Equal(t, "00001", resp.VirtualAccountData.SubCompany)
 	mockRepo.AssertNotCalled(t, "SaveInquiry")
+	mockRepo.AssertNotCalled(t, "GetVAByVirtualAccountNo")
+}
+
+func TestVAUsecase_Inquiry_PaidBill_Rejected(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-after-payment",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	paid := &domain.VAInquiryRecord{
+		ID:               "paid-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		Status:           "00",
+		TotalAmount:      "10000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(paid, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042414", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry")
+}
+
+func TestVAUsecase_Inquiry_DeletedVA_Rejected(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-after-delete",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	deleted := &domain.VAInquiryRecord{
+		ID:               "deleted-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		Status:           "04",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(deleted, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042412", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveInquiry")
+}
+
+func TestVAUsecase_Inquiry_SubCompanyFallsBackToBillDetails(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-subcompany",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	// No sub_company on the transaction itself — create-va carries the code on
+	// the bill rows, which is where it must then be read from.
+	merchantVA := &domain.VAInquiryRecord{
+		ID:               "existing-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		CustomerName:     "Faris",
+		Status:           "03",
+		TotalAmount:      "10000.00",
+		Currency:         "IDR",
+	}
+	bills := []domain.BillDetail{
+		{BillNo: "INV-001", BillSubCompany: "00002", BillAmount: &domain.Amount{Value: "10000.00", Currency: "IDR"}},
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
+	mockRepo.On("ClaimInquiryRequestID", mock.Anything, merchantVA.ID, req.InquiryRequestID).Return(nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return(bills, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "00002", resp.VirtualAccountData.SubCompany)
+}
+
+// Rows written before create-va stopped filling inquiry_request_id carry a
+// copy of trx_id there. That is a placeholder, not a vendor id, so the first
+// real inquiry must replace it — otherwise those rows stay addressable only by
+// the merchant's trxId, which the vendor never sends.
+func TestVAUsecase_Inquiry_TrxIDPlaceholder_IsReplacedByRequestID(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-from-vendor-0001",
+		Amount:           &domain.Amount{Value: "75000.00", Currency: "IDR"},
+	}
+
+	legacyVA := &domain.VAInquiryRecord{
+		ID:               "legacy-transaction-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		CustomerName:     "Faris",
+		VirtualAccountNo: req.VirtualAccountNo,
+		// The placeholder: identical to TrxID, as the old create-va wrote it.
+		InquiryRequestID: "TRX-original",
+		TrxID:            "TRX-original",
+		Status:           "03",
+		TotalAmount:      "75000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(legacyVA, nil)
+	mockRepo.On("ClaimInquiryRequestID", mock.Anything, legacyVA.ID, req.InquiryRequestID).Return(nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, legacyVA.ID).Return([]domain.BillDetail{}, nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "2002400", resp.ResponseCode)
+	assert.Equal(t, req.InquiryRequestID, resp.VirtualAccountData.InquiryRequestID)
+	mockRepo.AssertCalled(t, "ClaimInquiryRequestID", mock.Anything, legacyVA.ID, req.InquiryRequestID)
+	mockRepo.AssertExpectations(t)
 }
 
 func TestVAUsecase_Payment_Success(t *testing.T) {

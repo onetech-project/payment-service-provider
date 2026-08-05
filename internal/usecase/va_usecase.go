@@ -47,47 +47,41 @@ func NewVAUsecaseWithDeliveryRepo(repo domain.VARepository, notifier domain.Noti
 
 // Inquiry handles VA inquiry requests from vendor
 func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (*domain.VAInquiryResponse, error) {
-	// Validate VA number format
+	// Every rejected-input case answers with the single 4002400 (400) code:
+	// this endpoint's contract distinguishes a bad request only from the four
+	// outcomes below (4042412 not found, 4042419 expired, 4042414 paid,
+	// 2002400 success), not between flavours of bad request. The bracketed
+	// field name in the message is what tells the vendor which field to fix.
 	if len(req.VirtualAccountNo) < 8 {
-		return nil, domain.NewDomainError("4002401", "Invalid Field Format [virtualAccountNo]", nil)
+		return nil, domain.NewDomainError("4002400", "Invalid Field Format [virtualAccountNo]", nil)
 	}
 
 	if req.Amount == nil {
-		return nil, domain.NewDomainError("4002402", "Invalid Mandatory Field [amount]", nil)
+		return nil, domain.NewDomainError("4002400", "Invalid Mandatory Field [amount]", nil)
 	}
 
-	// Check if inquiry already exists (idempotency)
-	existing, err := u.repo.GetInquiry(ctx, req.InquiryRequestID)
+	// Resolve the VA this inquiry refers to. Two lookups, one record: the
+	// vendor's own inquiryRequestId (an idempotent replay of an inquiry we
+	// already recorded) first, then the virtualAccountNo (a merchant-created VA
+	// being inquired for the first time). Both return the same va_transactions
+	// row shape and are answered from the SAME builder below, so a replay can
+	// never report different bill data than the original inquiry did.
+	record, err := u.repo.GetInquiry(ctx, req.InquiryRequestID)
 	if err != nil && !isNotFound(err) {
 		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
 	}
-	if existing != nil {
-		// Return cached response for idempotent requests
-		return &domain.VAInquiryResponse{
-			ResponseCode:    "2002400",
-			ResponseMessage: "Successful",
-			VirtualAccountData: &domain.VAAccountData{
-				InquiryStatus:      "00",
-				InquiryReason:      &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
-				PartnerServiceID:   req.PartnerServiceID,
-				CustomerNo:         req.CustomerNo,
-				VirtualAccountNo:   req.VirtualAccountNo,
-				VirtualAccountName: "Customer",
-				InquiryRequestID:   req.InquiryRequestID,
-				TotalAmount:        &domain.Amount{Value: "0.00", Currency: "IDR"},
-			},
-		}, nil
+	if record == nil {
+		// A merchant-created VA MUST NOT get a second row inserted under the
+		// vendor's own (possibly brand-new) inquiryRequestId — otherwise every
+		// inquiry against the same VA creates a duplicate, phantom record.
+		var merr error
+		record, merr = u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
+		if merr != nil && !isNotFound(merr) {
+			return nil, domain.NewDomainError("5002400", "Internal Server Error", merr)
+		}
 	}
 
-	// If this virtualAccountNo already has a merchant-created VA record, the
-	// inquiry reflects that existing VA and MUST NOT insert another row keyed
-	// by the vendor's own (possibly brand-new) inquiryRequestId — otherwise
-	// every inquiry against the same VA creates a duplicate, phantom record.
-	merchantVA, merr := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
-	if merr != nil && !isNotFound(merr) {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", merr)
-	}
-	if merchantVA != nil {
+	if record != nil {
 		// Expiry detection (feature 007-merchant-expiry-callback, contracts/
 		// inquiry-expired.md): a pending ("03") VA whose expired_date has
 		// passed is expired, detected inline with no background scanner.
@@ -96,76 +90,107 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 		// Scenario 4) — markExpiredAndNotify no-ops safely when called again
 		// (UpdateVAStatus's WHERE status='03' guard skips the already-"02"
 		// row, so no duplicate callback is sent).
-		isExpired := merchantVA.Status == "02" ||
-			(merchantVA.Status == "03" && merchantVA.ExpiredDate != nil && time.Now().After(*merchantVA.ExpiredDate))
+		isExpired := record.Status == "02" ||
+			(record.Status == "03" && record.ExpiredDate != nil && time.Now().After(*record.ExpiredDate))
 		if isExpired {
-			u.markExpiredAndNotify(ctx, merchantVA)
+			u.markExpiredAndNotify(ctx, record)
 			return nil, domain.NewDomainError("4042419", "Invalid Bill/Virtual Account", domain.ErrVAExpiredInquiry)
+		}
+
+		// The persisted transaction status decides the inquiry outcome — a bill
+		// that is already settled or cancelled is not payable, and SNAP conveys
+		// that through the responseCode (with inquiryStatus "01" attached by the
+		// handler), not through a 200 that would invite a second payment.
+		switch record.Status {
+		case "00":
+			return nil, domain.NewDomainError("4042414", "Paid Bill", domain.ErrVAPaidBill)
+		case "04":
+			return nil, domain.NewDomainError("4042412", "Invalid Bill/Virtual Account", domain.ErrVAInvalidBill)
+		}
+
+		// A merchant-created VA carries no vendor inquiryRequestId — at create-va
+		// time it does not exist yet. This first inquiry is what supplies it, so
+		// claim it onto the row: Status() and Payment() resolve a transaction by
+		// that id, and without this the merchant's row would stay unreachable by
+		// it forever.
+		//
+		// "Carries none" covers two shapes: '' on rows written by create-va, and
+		// a copy of trx_id on rows written before create-va stopped filling the
+		// column. Both are placeholders, never a real vendor id, so both are
+		// free to be replaced here. A genuine id already claimed by an earlier
+		// inquiry is left alone — the repository's guard enforces the same rule.
+		if (record.InquiryRequestID == "" || record.InquiryRequestID == record.TrxID) && req.InquiryRequestID != "" {
+			if err := u.repo.ClaimInquiryRequestID(ctx, record.ID, req.InquiryRequestID); err != nil {
+				return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+			}
+			record.InquiryRequestID = req.InquiryRequestID
 		}
 
 		// Best-effort: bill details are supplementary — a lookup failure
 		// shouldn't fail the whole inquiry, just come back without them.
-		bills, _ := u.repo.GetVABillDetails(ctx, merchantVA.ID)
+		bills, _ := u.repo.GetVABillDetails(ctx, record.ID)
 
-		return &domain.VAInquiryResponse{
-			ResponseCode:    "2002400",
-			ResponseMessage: "Successful",
-			VirtualAccountData: &domain.VAAccountData{
-				InquiryStatus:      "00",
-				InquiryReason:      &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
-				PartnerServiceID:   merchantVA.PartnerServiceID,
-				CustomerNo:         merchantVA.CustomerNo,
-				VirtualAccountNo:   merchantVA.VirtualAccountNo,
-				VirtualAccountName: merchantVA.CustomerName,
-				InquiryRequestID:   req.InquiryRequestID,
-				TotalAmount:        &domain.Amount{Value: merchantVA.TotalAmount, Currency: merchantVA.Currency},
-				SubCompany:         "00000",
-				BillDetails:        bills,
-			},
-		}, nil
+		return inquiryResponseFromRecord(record, req.InquiryRequestID, bills), nil
 	}
 
-	// No prior merchant VA record — this is an ad-hoc inquiry with nothing to
-	// reference yet, so start a fresh inquiry-only record keyed by this
-	// request's own inquiryRequestId.
-	customerName := "Customer"
-	trxID := req.InquiryRequestID
-	notificationURL := ""
+	// No prior record at all: the VA does not exist as far as this system is
+	// concerned, so the inquiry is answered 4042412 (404) rather than being
+	// used to conjure one. An inquiry is a read of an existing bill — only the
+	// merchant's create-va brings a VA into existence, and inventing a row here
+	// would hand the vendor a payable bill for a VA no merchant ever issued.
+	return nil, domain.NewDomainError("4042412", "Invalid Bill/Virtual Account", domain.ErrVAInvalidBill)
+}
 
-	// Save inquiry record
-	record := &domain.VAInquiryRecord{
-		PartnerServiceID: req.PartnerServiceID,
-		CustomerNo:       req.CustomerNo,
-		CustomerName:     customerName,
-		VirtualAccountNo: req.VirtualAccountNo,
-		InquiryRequestID: req.InquiryRequestID,
-		TrxID:            trxID,
-		NotificationURL:  notificationURL,
-		Status:           "00",
-		TotalAmount:      "0.00",
-		Currency:         "IDR",
+// inquiryResponseFromRecord builds the successful InquiryResponse purely from
+// the persisted transaction and its bill details, so every field the vendor
+// receives (name, amount, currency, subCompany, bills) is the stored state of
+// the VA rather than a constant. inquiryRequestID is echoed from the request:
+// it identifies THIS inquiry, which for a merchant-created VA differs from the
+// id the row was originally keyed by.
+func inquiryResponseFromRecord(record *domain.VAInquiryRecord, inquiryRequestID string, bills []domain.BillDetail) *domain.VAInquiryResponse {
+	currency := record.Currency
+	if currency == "" {
+		currency = "IDR"
+	}
+	totalAmount := record.TotalAmount
+	if totalAmount == "" {
+		totalAmount = "0.00"
 	}
 
-	if err := u.repo.SaveInquiry(ctx, record); err != nil {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
-	}
-
-	// Build success response
 	return &domain.VAInquiryResponse{
 		ResponseCode:    "2002400",
 		ResponseMessage: "Successful",
 		VirtualAccountData: &domain.VAAccountData{
 			InquiryStatus:      "00",
 			InquiryReason:      &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
-			PartnerServiceID:   req.PartnerServiceID,
-			CustomerNo:         req.CustomerNo,
-			VirtualAccountNo:   req.VirtualAccountNo,
-			VirtualAccountName: customerName,
-			InquiryRequestID:   req.InquiryRequestID,
-			TotalAmount:        &domain.Amount{Value: "0.00", Currency: "IDR"},
-			SubCompany:         "00000",
+			PartnerServiceID:   record.PartnerServiceID,
+			CustomerNo:         record.CustomerNo,
+			VirtualAccountNo:   record.VirtualAccountNo,
+			VirtualAccountName: record.CustomerName,
+			InquiryRequestID:   inquiryRequestID,
+			TotalAmount:        &domain.Amount{Value: totalAmount, Currency: currency},
+			SubCompany:         subCompanyForVA(record, bills),
+			BillDetails:        bills,
 		},
-	}, nil
+	}
+}
+
+// subCompanyForVA resolves the biller sub-company code to report on inquiry.
+// The transaction's own sub_company wins; failing that, the bills' shared
+// billSubCompany stands in (ASPI makes billSubCompany mandatory whenever a
+// subCompany is in play, so for a merchant-created VA the bill rows are where
+// the code actually lives). Empty when the biller has none — subCompany is
+// optional in InquiryResponse and is then omitted rather than invented.
+func subCompanyForVA(record *domain.VAInquiryRecord, bills []domain.BillDetail) string {
+	if record.SubCompany != "" {
+		return record.SubCompany
+	}
+	for _, bill := range bills {
+		if bill.BillSubCompany != "" {
+			return bill.BillSubCompany
+		}
+	}
+	return ""
 }
 
 // Payment handles VA payment notification from vendor
@@ -217,7 +242,11 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// from the merchant's create-va record when one exists, so the mandatory
 	// columns stay populated and the UPSERT below lands on that same row
 	// instead of an orphan row keyed by the vendor's own inquiryRequestId.
-	customerName := "Customer"
+	// Empty rather than a placeholder when neither source below has a name:
+	// virtualAccountName is optional on the ASPI PaymentRequest, and inventing
+	// one here would persist a fake account holder onto the transaction and
+	// echo it back to the vendor as if it were the real one.
+	customerName := ""
 	// inquiryRequestId is not a field of the ASPI PaymentRequest at all, and
 	// trxId is only Conditional ("Mandatory if Payment comes from the Create VA
 	// Request") — so neither is guaranteed to arrive. Fall back finally to

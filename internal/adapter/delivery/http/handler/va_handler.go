@@ -33,26 +33,29 @@ func NewVAHandler(vaUsecase domain.VAUsecase) *VAHandler {
 // @Param CHANNEL-ID header string true "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAInquiryRequest true "VA inquiry request"
 // @Success 200 {object} domain.VAInquiryResponse
-// @Failure 400 {object} domain.VAInquiryResponse "Invalid Field Format / Invalid Mandatory Field"
+// @Failure 400 {object} domain.VAInquiryResponse "4002400 Bad Request: unparseable body, missing mandatory field, or invalid field format"
 // @Failure 401 {object} domain.VAInquiryResponse "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window"
-// @Failure 404 {object} domain.VAInquiryResponse "Not Found (mapped from downstream error), or 4042419 Expired Transaction (virtualAccountData.inquiryStatus=01, feature 007-merchant-expiry-callback)"
+// @Failure 404 {object} domain.VAInquiryResponse "Not Found, all with virtualAccountData.inquiryStatus=01: 4042412 Invalid Bill/Virtual Account (no such VA, or a deleted one), 4042419 Expired Transaction (feature 007-merchant-expiry-callback), 4042414 Paid Bill"
 // @Failure 409 {object} domain.VAInquiryResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
 // @Failure 422 {object} domain.VAInquiryResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.VAInquiryResponse "Internal Server Error"
 // @Router /openapi/v1.0/transfer-va/inquiry [post]
 func (h *VAHandler) Inquiry(c echo.Context) error {
+	// Both rejected-input cases answer 4002400: an unparseable body and a
+	// missing mandatory field are the same outcome to the vendor — the request
+	// was not accepted — and this endpoint publishes one 400 code, not two.
 	var req domain.VAInquiryRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, domain.VAInquiryResponse{
-			ResponseCode:    "4002401",
-			ResponseMessage: "Invalid Field Format",
+			ResponseCode:    "4002400",
+			ResponseMessage: "Bad Request",
 		})
 	}
 
 	// Validate required fields
 	if req.PartnerServiceID == "" || req.CustomerNo == "" || req.VirtualAccountNo == "" || req.InquiryRequestID == "" {
 		return c.JSON(http.StatusBadRequest, domain.VAInquiryResponse{
-			ResponseCode:    "4002402",
+			ResponseCode:    "4002400",
 			ResponseMessage: "Invalid Mandatory Field",
 		})
 	}
@@ -67,12 +70,14 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 				ResponseCode:    domainErr.SNAPCode,
 				ResponseMessage: domainErr.Message,
 			}
-			// Expired-transaction response (contracts/inquiry-expired.md)
-			// carries inquiryStatus/inquiryReason in virtualAccountData.
-			if domainErr.SNAPCode == "4042419" {
+			// A rejected inquiry carries the reason in virtualAccountData as
+			// inquiryStatus "01" + inquiryReason (contracts/inquiry-expired.md
+			// for the expired case), so the vendor learns WHY the bill is not
+			// payable, not merely that it isn't.
+			if reason := inquiryRejectionReason(domainErr.SNAPCode); reason != nil {
 				inquiryResp.VirtualAccountData = &domain.VAAccountData{
 					InquiryStatus: "01",
-					InquiryReason: &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"},
+					InquiryReason: reason,
 				}
 			}
 			return c.JSON(statusCode, inquiryResp)
@@ -213,6 +218,23 @@ func (h *VAHandler) Status(c echo.Context) error {
 }
 
 // mapSNAPCodeToHTTP maps SNAP response codes to HTTP status codes
+// inquiryRejectionReason returns the bilingual inquiryReason to report for a
+// rejected inquiry, or nil for codes that carry no virtualAccountData (generic
+// validation/auth/server failures, which say all they have to say in
+// responseCode + responseMessage).
+func inquiryRejectionReason(snapCode string) *domain.BilingualText {
+	switch snapCode {
+	case "4042419":
+		return &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"}
+	case "4042414":
+		return &domain.BilingualText{English: "paid bill", Indonesia: "tagihan sudah dibayar"}
+	case "4042412":
+		return &domain.BilingualText{English: "invalid bill/virtual account", Indonesia: "tagihan/virtual account tidak valid"}
+	default:
+		return nil
+	}
+}
+
 func mapSNAPCodeToHTTP(snapCode string) int {
 	if len(snapCode) < 3 {
 		return http.StatusInternalServerError

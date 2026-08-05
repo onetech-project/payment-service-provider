@@ -172,13 +172,13 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		CustomerNo:       customerNo,
 		CustomerName:     req.VirtualAccountName,
 		VirtualAccountNo: vaNo,
-		InquiryRequestID: req.TrxID,
 		TrxID:            req.TrxID,
 		NotificationURL:  notificationURLFromAdditionalInfo(req.AdditionalInfo),
 		Status:           "03",
 		TotalAmount:      "0",
 		Currency:         "IDR",
 		VAType:           vaType,
+		SubCompany:       subCompanyFromAdditionalInfo(req.AdditionalInfo),
 		ExpiredDate:      req.ExpiredDate,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -321,6 +321,22 @@ func notificationURLFromAdditionalInfo(additionalInfo map[string]interface{}) st
 		return ""
 	}
 	if v, ok := additionalInfo["dbUrlProcess"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// subCompanyFromAdditionalInfo extracts additionalInfo.subCompany — the
+// biller's registered sub-company code. ASPI's VAUpsertRequest has no
+// top-level subCompany field (it exists only on InquiryResponse and
+// PaymentRequest), so the merchant declares it through the same additionalInfo
+// extension slot used for dbUrlProcess/vaType; it is then persisted on the
+// transaction and echoed back on every inquiry for that VA.
+func subCompanyFromAdditionalInfo(additionalInfo map[string]interface{}) string {
+	if additionalInfo == nil {
+		return ""
+	}
+	if v, ok := additionalInfo["subCompany"].(string); ok {
 		return v
 	}
 	return ""

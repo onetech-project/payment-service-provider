@@ -208,6 +208,13 @@ worth calling out:
   for this VA. When the vendor later reports a payment, we POST a
   `payment.received` notification there asynchronously. Without it, the VA
   works but you get no callback.
+- **`additionalInfo.subCompany`** (optional, max 5 chars) is your registered
+  biller sub-company code. We store it on the transaction and echo it as
+  `virtualAccountData.subCompany` on every vendor inquiry for this VA. ASPI
+  has no top-level `subCompany` on the create-va request — it exists only on
+  the inquiry/payment messages — hence the `additionalInfo` slot. If you omit
+  it, we fall back to the `billSubCompany` on your `billDetails`, and if that
+  is empty too the field is simply absent from the inquiry response.
 
 The create-va response echoes your submitted fields back inside
 `virtualAccountData`. It does **not** include `lastUpdateDate` — per the ASPI
