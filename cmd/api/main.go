@@ -429,6 +429,7 @@ func main() {
 		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo, skipTimestampSkewCheck))
 		merchantGroup.POST("/create-va", merchantVAHandler.CreateVA)
 		merchantGroup.POST("/list", merchantVAHandler.ListVA)
+		merchantGroup.POST("/list-transactions", merchantVAHandler.ListTransactions)
 		merchantGroup.DELETE("/delete-va", merchantVAHandler.DeleteVA)
 
 		log.Printf("Registered SNAP routes under base path: %s", snapBasePath)

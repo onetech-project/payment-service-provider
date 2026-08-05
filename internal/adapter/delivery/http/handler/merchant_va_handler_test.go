@@ -37,6 +37,14 @@ func (m *MockMerchantVAUsecase) ListVA(ctx context.Context, req *domain.Merchant
 	return args.Get(0).(*domain.MerchantListVAResponse), args.Error(1)
 }
 
+func (m *MockMerchantVAUsecase) ListTransactions(ctx context.Context, req *domain.MerchantListVARequest) (*domain.MerchantListTransactionsResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.MerchantListTransactionsResponse), args.Error(1)
+}
+
 func (m *MockMerchantVAUsecase) DeleteVA(ctx context.Context, req *domain.MerchantDeleteVARequest) (*domain.MerchantDeleteVAResponse, error) {
 	args := m.Called(ctx, req)
 	if args.Get(0) == nil {
@@ -332,7 +340,7 @@ func TestMerchantVAHandler_ListVA_Success(t *testing.T) {
 	mockUsecase.On("ListVA", mock.Anything, &req).Return(&domain.MerchantListVAResponse{
 		ResponseCode:    "2002400",
 		ResponseMessage: "Successful",
-		Data:            []domain.VAListItem{},
+		Data:            []domain.VAAccountListItem{},
 		Pagination:      &domain.Pagination{Page: 1, PageSize: 20, TotalRows: 0, TotalPages: 0},
 	}, nil)
 
@@ -420,4 +428,76 @@ func TestMerchantVAHandler_DeleteVA_AlreadyPaid(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+}
+
+// --- ListTransactions Handler Tests (feature 013-no-bill-payment-transaction) ---
+
+func TestMerchantVAHandler_ListTransactions_Success(t *testing.T) {
+	e := echo.New()
+	req := domain.MerchantListVARequest{
+		VirtualAccountNo: "159730001234567",
+		Page:             1,
+		PageSize:         20,
+	}
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/list-transactions", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockMerchantVAUsecase)
+	mockUsecase.On("ListTransactions", mock.Anything, &req).Return(&domain.MerchantListTransactionsResponse{
+		ResponseCode:    "2002400",
+		ResponseMessage: "Successful",
+		Data: []domain.VATransactionListItem{
+			{VirtualAccountNo: "159730001234567", PaymentRequestID: "PAY-1", Status: "00"},
+			{VirtualAccountNo: "159730001234567", PaymentRequestID: "PAY-2", Status: "00"},
+		},
+		Pagination: &domain.Pagination{Page: 1, PageSize: 20, TotalRows: 2, TotalPages: 1},
+	}, nil)
+
+	h := NewMerchantVAHandler(mockUsecase)
+	err := h.ListTransactions(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp domain.MerchantListTransactionsResponse
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Len(t, resp.Data, 2)
+	mockUsecase.AssertExpectations(t)
+}
+
+func TestMerchantVAHandler_ListTransactions_InvalidBody(t *testing.T) {
+	e := echo.New()
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/list-transactions", bytes.NewReader([]byte("{not json")))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	h := NewMerchantVAHandler(new(MockMerchantVAUsecase))
+	err := h.ListTransactions(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestMerchantVAHandler_ListTransactions_UsecaseError(t *testing.T) {
+	e := echo.New()
+	req := domain.MerchantListVARequest{Page: 1, PageSize: 20}
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/list-transactions", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockMerchantVAUsecase)
+	mockUsecase.On("ListTransactions", mock.Anything, &req).
+		Return(nil, domain.NewDomainError("5002400", "Internal Server Error", nil))
+
+	h := NewMerchantVAHandler(mockUsecase)
+	err := h.ListTransactions(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

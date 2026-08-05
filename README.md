@@ -250,14 +250,21 @@ VENDOR_PARTNER_ID=your_partner_id
 | POST | `/openapi/v1.0/transfer-va/payment` | 25 | VA payment notification (vendor → PSP); triggers an async merchant callback |
 | POST | `/openapi/v1.0/transfer-va/status` | 26 | VA payment status inquiry (vendor → PSP) |
 | POST | `/openapi/v1.0/transfer-va/create-va` | 27 | Create a Virtual Account (merchant-facing) |
-| POST | `/openapi/v1.0/transfer-va/list` | — | List/filter VA transactions (merchant dashboard convenience API, not an ASPI endpoint) |
-| DELETE | `/openapi/v1.0/transfer-va/delete-va` | 31 | Delete a still-pending VA (merchant-facing) |
+| POST | `/openapi/v1.0/transfer-va/list` | — | List/filter registered VA **numbers**, one entry per VA (merchant dashboard convenience API, not an ASPI endpoint) |
+| POST | `/openapi/v1.0/transfer-va/list-transactions` | — | List/filter individual **payments**, one entry per transaction (merchant dashboard convenience API, not an ASPI endpoint) |
+| DELETE | `/openapi/v1.0/transfer-va/delete-va` | 31 | Delete a VA — deactivates the registration for no-bill VAs, cancels the pending transaction otherwise (merchant-facing) |
 
 Service Code 28-35 (`update-va`, `update-status`, `inquiry-va`, `inquiry-intrabank`, `payment-intrabank`, `notify-payment-intrabank`, `report`) are defined in the OpenAPI spec but **not yet implemented**.
 
 **Required headers** for `/openapi/v1.0/transfer-va/*` per ASPI spec: `X-TIMESTAMP`, `X-SIGNATURE` (both required), plus `X-PARTNER-ID`/`X-EXTERNAL-ID` (required by the API contract) and optionally `CHANNEL-ID` (spec marks it `required: false`). **`X-CLIENT-KEY` is NOT used here** — it only applies to `POST /openapi/v1.0/access-token/b2b`.
 
-**VA lifecycle**: a `virtualAccountNo` is reusable across transaction cycles — creating a new VA under a number is only rejected (`409 4092700`) while that number still has a *pending* (unpaid) transaction. Once a transaction is *paid* (`status "00"`), it's immutable: `delete-va` against it is rejected (`405 4053101`), and a second `payment` call against it — even with a brand-new `paymentRequestId` — is rejected (`409 4092500`) rather than silently overwriting the recorded amount/reference. See `scripts/e2e-va-cancel-flow.sh` below for a runnable demonstration of these rules.
+**VA lifecycle — two shapes.** Which one applies is decided by the VA type's `billing` classification in `master_va_type`, not by a hardcoded list, so operator-added types inherit the matching behavior.
+
+*No-bill VAs (`vaType` 01 static, 04 dynamic) — register once, pay many times.* These behave like an e-wallet top-up address. `create-va` writes only the **VA registration** (`va_accounts`: partnerServiceId, customerNo, virtualAccountNo, holder name/email/phone, callback URL) and creates **no transaction**. A transaction row is created per *payment*, so the same VA number accepts an unlimited number of payments for any amount. Calling `create-va` again for the same number is an **update** of the holder details, not a conflict — you only need to call it once. `delete-va` deactivates the registration (there is no pending transaction to cancel) and leaves settled payments readable. A registration with no `expiredDate` never expires.
+
+*Bill-bearing VAs (`vaType` 02/03 static, 05/06 dynamic) — one bill, one transaction cycle.* `create-va` creates a pending transaction bound to `totalAmount`, and a `virtualAccountNo` is reusable across cycles: creating a new VA under a number is rejected (`409 4092700`) only while that number still has a *pending* (unpaid) transaction. Once a transaction is *paid* (`status "00"`) it is immutable: `delete-va` against it is rejected (`405 4053101`), and a second `payment` call against it — even with a brand-new `paymentRequestId` — is rejected (`409 4092500`) rather than silently overwriting the recorded amount/reference. Variable-bill types (02/05) accept multiple payments until the cumulative total reaches `totalAmount`. See `scripts/e2e-va-cancel-flow.sh` below for a runnable demonstration of these rules.
+
+Because one no-bill VA can hold many payments, the merchant listing is split: `POST .../list` returns one entry per VA number (with `transactionCount` and `totalPaid`), and `POST .../list-transactions` returns one entry per payment.
 
 ### Configuration Reference
 
@@ -287,7 +294,8 @@ VA operations:
 |--------|---------|
 | `curl-b2b-token.sh` | Get a B2B access token (RSA-signed) |
 | `merchant-create-va.sh` | Create a VA (`-b`/`-d` optionally attach one bill detail) |
-| `merchant-list-va.sh` / `merchant-delete-va.sh` | List / cancel (delete) VAs |
+| `merchant-list-va.sh` / `merchant-delete-va.sh` | List registered VA numbers (one row per VA) / cancel (delete) a VA |
+| `merchant-list-transactions.sh` | List individual payments (one row per transaction); `-v` filters to one VA |
 | `vendor-inquiry-va.sh` | Simulate a vendor VA inquiry |
 | `vendor-payment-va.sh` | Simulate a vendor payment notification (triggers the merchant callback) |
 | `e2e-va-flow.sh` | Runs the happy-path flow in one command: create-va → inquiry → payment → **verifies the merchant callback actually arrives** (spins up a throwaway local HTTP listener and prints the received callback payload) |

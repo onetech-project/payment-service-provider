@@ -85,8 +85,9 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 
 // ListVA godoc
 // @Tags Merchant VA Dashboard
-// @Summary List Virtual Account transactions
-// @Description Merchant-initiated paginated listing of Virtual Account transactions, filterable by date range, status and VA number. Read-only.
+// @Summary List registered Virtual Accounts
+// @Description Merchant-initiated paginated listing of registered Virtual Account numbers — ONE entry per VA — filterable by date range, registration status and VA number. Read-only.
+// @Description Each entry carries transactionCount and totalPaid aggregated over that VA's settled payments. Note: status filters on the REGISTRATION state (ACTIVE / INACTIVE / EXPIRED), not the transaction state. For per-payment detail use POST /openapi/v1.0/transfer-va/list-transactions.
 // @Security BearerAuth
 // @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601, must be within ±5 minutes of server time"
@@ -123,6 +124,54 @@ func (h *MerchantVAHandler) ListVA(c echo.Context) error {
 			})
 		}
 		return c.JSON(http.StatusInternalServerError, domain.MerchantListVAResponse{
+			ResponseCode:    "5002400",
+			ResponseMessage: "Internal Server Error",
+		})
+	}
+
+	return c.JSON(http.StatusOK, resp)
+}
+
+// ListTransactions godoc
+// @Tags Merchant VA Dashboard
+// @Summary List Virtual Account payment transactions
+// @Description Merchant-initiated paginated listing of individual payment/transaction events, filterable by date range, transaction status ("00" paid, "02" expired, "03" pending, "04" deleted) and VA number. Read-only.
+// @Description This is the per-payment counterpart of POST /openapi/v1.0/transfer-va/list — a no-bill VA paid N times returns N entries here and 1 entry there.
+// @Security BearerAuth
+// @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b"
+// @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601, must be within ±5 minutes of server time"
+// @Param X-SIGNATURE header string true "HMAC-SHA512(merchantSecret, \"POST:<path>:<accessToken>:<base64(sha256(body))>:<timestamp>\"), base64-encoded — merchantSecret provisioned via POST /admin/clients/{clientId}/secret"
+// @Param X-EXTERNAL-ID header string true "Numeric string, unique per calendar day. Doubles as the idempotency key"
+// @Param X-PARTNER-ID header string false "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
+// @Param CHANNEL-ID header string false "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance"
+// @Param request body domain.MerchantListVARequest true "Transaction list filter/pagination request"
+// @Success 200 {object} domain.MerchantListTransactionsResponse
+// @Failure 400 {object} domain.MerchantListTransactionsResponse "Invalid Field Format"
+// @Failure 401 {object} domain.MerchantListTransactionsResponse "Unauthorized: missing/invalid/expired accessToken, invalid/missing X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret provisioned for this client"
+// @Failure 409 {object} domain.MerchantListTransactionsResponse "Conflict: request already in progress for this X-EXTERNAL-ID"
+// @Failure 422 {object} domain.MerchantListTransactionsResponse "X-EXTERNAL-ID reused with a different payload"
+// @Failure 500 {object} domain.MerchantListTransactionsResponse "Internal Server Error"
+// @Router /openapi/v1.0/transfer-va/list-transactions [post]
+func (h *MerchantVAHandler) ListTransactions(c echo.Context) error {
+	var req domain.MerchantListVARequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, domain.MerchantListTransactionsResponse{
+			ResponseCode:    "4002400",
+			ResponseMessage: "Invalid Field Format",
+		})
+	}
+
+	ctx := c.Request().Context()
+	resp, err := h.merchantVAUsecase.ListTransactions(ctx, &req)
+	if err != nil {
+		var domainErr *domain.DomainError
+		if errors.As(err, &domainErr) {
+			return c.JSON(mapSNAPCodeToHTTP(domainErr.SNAPCode), domain.MerchantListTransactionsResponse{
+				ResponseCode:    domainErr.SNAPCode,
+				ResponseMessage: domainErr.Message,
+			})
+		}
+		return c.JSON(http.StatusInternalServerError, domain.MerchantListTransactionsResponse{
 			ResponseCode:    "5002400",
 			ResponseMessage: "Internal Server Error",
 		})

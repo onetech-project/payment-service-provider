@@ -190,6 +190,7 @@ code, `CC` = case code. The service code differs **per endpoint**:
 | `/transfer-va/create-va` (27) | POST | `2002700` | `4002700` field format · `4002701` missing mandatory · `5002700` |
 | `/transfer-va/delete-va` (31) | DELETE | `2003100` | `4003101` field format / missing mandatory · `5003100` |
 | `/transfer-va/list` | POST | `2002400` | not an ASPI-defined endpoint — a dashboard convenience API |
+| `/transfer-va/list-transactions` | POST | `2002400` | not an ASPI-defined endpoint — a dashboard convenience API |
 
 Auth failures on any of these are `401` with `4010000`, per the table above.
 
@@ -220,6 +221,41 @@ The create-va response echoes your submitted fields back inside
 `virtualAccountData`. It does **not** include `lastUpdateDate` — per the ASPI
 portal that field belongs to the `update-va` / `update-status` /
 `inquiry-va` responses, not to `create-va`.
+
+### No-bill VAs: call create-va once
+
+For **no-bill** VA types (`additionalInfo.vaType` `01` static or `04` dynamic)
+`create-va` registers the VA number and nothing else — no bill, no
+`totalAmount`, no transaction. The number then behaves like an e-wallet top-up
+address: your customer can pay into it whenever they like, for whatever amount
+they like, as many times as they like, and each payment becomes its own
+transaction with its own callback.
+
+**You only need to call `create-va` once per VA number.** Calling it again for
+the same number updates the holder details (name, email, phone, callback URL)
+and returns `2002700` — it is not a conflict, and it does not create anything.
+Sending `totalAmount` on a no-bill request is rejected with `4002706`, because
+a no-bill VA has no bill.
+
+To stop a no-bill VA accepting payments, call `delete-va`: it deactivates the
+registration. Payments already received stay readable via
+`/transfer-va/list-transactions`. Re-running `create-va` for that number
+reactivates it.
+
+Bill-bearing types (`02`, `03`, `05`, `06`) are unchanged: `create-va` creates
+a pending transaction bound to `totalAmount`, and you call it once per bill.
+
+### Listing: VAs vs payments
+
+Because one no-bill VA can hold many payments, the two listings answer
+different questions:
+
+- `POST /transfer-va/list` — one entry per registered VA number, with
+  `transactionCount` and `totalPaid` for that VA. Its `status` filter takes
+  registration states: `ACTIVE`, `INACTIVE`, `EXPIRED`.
+- `POST /transfer-va/list-transactions` — one entry per payment, filterable by
+  `virtualAccountNo`. Its `status` filter takes transaction states: `00` paid,
+  `02` expired, `03` pending, `04` deleted.
 
 ## Receiving callbacks
 

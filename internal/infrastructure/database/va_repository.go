@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -11,8 +12,25 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// whereAlwaysTrue seeds the dynamically-built WHERE clauses in the list
+// queries so every optional filter can be appended uniformly as " AND ...".
+const whereAlwaysTrue = "WHERE 1=1"
+
+// pgUniqueViolation is the SQLSTATE class Postgres raises when an INSERT
+// violates a unique constraint. Used to turn a duplicate paymentRequestId
+// into domain.ErrVAPaymentDuplicate rather than a generic 500.
+const pgUniqueViolation = "23505"
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
+}
 
 // vaLocker is the minimal distributed-lock surface this repository needs from
 // internal/infrastructure/redis.Client, kept as a local interface so this
@@ -376,94 +394,6 @@ func (r *VARepository) UpdatePaymentStatus(ctx context.Context, paymentRequestID
 	return nil
 }
 
-// ListVA returns a paginated list of VA transactions
-func (r *VARepository) ListVA(ctx context.Context, filter *domain.VAListFilter) ([]domain.VAListItem, int, error) {
-	where := "WHERE 1=1"
-	args := []interface{}{}
-	argIdx := 1
-
-	if filter.PartnerServiceID != "" {
-		where += " AND partner_service_id = $" + fmt.Sprintf("%d", argIdx)
-		args = append(args, filter.PartnerServiceID)
-		argIdx++
-	}
-	if filter.FromDate != nil {
-		where += " AND created_at >= $" + fmt.Sprintf("%d", argIdx)
-		args = append(args, *filter.FromDate)
-		argIdx++
-	}
-	if filter.ToDate != nil {
-		where += " AND created_at <= $" + fmt.Sprintf("%d", argIdx)
-		args = append(args, *filter.ToDate)
-		argIdx++
-	}
-	if filter.Status != "" {
-		where += " AND status = $" + fmt.Sprintf("%d", argIdx)
-		args = append(args, filter.Status)
-		argIdx++
-	}
-	if filter.VirtualAccountNo != "" {
-		where += " AND virtual_account_no = $" + fmt.Sprintf("%d", argIdx)
-		args = append(args, filter.VirtualAccountNo)
-		argIdx++
-	}
-
-	countQuery := "SELECT COUNT(*) FROM va_transactions " + where
-	var total int
-	err := r.pool.QueryRow(ctx, countQuery, args...).Scan(&total)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	dataQuery := `
-		SELECT virtual_account_no, customer_no, customer_name, total_amount, paid_amount,
-			status, expired_date, created_at, transaction_date
-		FROM va_transactions ` + where + `
-		ORDER BY created_at DESC
-		LIMIT $` + fmt.Sprintf("%d", argIdx) + ` OFFSET $` + fmt.Sprintf("%d", argIdx+1)
-
-	args = append(args, filter.Limit, filter.Offset)
-	argIdx += 2
-
-	rows, err := r.pool.Query(ctx, dataQuery, args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	var items []domain.VAListItem
-	for rows.Next() {
-		var item domain.VAListItem
-		var totalAmount, paidAmount *string
-		var expiredDate, transactionDate *time.Time
-		err := rows.Scan(
-			&item.VirtualAccountNo,
-			&item.CustomerNo,
-			&item.CustomerName,
-			&totalAmount,
-			&paidAmount,
-			&item.Status,
-			&expiredDate,
-			&item.CreatedAt,
-			&transactionDate,
-		)
-		if err != nil {
-			return nil, 0, err
-		}
-		if totalAmount != nil {
-			item.TotalAmount = &domain.Amount{Value: *totalAmount, Currency: "IDR"}
-		}
-		if paidAmount != nil {
-			item.PaidAmount = &domain.Amount{Value: *paidAmount, Currency: "IDR"}
-		}
-		item.ExpiredDate = expiredDate
-		item.TransactionDate = transactionDate
-		items = append(items, item)
-	}
-
-	return items, total, nil
-}
-
 // GetVABillDetails returns bill details for a VA transaction
 func (r *VARepository) GetVABillDetails(ctx context.Context, transactionID string) ([]domain.BillDetail, error) {
 	query := `
@@ -817,16 +747,26 @@ func (r *VARepository) NextCustomerNoSequence(ctx context.Context, vaType string
 
 // RegisterStaticCustomerNo enforces that a merchant-supplied customerNo is
 // only ever used once per partnerServiceId (feature 006-static-dynamic-va,
-// FR-008). Returns domain.ErrClientAlreadyExists-style conflict on duplicate.
+// FR-008). Returns domain.ErrVACustomerNoAlreadyRegistered on duplicate.
+//
+// Since feature 013-no-bill-payment-transaction this reads va_accounts rather
+// than va_transactions: the registry is now where VA identity lives, and it
+// carries a real UNIQUE (partner_service_id, customer_no) constraint backing
+// this check. The Redis lock is retained so concurrent callers serialize
+// rather than both observing "not yet registered".
+//
+// Only static BILL-bearing types still call this. No-bill types deliberately
+// skip it, because a repeat /create-va on a registered no-bill VA is an update
+// of the holder details, not a conflict (FR-005).
 func (r *VARepository) RegisterStaticCustomerNo(ctx context.Context, partnerServiceID, customerNo string) error {
 	return r.withLock(ctx, fmt.Sprintf("va-static-lock:%s:%s", partnerServiceID, customerNo), func() error {
 		var existingCount int
 		err := r.pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM va_transactions WHERE partner_service_id = $1 AND customer_no = $2`,
+			`SELECT COUNT(*) FROM va_accounts WHERE partner_service_id = $1 AND customer_no = $2`,
 			partnerServiceID, customerNo,
 		).Scan(&existingCount)
 		if err != nil {
-			return fmt.Errorf("sequence generator unavailable: %w", err)
+			return fmt.Errorf("customerNo registry unavailable: %w", err)
 		}
 		if existingCount > 0 {
 			return domain.ErrVACustomerNoAlreadyRegistered
@@ -889,6 +829,407 @@ func (r *VARepository) SaveVAPayment(ctx context.Context, transactionID string, 
 	}
 
 	return paidAmount, status, nil
+}
+
+// VA registry persistence (feature 013-no-bill-payment-transaction).
+//
+// These methods back va_accounts, the table holding VA identity that was
+// previously conflated into va_transactions. As with this file's other
+// SQL-heavy methods, live-database behavior is exercised by quickstart.md's
+// integration scenarios rather than by unit tests here.
+
+// vaAccountColumns is the shared SELECT list for va_accounts reads, kept in
+// one place so GetVAAccount and GetVAAccountByPartnerAndCustomer cannot drift
+// apart in column order.
+const vaAccountColumns = `id, partner_service_id, customer_no, virtual_account_no, va_type, billing,
+	customer_name, COALESCE(customer_email, ''), COALESCE(customer_phone, ''),
+	trx_id, COALESCE(notification_url, ''), status, expired_date, created_at, updated_at`
+
+// scanVAAccount reads one va_accounts row in vaAccountColumns order.
+func scanVAAccount(row pgx.Row) (*domain.VAAccount, error) {
+	account := &domain.VAAccount{}
+	err := row.Scan(
+		&account.ID,
+		&account.PartnerServiceID,
+		&account.CustomerNo,
+		&account.VirtualAccountNo,
+		&account.VAType,
+		&account.Billing,
+		&account.CustomerName,
+		&account.CustomerEmail,
+		&account.CustomerPhone,
+		&account.TrxID,
+		&account.NotificationURL,
+		&account.Status,
+		&account.ExpiredDate,
+		&account.CreatedAt,
+		&account.UpdatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, domain.ErrVAAccountNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
+// SaveVAAccount upserts the VA registration keyed on virtual_account_no
+// (feature 013-no-bill-payment-transaction, FR-002/FR-005). A repeat
+// /create-va on an already-registered no-bill VA updates the holder details
+// and reactivates the registration rather than conflicting.
+//
+// RETURNING id is scanned back for the same reason SaveInquiry does it: on the
+// ON CONFLICT path the row keeps its ORIGINAL id, not the freshly generated
+// one passed in, so callers must not trust account.ID as-is.
+func (r *VARepository) SaveVAAccount(ctx context.Context, account *domain.VAAccount) error {
+	if account.ID == "" {
+		account.ID = uuid.New().String()
+	}
+	if account.CreatedAt.IsZero() {
+		account.CreatedAt = time.Now()
+	}
+	account.UpdatedAt = time.Now()
+	if account.Status == "" {
+		account.Status = domain.VAAccountStatusActive
+	}
+
+	query := `
+		INSERT INTO va_accounts (id, partner_service_id, customer_no, virtual_account_no, va_type, billing,
+			customer_name, customer_email, customer_phone, trx_id, notification_url, status,
+			expired_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		ON CONFLICT (virtual_account_no) DO UPDATE SET
+			customer_name = EXCLUDED.customer_name,
+			customer_email = EXCLUDED.customer_email,
+			customer_phone = EXCLUDED.customer_phone,
+			trx_id = EXCLUDED.trx_id,
+			notification_url = EXCLUDED.notification_url,
+			expired_date = EXCLUDED.expired_date,
+			status = EXCLUDED.status,
+			updated_at = EXCLUDED.updated_at
+		RETURNING id`
+
+	return r.pool.QueryRow(ctx, query,
+		account.ID,
+		account.PartnerServiceID,
+		account.CustomerNo,
+		account.VirtualAccountNo,
+		account.VAType,
+		account.Billing,
+		account.CustomerName,
+		account.CustomerEmail,
+		account.CustomerPhone,
+		account.TrxID,
+		account.NotificationURL,
+		account.Status,
+		account.ExpiredDate,
+		account.CreatedAt,
+		account.UpdatedAt,
+	).Scan(&account.ID)
+}
+
+// GetVAAccount resolves the registration for a virtual account number. Unlike
+// GetVAByVirtualAccountNo, this is an exact point read against a unique index
+// — no ORDER BY ... LIMIT 1 heuristic is needed, because exactly one
+// registration can exist per VA number.
+//
+// Returns domain.ErrVAAccountNotFound only for a genuine missing row; a
+// failing query is returned verbatim so callers can tell "no registration,
+// fall through to the legacy path" from "the database is broken".
+func (r *VARepository) GetVAAccount(ctx context.Context, virtualAccountNo string) (*domain.VAAccount, error) {
+	query := `SELECT ` + vaAccountColumns + ` FROM va_accounts WHERE virtual_account_no = $1`
+	return scanVAAccount(r.pool.QueryRow(ctx, query, virtualAccountNo))
+}
+
+// GetVAAccountByPartnerAndCustomer resolves the registration by its
+// (partnerServiceId, customerNo) identity rather than by VA number.
+func (r *VARepository) GetVAAccountByPartnerAndCustomer(ctx context.Context, partnerServiceID, customerNo string) (*domain.VAAccount, error) {
+	query := `SELECT ` + vaAccountColumns + ` FROM va_accounts WHERE partner_service_id = $1 AND customer_no = $2`
+	return scanVAAccount(r.pool.QueryRow(ctx, query, partnerServiceID, customerNo))
+}
+
+// UpdateVAAccountStatus transitions a registration out of ACTIVE, returning
+// domain.ErrVAAccountNotFound when no ACTIVE row matched.
+//
+// The "AND status = 'ACTIVE'" guard is load-bearing, not defensive: it is what
+// makes the expiry callback exactly-once. Whichever concurrent inquiry or
+// payment first detects the expiry applies the transition and gets a non-zero
+// row count; every later caller gets zero rows and therefore knows not to
+// enqueue a duplicate notification. This mirrors UpdateVAStatus's
+// "WHERE status = '03'" guard on va_transactions.
+func (r *VARepository) UpdateVAAccountStatus(ctx context.Context, virtualAccountNo string, status string) error {
+	query := `
+		UPDATE va_accounts
+		SET status = $2, updated_at = NOW()
+		WHERE virtual_account_no = $1 AND status = $3`
+
+	result, err := r.pool.Exec(ctx, query, virtualAccountNo, status, domain.VAAccountStatusActive)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return domain.ErrVAAccountNotFound
+	}
+	return nil
+}
+
+// SaveNoBillPayment records ONE payment against a no-bill VA as its own
+// va_transactions row (feature 013-no-bill-payment-transaction, FR-008).
+//
+// This is a plain INSERT, deliberately NOT the upsert SavePayment uses. A
+// no-bill VA has no pending transaction to settle — every payment is a new
+// transaction, which is exactly what lets the same VA number be paid an
+// unlimited number of times. The caller sets InquiryRequestID to the
+// paymentRequestId, so the existing UNIQUE index on inquiry_request_id makes a
+// duplicate payment collide here instead of silently overwriting a settled
+// row; that collision surfaces as domain.ErrVAPaymentDuplicate and the caller
+// replays the original response.
+func (r *VARepository) SaveNoBillPayment(ctx context.Context, payment *domain.VAPaymentRecord) error {
+	if payment.ID == "" {
+		payment.ID = uuid.New().String()
+	}
+	if payment.CreatedAt.IsZero() {
+		payment.CreatedAt = time.Now()
+	}
+	payment.UpdatedAt = time.Now()
+
+	channelCode := ""
+	if payment.ChannelCode != 0 {
+		channelCode = strconv.Itoa(payment.ChannelCode)
+	}
+
+	var freeTexts []byte
+	if len(payment.FreeTexts) > 0 {
+		var err error
+		freeTexts, err = json.Marshal(payment.FreeTexts)
+		if err != nil {
+			return err
+		}
+	}
+
+	query := `
+		INSERT INTO va_transactions (id, partner_service_id, customer_no, customer_name, customer_email,
+			customer_phone, virtual_account_no, inquiry_request_id, trx_id, notification_url, payment_request_id,
+			status, total_amount, paid_amount, currency, reference_no, channel_code, hashed_source_account_no,
+			source_bank_code, journal_num, payment_type, flag_advise, paid_bills, sub_company, trx_date_time,
+			free_texts, va_type, transaction_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+			$22, $23, $24, $25, $26, $27, $28, $29, $30)`
+
+	_, err := r.pool.Exec(ctx, query,
+		payment.ID,
+		payment.PartnerServiceID,
+		payment.CustomerNo,
+		payment.CustomerName,
+		payment.CustomerEmail,
+		payment.CustomerPhone,
+		payment.VirtualAccountNo,
+		payment.InquiryRequestID,
+		payment.TrxID,
+		payment.NotificationURL,
+		payment.PaymentRequestID,
+		payment.Status,
+		payment.TotalAmount,
+		payment.PaidAmount,
+		payment.Currency,
+		payment.ReferenceNo,
+		channelCode,
+		payment.HashedSourceAccountNo,
+		payment.SourceBankCode,
+		payment.JournalNum,
+		payment.PaymentType,
+		payment.FlagAdvise,
+		payment.PaidBills,
+		payment.SubCompany,
+		payment.TrxDateTime,
+		freeTexts,
+		payment.VAType,
+		payment.TransactionDate,
+		payment.CreatedAt,
+		payment.UpdatedAt,
+	)
+	if isUniqueViolation(err) {
+		return domain.ErrVAPaymentDuplicate
+	}
+	return err
+}
+
+// ListVAAccounts returns registered VA numbers — one row per VA, with that
+// VA's settled-transaction count and total paid alongside (feature
+// 013-no-bill-payment-transaction, FR-023).
+//
+// This replaces the merchant dashboard's old habit of listing va_transactions
+// directly, under which a no-bill VA paid ten times rendered as ten separate
+// VAs.
+func (r *VARepository) ListVAAccounts(ctx context.Context, filter *domain.VAAccountListFilter) ([]domain.VAAccountListItem, int, error) {
+	where := whereAlwaysTrue
+	args := []interface{}{}
+	argIdx := 1
+
+	appendFilter := func(clause string, value interface{}) {
+		where += fmt.Sprintf(" AND %s $%d", clause, argIdx)
+		args = append(args, value)
+		argIdx++
+	}
+
+	if filter.PartnerServiceID != "" {
+		appendFilter("a.partner_service_id =", filter.PartnerServiceID)
+	}
+	if filter.FromDate != nil {
+		appendFilter("a.created_at >=", *filter.FromDate)
+	}
+	if filter.ToDate != nil {
+		appendFilter("a.created_at <=", *filter.ToDate)
+	}
+	if filter.Status != "" {
+		appendFilter("a.status =", filter.Status)
+	}
+	if filter.VirtualAccountNo != "" {
+		appendFilter("a.virtual_account_no =", filter.VirtualAccountNo)
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM va_accounts a "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// The aggregate is scoped to settled ("00") transactions so pending or
+	// deleted rows don't inflate a merchant's reported top-up total.
+	dataQuery := `
+		SELECT a.virtual_account_no, a.customer_no, a.customer_name, a.va_type, a.status,
+			a.expired_date, a.created_at,
+			COALESCE(agg.txn_count, 0), COALESCE(agg.total_paid, 0)::text
+		FROM va_accounts a
+		LEFT JOIN (
+			SELECT virtual_account_no, COUNT(*) AS txn_count, SUM(paid_amount) AS total_paid
+			FROM va_transactions
+			WHERE status = '00'
+			GROUP BY virtual_account_no
+		) agg ON agg.virtual_account_no = a.virtual_account_no ` + where + `
+		ORDER BY a.created_at DESC
+		LIMIT $` + fmt.Sprintf("%d", argIdx) + ` OFFSET $` + fmt.Sprintf("%d", argIdx+1)
+
+	args = append(args, filter.Limit, filter.Offset)
+
+	rows, err := r.pool.Query(ctx, dataQuery, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var items []domain.VAAccountListItem
+	for rows.Next() {
+		var item domain.VAAccountListItem
+		var totalPaid string
+		if err := rows.Scan(
+			&item.VirtualAccountNo,
+			&item.CustomerNo,
+			&item.CustomerName,
+			&item.VAType,
+			&item.Status,
+			&item.ExpiredDate,
+			&item.CreatedAt,
+			&item.TransactionCount,
+			&totalPaid,
+		); err != nil {
+			return nil, 0, err
+		}
+		item.TotalPaid = &domain.Amount{Value: totalPaid, Currency: "IDR"}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return items, total, nil
+}
+
+// ListVATransactions returns individual payment/transaction events — the
+// per-payment view that complements ListVAAccounts' per-VA view (feature
+// 013-no-bill-payment-transaction, FR-023). This is the query the merchant
+// dashboard's list endpoint used to run directly; its status semantics
+// ("00"/"02"/"03"/"04") are unchanged.
+func (r *VARepository) ListVATransactions(ctx context.Context, filter *domain.VAListFilter) ([]domain.VATransactionListItem, int, error) {
+	where := whereAlwaysTrue
+	args := []interface{}{}
+	argIdx := 1
+
+	appendFilter := func(clause string, value interface{}) {
+		where += fmt.Sprintf(" AND %s $%d", clause, argIdx)
+		args = append(args, value)
+		argIdx++
+	}
+
+	if filter.PartnerServiceID != "" {
+		appendFilter("partner_service_id =", filter.PartnerServiceID)
+	}
+	if filter.FromDate != nil {
+		appendFilter("created_at >=", *filter.FromDate)
+	}
+	if filter.ToDate != nil {
+		appendFilter("created_at <=", *filter.ToDate)
+	}
+	if filter.Status != "" {
+		appendFilter("status =", filter.Status)
+	}
+	if filter.VirtualAccountNo != "" {
+		appendFilter("virtual_account_no =", filter.VirtualAccountNo)
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM va_transactions "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	dataQuery := `
+		SELECT virtual_account_no, customer_no, customer_name, COALESCE(payment_request_id, ''),
+			COALESCE(reference_no, ''), paid_amount, total_amount, status, transaction_date, created_at
+		FROM va_transactions ` + where + `
+		ORDER BY created_at DESC
+		LIMIT $` + fmt.Sprintf("%d", argIdx) + ` OFFSET $` + fmt.Sprintf("%d", argIdx+1)
+
+	args = append(args, filter.Limit, filter.Offset)
+
+	rows, err := r.pool.Query(ctx, dataQuery, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var items []domain.VATransactionListItem
+	for rows.Next() {
+		var item domain.VATransactionListItem
+		var paidAmount, totalAmount *string
+		var transactionDate *time.Time
+		if err := rows.Scan(
+			&item.VirtualAccountNo,
+			&item.CustomerNo,
+			&item.CustomerName,
+			&item.PaymentRequestID,
+			&item.ReferenceNo,
+			&paidAmount,
+			&totalAmount,
+			&item.Status,
+			&transactionDate,
+			&item.CreatedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		if paidAmount != nil {
+			item.PaidAmount = &domain.Amount{Value: *paidAmount, Currency: "IDR"}
+		}
+		if totalAmount != nil {
+			item.TotalAmount = &domain.Amount{Value: *totalAmount, Currency: "IDR"}
+		}
+		item.TransactionDate = transactionDate
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return items, total, nil
 }
 
 // parseAmount parses a NUMERIC(16,2) string as returned by Postgres (e.g.
