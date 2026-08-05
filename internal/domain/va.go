@@ -221,6 +221,12 @@ type BillDetail struct {
 type VARepository interface {
 	SaveInquiry(ctx context.Context, inquiry *VAInquiryRecord) error
 	GetInquiry(ctx context.Context, inquiryRequestID string) (*VAInquiryRecord, error)
+	// ClaimInquiryRequestID stamps the vendor's inquiryRequestId onto a row
+	// that does not have one yet. A merchant-created VA is stored with an
+	// empty inquiry_request_id — the vendor's id simply does not exist at
+	// create-va time — so the first inquiry against that VA is what fills it
+	// in, letting later Status/Payment calls reach the same row by that id.
+	ClaimInquiryRequestID(ctx context.Context, id string, inquiryRequestID string) error
 	SavePayment(ctx context.Context, payment *VAPaymentRecord) error
 	GetPayment(ctx context.Context, paymentRequestID string) (*VAPaymentRecord, error)
 	UpdatePaymentStatus(ctx context.Context, paymentRequestID string, status string) error

@@ -181,6 +181,25 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 	return record, nil
 }
 
+// ClaimInquiryRequestID stamps inquiryRequestID onto the row only while it is
+// still unclaimed. The WHERE guard is what makes this safe to call on every
+// inquiry: a row that already carries a real vendor id keeps it, so a later
+// inquiry with a different id can never rewrite the value that Status and
+// Payment resolve this transaction by.
+//
+// Unclaimed has two shapes. '' is what create-va writes. A copy of trx_id is
+// what rows written before create-va stopped filling the column carry — also a
+// placeholder, never a vendor-supplied id, so it is replaced the same way.
+func (r *VARepository) ClaimInquiryRequestID(ctx context.Context, id string, inquiryRequestID string) error {
+	query := `
+		UPDATE va_transactions
+		SET inquiry_request_id = $2, updated_at = NOW()
+		WHERE id = $1 AND (inquiry_request_id = '' OR inquiry_request_id = trx_id)`
+
+	_, err := r.pool.Exec(ctx, query, id, inquiryRequestID)
+	return err
+}
+
 // SavePayment saves a VA payment record
 func (r *VARepository) SavePayment(ctx context.Context, payment *domain.VAPaymentRecord) error {
 	if payment.ID == "" {

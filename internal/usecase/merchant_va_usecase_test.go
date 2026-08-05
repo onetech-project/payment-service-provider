@@ -83,6 +83,11 @@ func (m *MockMerchantVARepository) GetInquiry(ctx context.Context, inquiryReques
 	return args.Get(0).(*domain.VAInquiryRecord), args.Error(1)
 }
 
+func (m *MockMerchantVARepository) ClaimInquiryRequestID(ctx context.Context, id string, inquiryRequestID string) error {
+	args := m.Called(ctx, id, inquiryRequestID)
+	return args.Error(0)
+}
+
 func (m *MockMerchantVARepository) SavePayment(ctx context.Context, payment *domain.VAPaymentRecord) error {
 	args := m.Called(ctx, payment)
 	return args.Error(0)

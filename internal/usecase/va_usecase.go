@@ -47,13 +47,17 @@ func NewVAUsecaseWithDeliveryRepo(repo domain.VARepository, notifier domain.Noti
 
 // Inquiry handles VA inquiry requests from vendor
 func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (*domain.VAInquiryResponse, error) {
-	// Validate VA number format
+	// Every rejected-input case answers with the single 4002400 (400) code:
+	// this endpoint's contract distinguishes a bad request only from the four
+	// outcomes below (4042412 not found, 4042419 expired, 4042414 paid,
+	// 2002400 success), not between flavours of bad request. The bracketed
+	// field name in the message is what tells the vendor which field to fix.
 	if len(req.VirtualAccountNo) < 8 {
-		return nil, domain.NewDomainError("4002401", "Invalid Field Format [virtualAccountNo]", nil)
+		return nil, domain.NewDomainError("4002400", "Invalid Field Format [virtualAccountNo]", nil)
 	}
 
 	if req.Amount == nil {
-		return nil, domain.NewDomainError("4002402", "Invalid Mandatory Field [amount]", nil)
+		return nil, domain.NewDomainError("4002400", "Invalid Mandatory Field [amount]", nil)
 	}
 
 	// Resolve the VA this inquiry refers to. Two lookups, one record: the
@@ -104,6 +108,24 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 			return nil, domain.NewDomainError("4042412", "Invalid Bill/Virtual Account", domain.ErrVAInvalidBill)
 		}
 
+		// A merchant-created VA carries no vendor inquiryRequestId — at create-va
+		// time it does not exist yet. This first inquiry is what supplies it, so
+		// claim it onto the row: Status() and Payment() resolve a transaction by
+		// that id, and without this the merchant's row would stay unreachable by
+		// it forever.
+		//
+		// "Carries none" covers two shapes: '' on rows written by create-va, and
+		// a copy of trx_id on rows written before create-va stopped filling the
+		// column. Both are placeholders, never a real vendor id, so both are
+		// free to be replaced here. A genuine id already claimed by an earlier
+		// inquiry is left alone — the repository's guard enforces the same rule.
+		if (record.InquiryRequestID == "" || record.InquiryRequestID == record.TrxID) && req.InquiryRequestID != "" {
+			if err := u.repo.ClaimInquiryRequestID(ctx, record.ID, req.InquiryRequestID); err != nil {
+				return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+			}
+			record.InquiryRequestID = req.InquiryRequestID
+		}
+
 		// Best-effort: bill details are supplementary — a lookup failure
 		// shouldn't fail the whole inquiry, just come back without them.
 		bills, _ := u.repo.GetVABillDetails(ctx, record.ID)
@@ -111,39 +133,12 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 		return inquiryResponseFromRecord(record, req.InquiryRequestID, bills), nil
 	}
 
-	// No prior record at all — this is an ad-hoc inquiry with nothing to
-	// reference yet, so start a fresh inquiry-only record keyed by this
-	// request's own inquiryRequestId. The vendor's requested amount is the only
-	// bill information in existence, so it is what gets persisted and echoed;
-	// any later inquiry on this VA is then answered from the stored row.
-	record = &domain.VAInquiryRecord{
-		PartnerServiceID: req.PartnerServiceID,
-		CustomerNo:       req.CustomerNo,
-		// Left empty on purpose: the ASPI InquiryRequest carries no
-		// virtualAccountName, and no transaction exists on this VA to read one
-		// from. A placeholder would be indistinguishable from a real account
-		// holder's name and would then be echoed back as fact on this and every
-		// later inquiry — the account holder is simply not known yet, and the
-		// merchant's create-va or the vendor's payment fills it in.
-		CustomerName:     "",
-		VirtualAccountNo: req.VirtualAccountNo,
-		InquiryRequestID: req.InquiryRequestID,
-		TrxID:            req.InquiryRequestID,
-		NotificationURL:  "",
-		// Pending, not "00": the bill has been inquired, not paid. Storing "00"
-		// here would make the row indistinguishable from a settled transaction,
-		// and Payment()'s "must be '03'" guard would then reject the very
-		// payment this inquiry was preparing for.
-		Status:      "03",
-		TotalAmount: req.Amount.Value,
-		Currency:    req.Amount.Currency,
-	}
-
-	if err := u.repo.SaveInquiry(ctx, record); err != nil {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
-	}
-
-	return inquiryResponseFromRecord(record, req.InquiryRequestID, nil), nil
+	// No prior record at all: the VA does not exist as far as this system is
+	// concerned, so the inquiry is answered 4042412 (404) rather than being
+	// used to conjure one. An inquiry is a read of an existing bill — only the
+	// merchant's create-va brings a VA into existence, and inventing a row here
+	// would hand the vendor a payable bill for a VA no merchant ever issued.
+	return nil, domain.NewDomainError("4042412", "Invalid Bill/Virtual Account", domain.ErrVAInvalidBill)
 }
 
 // inquiryResponseFromRecord builds the successful InquiryResponse purely from

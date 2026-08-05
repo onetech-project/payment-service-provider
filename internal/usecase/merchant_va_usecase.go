@@ -172,7 +172,6 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		CustomerNo:       customerNo,
 		CustomerName:     req.VirtualAccountName,
 		VirtualAccountNo: vaNo,
-		InquiryRequestID: req.TrxID,
 		TrxID:            req.TrxID,
 		NotificationURL:  notificationURLFromAdditionalInfo(req.AdditionalInfo),
 		Status:           "03",
