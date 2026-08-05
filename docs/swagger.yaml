@@ -208,6 +208,19 @@ definitions:
       virtualAccountData:
         $ref: '#/definitions/domain.MerchantDeleteVAData'
     type: object
+  domain.MerchantListTransactionsResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/domain.VATransactionListItem'
+        type: array
+      pagination:
+        $ref: '#/definitions/domain.Pagination'
+      responseCode:
+        type: string
+      responseMessage:
+        type: string
+    type: object
   domain.MerchantListVARequest:
     properties:
       fromDate:
@@ -229,7 +242,7 @@ definitions:
     properties:
       data:
         items:
-          $ref: '#/definitions/domain.VAListItem'
+          $ref: '#/definitions/domain.VAAccountListItem'
         type: array
       pagination:
         $ref: '#/definitions/domain.Pagination'
@@ -387,6 +400,27 @@ definitions:
       virtualAccountTrxType:
         type: string
     type: object
+  domain.VAAccountListItem:
+    properties:
+      createdAt:
+        type: string
+      customerName:
+        type: string
+      customerNo:
+        type: string
+      expiredDate:
+        type: string
+      status:
+        type: string
+      totalPaid:
+        $ref: '#/definitions/domain.Amount'
+      transactionCount:
+        type: integer
+      vaType:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
   domain.VAInquiryRequest:
     properties:
       additionalInfo:
@@ -415,27 +449,6 @@ definitions:
         type: string
       virtualAccountData:
         $ref: '#/definitions/domain.VAAccountData'
-    type: object
-  domain.VAListItem:
-    properties:
-      createdAt:
-        type: string
-      customerName:
-        type: string
-      customerNo:
-        type: string
-      expiredDate:
-        type: string
-      paidAmount:
-        $ref: '#/definitions/domain.Amount'
-      status:
-        type: string
-      totalAmount:
-        $ref: '#/definitions/domain.Amount'
-      transactionDate:
-        type: string
-      virtualAccountNo:
-        type: string
     type: object
   domain.VAPaymentBillDetail:
     properties:
@@ -678,6 +691,29 @@ definitions:
         type: string
       virtualAccountData:
         $ref: '#/definitions/domain.VAStatusData'
+    type: object
+  domain.VATransactionListItem:
+    properties:
+      createdAt:
+        type: string
+      customerName:
+        type: string
+      customerNo:
+        type: string
+      paidAmount:
+        $ref: '#/definitions/domain.Amount'
+      paymentRequestId:
+        type: string
+      referenceNo:
+        type: string
+      status:
+        type: string
+      totalAmount:
+        $ref: '#/definitions/domain.Amount'
+      transactionDate:
+        type: string
+      virtualAccountNo:
+        type: string
     type: object
   handler.clientResponse:
     properties:
@@ -1412,8 +1448,9 @@ paths:
       - Virtual Account
   /openapi/v1.0/transfer-va/list:
     post:
-      description: Merchant-initiated paginated listing of Virtual Account transactions,
-        filterable by date range, status and VA number. Read-only.
+      description: |-
+        Merchant-initiated paginated listing of registered Virtual Account numbers — ONE entry per VA — filterable by date range, registration status and VA number. Read-only.
+        Each entry carries transactionCount and totalPaid aggregated over that VA's settled payments. Note: status filters on the REGISTRATION state (ACTIVE / INACTIVE / EXPIRED), not the transaction state. For per-payment detail use POST /openapi/v1.0/transfer-va/list-transactions.
       parameters:
       - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b
         in: header
@@ -1482,7 +1519,83 @@ paths:
             $ref: '#/definitions/domain.MerchantListVAResponse'
       security:
       - BearerAuth: []
-      summary: List Virtual Account transactions
+      summary: List registered Virtual Accounts
+      tags:
+      - Merchant VA Dashboard
+  /openapi/v1.0/transfer-va/list-transactions:
+    post:
+      description: |-
+        Merchant-initiated paginated listing of individual payment/transaction events, filterable by date range, transaction status ("00" paid, "02" expired, "03" pending, "04" deleted) and VA number. Read-only.
+        This is the per-payment counterpart of POST /openapi/v1.0/transfer-va/list — a no-bill VA paid N times returns N entries here and 1 entry there.
+      parameters:
+      - description: Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      - description: Request timestamp, ISO 8601, must be within ±5 minutes of server
+          time
+        in: header
+        name: X-TIMESTAMP
+        required: true
+        type: string
+      - description: HMAC-SHA512(merchantSecret, \
+        in: header
+        name: X-SIGNATURE
+        required: true
+        type: string
+      - description: Numeric string, unique per calendar day. Doubles as the idempotency
+          key
+        in: header
+        name: X-EXTERNAL-ID
+        required: true
+        type: string
+      - description: Partner identifier. Mandatory per the ASPI spec but NOT enforced
+          on merchant routes — send it for SNAP conformance
+        in: header
+        name: X-PARTNER-ID
+        type: string
+      - description: PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT
+          enforced on merchant routes — send it for SNAP conformance
+        in: header
+        name: CHANNEL-ID
+        type: string
+      - description: Transaction list filter/pagination request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.MerchantListVARequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.MerchantListTransactionsResponse'
+        "400":
+          description: Invalid Field Format
+          schema:
+            $ref: '#/definitions/domain.MerchantListTransactionsResponse'
+        "401":
+          description: 'Unauthorized: missing/invalid/expired accessToken, invalid/missing
+            X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret
+            provisioned for this client'
+          schema:
+            $ref: '#/definitions/domain.MerchantListTransactionsResponse'
+        "409":
+          description: 'Conflict: request already in progress for this X-EXTERNAL-ID'
+          schema:
+            $ref: '#/definitions/domain.MerchantListTransactionsResponse'
+        "422":
+          description: X-EXTERNAL-ID reused with a different payload
+          schema:
+            $ref: '#/definitions/domain.MerchantListTransactionsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/domain.MerchantListTransactionsResponse'
+      security:
+      - BearerAuth: []
+      summary: List Virtual Account payment transactions
       tags:
       - Merchant VA Dashboard
   /openapi/v1.0/transfer-va/payment:

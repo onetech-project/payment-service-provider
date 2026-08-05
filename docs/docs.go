@@ -1009,11 +1009,11 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Merchant-initiated paginated listing of Virtual Account transactions, filterable by date range, status and VA number. Read-only.",
+                "description": "Merchant-initiated paginated listing of registered Virtual Account numbers — ONE entry per VA — filterable by date range, registration status and VA number. Read-only.\nEach entry carries transactionCount and totalPaid aggregated over that VA's settled payments. Note: status filters on the REGISTRATION state (ACTIVE / INACTIVE / EXPIRED), not the transaction state. For per-payment detail use POST /openapi/v1.0/transfer-va/list-transactions.",
                 "tags": [
                     "Merchant VA Dashboard"
                 ],
-                "summary": "List Virtual Account transactions",
+                "summary": "List registered Virtual Accounts",
                 "parameters": [
                     {
                         "type": "string",
@@ -1100,6 +1100,109 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/domain.MerchantListVAResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/openapi/v1.0/transfer-va/list-transactions": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Merchant-initiated paginated listing of individual payment/transaction events, filterable by date range, transaction status (\"00\" paid, \"02\" expired, \"03\" pending, \"04\" deleted) and VA number. Read-only.\nThis is the per-payment counterpart of POST /openapi/v1.0/transfer-va/list — a no-bill VA paid N times returns N entries here and 1 entry there.",
+                "tags": [
+                    "Merchant VA Dashboard"
+                ],
+                "summary": "List Virtual Account payment transactions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Request timestamp, ISO 8601, must be within ±5 minutes of server time",
+                        "name": "X-TIMESTAMP",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "HMAC-SHA512(merchantSecret, \\",
+                        "name": "X-SIGNATURE",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
+                        "name": "X-EXTERNAL-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Partner identifier. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "X-PARTNER-ID",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI spec but NOT enforced on merchant routes — send it for SNAP conformance",
+                        "name": "CHANNEL-ID",
+                        "in": "header"
+                    },
+                    {
+                        "description": "Transaction list filter/pagination request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/domain.MerchantListVARequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/domain.MerchantListTransactionsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid Field Format",
+                        "schema": {
+                            "$ref": "#/definitions/domain.MerchantListTransactionsResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized: missing/invalid/expired accessToken, invalid/missing X-SIGNATURE, X-TIMESTAMP outside the ±5 minute window, or no signing secret provisioned for this client",
+                        "schema": {
+                            "$ref": "#/definitions/domain.MerchantListTransactionsResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
+                        "schema": {
+                            "$ref": "#/definitions/domain.MerchantListTransactionsResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "X-EXTERNAL-ID reused with a different payload",
+                        "schema": {
+                            "$ref": "#/definitions/domain.MerchantListTransactionsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/domain.MerchantListTransactionsResponse"
                         }
                     }
                 }
@@ -1643,6 +1746,26 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.MerchantListTransactionsResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.VATransactionListItem"
+                    }
+                },
+                "pagination": {
+                    "$ref": "#/definitions/domain.Pagination"
+                },
+                "responseCode": {
+                    "type": "string"
+                },
+                "responseMessage": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.MerchantListVARequest": {
             "type": "object",
             "properties": {
@@ -1675,7 +1798,7 @@ const docTemplate = `{
                 "data": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/domain.VAListItem"
+                        "$ref": "#/definitions/domain.VAAccountListItem"
                     }
                 },
                 "pagination": {
@@ -1903,6 +2026,38 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.VAAccountListItem": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "customerName": {
+                    "type": "string"
+                },
+                "customerNo": {
+                    "type": "string"
+                },
+                "expiredDate": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "totalPaid": {
+                    "$ref": "#/definitions/domain.Amount"
+                },
+                "transactionCount": {
+                    "type": "integer"
+                },
+                "vaType": {
+                    "type": "string"
+                },
+                "virtualAccountNo": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.VAInquiryRequest": {
             "type": "object",
             "properties": {
@@ -1944,38 +2099,6 @@ const docTemplate = `{
                 },
                 "virtualAccountData": {
                     "$ref": "#/definitions/domain.VAAccountData"
-                }
-            }
-        },
-        "domain.VAListItem": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "customerName": {
-                    "type": "string"
-                },
-                "customerNo": {
-                    "type": "string"
-                },
-                "expiredDate": {
-                    "type": "string"
-                },
-                "paidAmount": {
-                    "$ref": "#/definitions/domain.Amount"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "totalAmount": {
-                    "$ref": "#/definitions/domain.Amount"
-                },
-                "transactionDate": {
-                    "type": "string"
-                },
-                "virtualAccountNo": {
-                    "type": "string"
                 }
             }
         },
@@ -2334,6 +2457,41 @@ const docTemplate = `{
                 },
                 "virtualAccountData": {
                     "$ref": "#/definitions/domain.VAStatusData"
+                }
+            }
+        },
+        "domain.VATransactionListItem": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "customerName": {
+                    "type": "string"
+                },
+                "customerNo": {
+                    "type": "string"
+                },
+                "paidAmount": {
+                    "$ref": "#/definitions/domain.Amount"
+                },
+                "paymentRequestId": {
+                    "type": "string"
+                },
+                "referenceNo": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "totalAmount": {
+                    "$ref": "#/definitions/domain.Amount"
+                },
+                "transactionDate": {
+                    "type": "string"
+                },
+                "virtualAccountNo": {
+                    "type": "string"
                 }
             }
         },

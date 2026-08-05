@@ -4,11 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"backbone-new/internal/domain"
 )
+
+// errInternalServerError is the SNAP responseMessage paired with the 500-class
+// response codes in this file.
+const errInternalServerError = "Internal Server Error"
+
+// errOperationNotAllowed is the SNAP responseMessage for delete-VA attempts
+// against a VA in a state that cannot be deleted.
+const errOperationNotAllowed = "Requested Operation Is Not Allowed"
 
 // MerchantVAUsecase implements domain.MerchantVAUsecase
 type MerchantVAUsecase struct {
@@ -119,6 +128,16 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
 	}
 
+	// A no-bill VA (vaType 01/04) is an address, not a transaction: /create-va
+	// registers it once and every payment thereafter creates its own
+	// transaction (feature 013-no-bill-payment-transaction, FR-001).
+	//
+	// The branch keys off the rule's Billing classification rather than a
+	// literal vaType == "01" || "04" check, so an operator who adds a seventh
+	// no-bill VA type to master_va_type gets this flow with no code change
+	// (Constitution II).
+	noBill := managed && vaTypeRule.Billing == domain.VATypeBillingNone
+
 	// Resolve customerNo: system-generated for dynamic VA types, merchant-
 	// supplied (echoed) for static VA types and legacy (unmanaged) requests.
 	customerNo := req.CustomerNo
@@ -145,7 +164,13 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		if !vaNoMatchesPartnerAndCustomer(req.PartnerServiceID, customerNo, vaNo) {
 			return nil, domain.NewDomainError("4002707", "Invalid Field Format [virtualAccountNo does not match partnerServiceId + customerNo]", nil)
 		}
-		if managed {
+		// The one-shot customerNo registration is deliberately skipped for
+		// no-bill VAs: a repeat /create-va on a registered no-bill VA updates
+		// the holder details rather than conflicting (FR-005), and this check
+		// is exactly what used to turn that second call into a 4092701.
+		// Static BILL-bearing types (02/03) keep it, so their behavior is
+		// unchanged (FR-021).
+		if managed && !noBill {
 			if err := u.repo.RegisterStaticCustomerNo(ctx, req.PartnerServiceID, customerNo); err != nil {
 				if errors.Is(err, domain.ErrVACustomerNoAlreadyRegistered) {
 					return nil, domain.NewDomainError("4092701", "Conflict: customerNo already registered for this partnerServiceId", nil)
@@ -153,6 +178,42 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 				return nil, domain.NewDomainError("5002702", fmt.Sprintf("System Unavailable [customerNo registration: %v]", err), err)
 			}
 		}
+	}
+
+	now := time.Now()
+
+	// Persist the VA registration — the durable identity of this VA number.
+	// Written for every managed VA type (spec A-002) so identity lives in one
+	// place; for no-bill types it is the ONLY thing written.
+	if managed {
+		account := &domain.VAAccount{
+			PartnerServiceID: req.PartnerServiceID,
+			CustomerNo:       customerNo,
+			VirtualAccountNo: vaNo,
+			VAType:           vaType,
+			Billing:          vaTypeRule.Billing,
+			CustomerName:     req.VirtualAccountName,
+			CustomerEmail:    req.VirtualAccountEmail,
+			CustomerPhone:    req.VirtualAccountPhone,
+			TrxID:            req.TrxID,
+			NotificationURL:  notificationURLFromAdditionalInfo(req.AdditionalInfo),
+			Status:           domain.VAAccountStatusActive,
+			ExpiredDate:      req.ExpiredDate,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if err := u.repo.SaveVAAccount(ctx, account); err != nil {
+			return nil, domain.NewDomainError("5002700", errInternalServerError, err)
+		}
+		log.Printf("event=va_account_registered virtual_account_no=%s va_type=%s", vaNo, vaType)
+	}
+
+	// No-bill VAs stop here: no transaction is created at registration time.
+	// The transaction is created when the customer actually pays, one per
+	// payment, which is what lets the same VA number be paid repeatedly
+	// (FR-001, contracts/create-va-no-bill.md).
+	if noBill {
+		return buildCreateVAResponse(req, customerNo, vaNo), nil
 	}
 
 	// A virtualAccountNo is reusable across transaction cycles — only a
@@ -166,7 +227,6 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	}
 
 	// Save transaction
-	now := time.Now()
 	record := &domain.VAInquiryRecord{
 		PartnerServiceID: req.PartnerServiceID,
 		CustomerNo:       customerNo,
@@ -189,17 +249,25 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	}
 
 	if err := u.repo.SaveInquiry(ctx, record); err != nil {
-		return nil, domain.NewDomainError("5002700", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002700", errInternalServerError, err)
 	}
 
 	if len(req.BillDetails) > 0 {
 		if err := u.repo.SaveBillDetails(ctx, record.ID, req.BillDetails); err != nil {
-			return nil, domain.NewDomainError("5002700", "Internal Server Error", err)
+			return nil, domain.NewDomainError("5002700", errInternalServerError, err)
 		}
 	}
 
-	// Build VAUpsertResponse
-	resp := &domain.MerchantCreateVAResponse{
+	return buildCreateVAResponse(req, customerNo, vaNo), nil
+}
+
+// buildCreateVAResponse assembles the ASPI VAUpsertResponse, echoing the
+// request's own fields alongside the resolved customerNo/virtualAccountNo
+// (which differ from the request for dynamic VA types). Shared by the no-bill
+// registration-only path and the bill-bearing transaction path so the two
+// cannot drift apart on the wire.
+func buildCreateVAResponse(req *domain.MerchantCreateVARequest, customerNo, vaNo string) *domain.MerchantCreateVAResponse {
+	return &domain.MerchantCreateVAResponse{
 		ResponseCode:    "2002700",
 		ResponseMessage: "Success",
 		VirtualAccountData: &domain.MerchantVAData{
@@ -219,20 +287,71 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 			AdditionalInfo:        req.AdditionalInfo,
 		},
 	}
-
-	return resp, nil
 }
 
-// ListVA handles VA listing (merchant dashboard convenience API)
-func (u *MerchantVAUsecase) ListVA(ctx context.Context, req *domain.MerchantListVARequest) (*domain.MerchantListVAResponse, error) {
-	page := req.Page
+// normalizePaging clamps the merchant's page/pageSize into the supported range
+// (page >= 1, pageSize 1..100 defaulting to 20), shared by both listings.
+func normalizePaging(page, pageSize int) (int, int) {
 	if page < 1 {
 		page = 1
 	}
-	pageSize := req.PageSize
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
+	return page, pageSize
+}
+
+// paginationFor builds the response pagination block for a page of results.
+func paginationFor(page, pageSize, total int) *domain.Pagination {
+	totalPages := total / pageSize
+	if total%pageSize > 0 {
+		totalPages++
+	}
+	return &domain.Pagination{
+		Page:       page,
+		PageSize:   pageSize,
+		TotalRows:  total,
+		TotalPages: totalPages,
+	}
+}
+
+// ListVA lists registered VA numbers, one entry per VA (feature
+// 013-no-bill-payment-transaction, FR-023).
+//
+// This reads the VA registry, not the transaction table. Listing transactions
+// here was wrong once a no-bill VA could hold many payments: a VA paid ten
+// times rendered as ten VAs. Per-payment detail now lives in ListTransactions.
+func (u *MerchantVAUsecase) ListVA(ctx context.Context, req *domain.MerchantListVARequest) (*domain.MerchantListVAResponse, error) {
+	page, pageSize := normalizePaging(req.Page, req.PageSize)
+
+	filter := &domain.VAAccountListFilter{
+		PartnerServiceID: req.PartnerServiceID,
+		FromDate:         req.FromDate,
+		ToDate:           req.ToDate,
+		Status:           req.Status,
+		VirtualAccountNo: req.VirtualAccountNo,
+		Offset:           (page - 1) * pageSize,
+		Limit:            pageSize,
+	}
+
+	items, total, err := u.repo.ListVAAccounts(ctx, filter)
+	if err != nil {
+		return nil, domain.NewDomainError("5002400", errInternalServerError, err)
+	}
+
+	return &domain.MerchantListVAResponse{
+		ResponseCode:    "2002400",
+		ResponseMessage: "Successful",
+		Data:            items,
+		Pagination:      paginationFor(page, pageSize, total),
+	}, nil
+}
+
+// ListTransactions lists individual payment events, filterable by VA number —
+// the per-payment view that complements ListVA (feature
+// 013-no-bill-payment-transaction, FR-023).
+func (u *MerchantVAUsecase) ListTransactions(ctx context.Context, req *domain.MerchantListVARequest) (*domain.MerchantListTransactionsResponse, error) {
+	page, pageSize := normalizePaging(req.Page, req.PageSize)
 
 	filter := &domain.VAListFilter{
 		PartnerServiceID: req.PartnerServiceID,
@@ -244,26 +363,16 @@ func (u *MerchantVAUsecase) ListVA(ctx context.Context, req *domain.MerchantList
 		Limit:            pageSize,
 	}
 
-	items, total, err := u.repo.ListVA(ctx, filter)
+	items, total, err := u.repo.ListVATransactions(ctx, filter)
 	if err != nil {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002400", errInternalServerError, err)
 	}
 
-	totalPages := total / pageSize
-	if total%pageSize > 0 {
-		totalPages++
-	}
-
-	return &domain.MerchantListVAResponse{
+	return &domain.MerchantListTransactionsResponse{
 		ResponseCode:    "2002400",
 		ResponseMessage: "Successful",
 		Data:            items,
-		Pagination: &domain.Pagination{
-			Page:       page,
-			PageSize:   pageSize,
-			TotalRows:  total,
-			TotalPages: totalPages,
-		},
+		Pagination:      paginationFor(page, pageSize, total),
 	}, nil
 }
 
@@ -274,31 +383,58 @@ func (u *MerchantVAUsecase) DeleteVA(ctx context.Context, req *domain.MerchantDe
 		return nil, domain.NewDomainError("4003101", "Invalid Mandatory Field", nil)
 	}
 
+	// A no-bill VA has no pending transaction to cancel — deleting it means
+	// deactivating the REGISTRATION so it stops accepting payments (feature
+	// 013-no-bill-payment-transaction, FR-019). Historical settled payments are
+	// deliberately left untouched and remain queryable (FR-020).
+	account, accErr := u.repo.GetVAAccount(ctx, req.VirtualAccountNo)
+	if accErr != nil && !errors.Is(accErr, domain.ErrVAAccountNotFound) {
+		return nil, domain.NewDomainError("5003100", errInternalServerError, accErr)
+	}
+	if account.IsNoBill() {
+		// UpdateVAAccountStatus is scoped to WHERE status='ACTIVE', so a
+		// repeat delete (or one against an already-EXPIRED registration)
+		// affects no rows and returns ErrVAAccountNotFound. That is the
+		// idempotent case, not a failure — the merchant asked for the VA to be
+		// unpayable and it already is.
+		if err := u.repo.UpdateVAAccountStatus(ctx, req.VirtualAccountNo, domain.VAAccountStatusInactive); err != nil && !errors.Is(err, domain.ErrVAAccountNotFound) {
+			return nil, domain.NewDomainError("5003100", errInternalServerError, err)
+		}
+		return buildDeleteVAResponse(req), nil
+	}
+
 	// Lookup VA
 	va, err := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, domain.NewDomainError("4043112", "Invalid Bill/Virtual Account", nil)
 		}
-		return nil, domain.NewDomainError("5003100", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5003100", errInternalServerError, err)
 	}
 
 	// Check status
 	switch va.Status {
 	case "03": // Pending — can delete
 		if err := u.repo.UpdateVAStatus(ctx, req.VirtualAccountNo, "04"); err != nil {
-			return nil, domain.NewDomainError("5003100", "Internal Server Error", err)
+			return nil, domain.NewDomainError("5003100", errInternalServerError, err)
 		}
 	case "00": // Success — cannot delete
-		return nil, domain.NewDomainError("4053101", "Requested Operation Is Not Allowed", nil)
+		return nil, domain.NewDomainError("4053101", errOperationNotAllowed, nil)
 	case "02": // Expired — cannot delete
-		return nil, domain.NewDomainError("4053101", "Requested Operation Is Not Allowed", nil)
+		return nil, domain.NewDomainError("4053101", errOperationNotAllowed, nil)
 	case "04": // Already deleted — idempotent
 		// Return success
 	default:
-		return nil, domain.NewDomainError("4053101", "Requested Operation Is Not Allowed", nil)
+		return nil, domain.NewDomainError("4053101", errOperationNotAllowed, nil)
 	}
 
+	return buildDeleteVAResponse(req), nil
+}
+
+// buildDeleteVAResponse assembles the ASPI DeleteVAResponse. Shared by the
+// no-bill registration-deactivation path and the transaction-cancellation path
+// so the two cannot drift apart on the wire.
+func buildDeleteVAResponse(req *domain.MerchantDeleteVARequest) *domain.MerchantDeleteVAResponse {
 	return &domain.MerchantDeleteVAResponse{
 		ResponseCode:    "2003100",
 		ResponseMessage: "Success",
@@ -309,7 +445,7 @@ func (u *MerchantVAUsecase) DeleteVA(ctx context.Context, req *domain.MerchantDe
 			TrxID:            req.TrxID,
 			AdditionalInfo:   req.AdditionalInfo,
 		},
-	}, nil
+	}
 }
 
 // notificationURLFromAdditionalInfo extracts the merchant payment callback URL

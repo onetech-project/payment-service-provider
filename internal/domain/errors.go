@@ -47,6 +47,22 @@ var (
 
 	// Static/Dynamic VA Error Constants (feature 006-static-dynamic-va)
 	ErrVACustomerNoAlreadyRegistered = errors.New("customerNo already registered for this partnerServiceId")
+
+	// VA Registry Error Constants (feature 013-no-bill-payment-transaction)
+
+	// ErrVAAccountNotFound reports that no va_accounts registration exists for
+	// the virtual account number. Callers MUST treat this as "fall through to
+	// the legacy transaction-based path", not as a hard failure — that
+	// fall-through is what keeps VAs created before this feature working.
+	ErrVAAccountNotFound = errors.New("VA registration not found")
+	// ErrVAAccountInactive reports that the registration exists but has been
+	// deactivated via delete-VA.
+	ErrVAAccountInactive = errors.New("VA registration is inactive")
+	// ErrVAPaymentDuplicate reports that a payment with this paymentRequestId
+	// is already recorded. Raised by the unique index on
+	// va_transactions.inquiry_request_id when a duplicate races past the
+	// GetPayment short-circuit; the caller replays the original response.
+	ErrVAPaymentDuplicate = errors.New("payment already recorded for this paymentRequestId")
 )
 
 type DomainError struct {

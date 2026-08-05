@@ -225,7 +225,6 @@ type VARepository interface {
 	GetPayment(ctx context.Context, paymentRequestID string) (*VAPaymentRecord, error)
 	UpdatePaymentStatus(ctx context.Context, paymentRequestID string, status string) error
 	// Merchant dashboard methods
-	ListVA(ctx context.Context, filter *VAListFilter) ([]VAListItem, int, error)
 	GetVABillDetails(ctx context.Context, transactionID string) ([]BillDetail, error)
 	SaveBillDetails(ctx context.Context, transactionID string, bills []BillDetail) error
 	UpdateVAStatus(ctx context.Context, virtualAccountNo string, status string) error
@@ -234,6 +233,134 @@ type VARepository interface {
 	NextCustomerNoSequence(ctx context.Context, vaType string) (string, error)
 	RegisterStaticCustomerNo(ctx context.Context, partnerServiceID, customerNo string) error
 	SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (paidAmount string, status string, err error)
+	// VA registry methods (feature 013-no-bill-payment-transaction)
+	SaveVAAccount(ctx context.Context, account *VAAccount) error
+	GetVAAccount(ctx context.Context, virtualAccountNo string) (*VAAccount, error)
+	GetVAAccountByPartnerAndCustomer(ctx context.Context, partnerServiceID, customerNo string) (*VAAccount, error)
+	UpdateVAAccountStatus(ctx context.Context, virtualAccountNo string, status string) error
+	ListVAAccounts(ctx context.Context, filter *VAAccountListFilter) ([]VAAccountListItem, int, error)
+	ListVATransactions(ctx context.Context, filter *VAListFilter) ([]VATransactionListItem, int, error)
+	SaveNoBillPayment(ctx context.Context, payment *VAPaymentRecord) error
+}
+
+// VA Registry (feature 013-no-bill-payment-transaction)
+
+// VAAccountStatus values for VAAccount.Status.
+const (
+	// VAAccountStatusActive means the VA accepts inquiries and payments.
+	VAAccountStatusActive = "ACTIVE"
+	// VAAccountStatusInactive means the merchant deactivated the VA via
+	// delete-VA. Historical transactions stay readable; new payments are
+	// rejected.
+	VAAccountStatusInactive = "INACTIVE"
+	// VAAccountStatusExpired means ExpiredDate passed and the transition was
+	// detected inline during an inquiry or payment.
+	VAAccountStatusExpired = "EXPIRED"
+)
+
+// VAAccount is the durable identity of a virtual account number — one row per
+// virtualAccountNo, written once at /create-va and never by inquiry or
+// payment.
+//
+// This is the half of the old va_transactions row that was NOT the
+// transaction. Splitting it out is what lets a no-bill VA be registered once
+// and paid many times (feature 013-no-bill-payment-transaction): the VA number
+// is now a durable payment address rather than a single pending transaction
+// that the first payment consumes.
+//
+// For no-bill VA types it carries no amount at all — the customer chooses the
+// amount at the payment channel, exactly like an e-wallet top-up address.
+type VAAccount struct {
+	ID               string
+	PartnerServiceID string
+	CustomerNo       string
+	VirtualAccountNo string
+	// VAType is the 2-digit code (01-06) classifying this VA per the
+	// master_va_type master data (feature 006-static-dynamic-va).
+	VAType string
+	// Billing is resolved from master data at registration time and stored
+	// with the registration, so the payment and inquiry hot paths can ask "is
+	// this a no-bill VA?" without a master-data lookup, and so a VA number
+	// already published to a customer keeps the contract it was issued under
+	// even if an operator later edits master_va_type.
+	Billing         VATypeBilling
+	CustomerName    string
+	CustomerEmail   string
+	CustomerPhone   string
+	TrxID           string
+	NotificationURL string
+	// Status is one of VAAccountStatusActive/Inactive/Expired.
+	Status string
+	// ExpiredDate nil means the registration never expires.
+	ExpiredDate *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// IsNoBill reports whether this VA carries no bill — the classification that
+// routes it to register-once/pay-many handling. Keyed off Billing rather than
+// a literal vaType check so operator-added no-bill types work with no code
+// change (Constitution II).
+func (a *VAAccount) IsNoBill() bool {
+	return a != nil && a.Billing == VATypeBillingNone
+}
+
+// IsExpired reports whether the registration has passed its expiry date, or
+// was already transitioned to EXPIRED by an earlier inquiry/payment. A
+// registration with no ExpiredDate never expires.
+func (a *VAAccount) IsExpired(now time.Time) bool {
+	if a == nil {
+		return false
+	}
+	if a.Status == VAAccountStatusExpired {
+		return true
+	}
+	return a.ExpiredDate != nil && now.After(*a.ExpiredDate)
+}
+
+// VAAccountListFilter contains filter criteria for the merchant VA registry
+// listing. Status filters on the registration state (ACTIVE/INACTIVE/EXPIRED),
+// not the transaction state.
+type VAAccountListFilter struct {
+	PartnerServiceID string
+	FromDate         *time.Time
+	ToDate           *time.Time
+	Status           string
+	VirtualAccountNo string
+	Offset           int
+	Limit            int
+}
+
+// VAAccountListItem is one registered VA number in the merchant listing.
+// TransactionCount and TotalPaid aggregate that VA number's settled
+// transactions, so a no-bill VA with N top-ups shows as 1 VA with N
+// transactions rather than N separate VAs.
+type VAAccountListItem struct {
+	VirtualAccountNo string     `json:"virtualAccountNo"`
+	CustomerNo       string     `json:"customerNo"`
+	CustomerName     string     `json:"customerName"`
+	VAType           string     `json:"vaType"`
+	Status           string     `json:"status"`
+	ExpiredDate      *time.Time `json:"expiredDate"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	TransactionCount int        `json:"transactionCount"`
+	TotalPaid        *Amount    `json:"totalPaid,omitempty"`
+}
+
+// VATransactionListItem is one payment/transaction event in the merchant
+// transaction listing — the per-payment view that complements
+// VAAccountListItem's per-VA view.
+type VATransactionListItem struct {
+	VirtualAccountNo string     `json:"virtualAccountNo"`
+	CustomerNo       string     `json:"customerNo"`
+	CustomerName     string     `json:"customerName"`
+	PaymentRequestID string     `json:"paymentRequestId,omitempty"`
+	ReferenceNo      string     `json:"referenceNo,omitempty"`
+	PaidAmount       *Amount    `json:"paidAmount,omitempty"`
+	TotalAmount      *Amount    `json:"totalAmount"`
+	Status           string     `json:"status"`
+	TransactionDate  *time.Time `json:"transactionDate,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
 }
 
 // VAInquiryRecord represents a persisted inquiry
@@ -259,21 +386,26 @@ type VAInquiryRecord struct {
 
 // VAPaymentRecord represents a persisted payment
 type VAPaymentRecord struct {
-	ID                    string
-	PartnerServiceID      string
-	CustomerNo            string
-	CustomerName          string
-	CustomerEmail         string
-	CustomerPhone         string
-	VirtualAccountNo      string
-	InquiryRequestID      string
-	TrxID                 string
-	NotificationURL       string
-	PaymentRequestID      string
-	PaidAmount            string
-	TotalAmount           string
-	Currency              string
-	Status                string
+	ID               string
+	PartnerServiceID string
+	CustomerNo       string
+	CustomerName     string
+	CustomerEmail    string
+	CustomerPhone    string
+	VirtualAccountNo string
+	InquiryRequestID string
+	TrxID            string
+	NotificationURL  string
+	PaymentRequestID string
+	PaidAmount       string
+	TotalAmount      string
+	Currency         string
+	Status           string
+	// VAType classifies the VA this payment belongs to (01-06), copied from
+	// the VA registration on the no-bill payment path (feature
+	// 013-no-bill-payment-transaction) so a transaction row remains
+	// self-describing. Empty on the legacy upsert path.
+	VAType                string
 	ReferenceNo           string
 	ChannelCode           int
 	HashedSourceAccountNo string
@@ -318,7 +450,14 @@ type VAUsecase interface {
 // MerchantVAUsecase defines merchant-side VA operations
 type MerchantVAUsecase interface {
 	CreateVA(ctx context.Context, req *MerchantCreateVARequest) (*MerchantCreateVAResponse, error)
+	// ListVA lists registered VA numbers — one entry per VA. Since feature
+	// 013-no-bill-payment-transaction this reads the VA registry rather than
+	// the transaction table, so a no-bill VA paid ten times is one entry with
+	// a transaction count of ten, not ten separate VAs (FR-023).
 	ListVA(ctx context.Context, req *MerchantListVARequest) (*MerchantListVAResponse, error)
+	// ListTransactions lists individual payment events — the per-payment view
+	// that complements ListVA's per-VA view.
+	ListTransactions(ctx context.Context, req *MerchantListVARequest) (*MerchantListTransactionsResponse, error)
 	DeleteVA(ctx context.Context, req *MerchantDeleteVARequest) (*MerchantDeleteVAResponse, error)
 }
 
@@ -413,25 +552,26 @@ type MerchantListVARequest struct {
 	PageSize         int        `json:"pageSize"`
 }
 
-// MerchantListVAResponse represents paginated VA transaction list
+// MerchantListVAResponse represents a paginated list of registered VA numbers.
+//
+// Since feature 013-no-bill-payment-transaction, Data holds one entry per
+// registered VA (VAAccountListItem) rather than one per transaction. The
+// per-transaction view moved to MerchantListTransactionsResponse.
 type MerchantListVAResponse struct {
-	ResponseCode    string       `json:"responseCode"`
-	ResponseMessage string       `json:"responseMessage"`
-	Data            []VAListItem `json:"data,omitempty"`
-	Pagination      *Pagination  `json:"pagination,omitempty"`
+	ResponseCode    string              `json:"responseCode"`
+	ResponseMessage string              `json:"responseMessage"`
+	Data            []VAAccountListItem `json:"data,omitempty"`
+	Pagination      *Pagination         `json:"pagination,omitempty"`
 }
 
-// VAListItem represents a single VA transaction in list
-type VAListItem struct {
-	VirtualAccountNo string     `json:"virtualAccountNo"`
-	CustomerNo       string     `json:"customerNo"`
-	CustomerName     string     `json:"customerName"`
-	TotalAmount      *Amount    `json:"totalAmount"`
-	PaidAmount       *Amount    `json:"paidAmount,omitempty"`
-	Status           string     `json:"status"`
-	ExpiredDate      *time.Time `json:"expiredDate"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	TransactionDate  *time.Time `json:"transactionDate,omitempty"`
+// MerchantListTransactionsResponse represents a paginated list of individual
+// payment/transaction events (feature 013-no-bill-payment-transaction,
+// FR-023). This is where a no-bill VA's N top-ups are visible.
+type MerchantListTransactionsResponse struct {
+	ResponseCode    string                  `json:"responseCode"`
+	ResponseMessage string                  `json:"responseMessage"`
+	Data            []VATransactionListItem `json:"data,omitempty"`
+	Pagination      *Pagination             `json:"pagination,omitempty"`
 }
 
 // Pagination contains list pagination metadata

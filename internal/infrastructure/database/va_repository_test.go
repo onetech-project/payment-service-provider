@@ -2,11 +2,15 @@ package database
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"backbone-new/internal/domain"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -120,4 +124,62 @@ func TestParseAmount(t *testing.T) {
 	v2, err := parseAmount("0")
 	assert.NoError(t, err)
 	assert.InDelta(t, 0, v2, 0.001)
+}
+
+// VA registry error mapping (feature 013-no-bill-payment-transaction, T013).
+//
+// As with the rest of this file, the SQL itself is exercised by quickstart.md's
+// integration scenarios against a live PostgreSQL. What IS unit-testable — and
+// what the usecase layer's correctness hinges on — is the error translation:
+// callers must be able to tell "no registration, fall through to the legacy
+// path" from "the database is broken", and "duplicate payment, replay the
+// original response" from a genuine failure. Getting either wrong is silent
+// and expensive.
+
+// fakeRow is a pgx.Row whose Scan always returns a preset error, letting the
+// error-mapping branches of scanVAAccount be exercised without a pool.
+type fakeRow struct{ err error }
+
+func (r fakeRow) Scan(_ ...any) error { return r.err }
+
+func TestScanVAAccount_NoRowsMapsToAccountNotFound(t *testing.T) {
+	account, err := scanVAAccount(fakeRow{err: pgx.ErrNoRows})
+
+	assert.Nil(t, account)
+	assert.ErrorIs(t, err, domain.ErrVAAccountNotFound)
+}
+
+func TestScanVAAccount_QueryFailureIsReturnedVerbatim(t *testing.T) {
+	// A broken query must NOT be flattened into ErrVAAccountNotFound: that
+	// would send the caller down the legacy fall-through path and quietly
+	// produce a wrong answer instead of a 500.
+	boom := errors.New("connection refused")
+
+	account, err := scanVAAccount(fakeRow{err: boom})
+
+	assert.Nil(t, account)
+	assert.ErrorIs(t, err, boom)
+	assert.NotErrorIs(t, err, domain.ErrVAAccountNotFound)
+}
+
+func TestIsUniqueViolation(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"unique violation", &pgconn.PgError{Code: "23505"}, true},
+		{"wrapped unique violation", fmt.Errorf("insert failed: %w", &pgconn.PgError{Code: "23505"}), true},
+		{"foreign key violation", &pgconn.PgError{Code: "23503"}, false},
+		{"check violation", &pgconn.PgError{Code: "23514"}, false},
+		{"non-pg error", errors.New("connection refused"), false},
+		{"no rows", pgx.ErrNoRows, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isUniqueViolation(tt.err))
+		})
+	}
 }

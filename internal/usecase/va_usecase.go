@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"backbone-new/internal/domain"
 )
+
+// errInvalidBill is the SNAP responseMessage paired with the 404-class
+// bill/VA-not-found response codes in this package.
+const errInvalidBill = "Invalid Bill/Virtual Account"
 
 // isNotFound reports whether a repository lookup failed because the row does
 // not exist, as opposed to the query itself failing (missing column, closed
@@ -59,7 +64,7 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 	// Check if inquiry already exists (idempotency)
 	existing, err := u.repo.GetInquiry(ctx, req.InquiryRequestID)
 	if err != nil && !isNotFound(err) {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002400", errInternalServerError, err)
 	}
 	if existing != nil {
 		// Return cached response for idempotent requests
@@ -79,13 +84,29 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 		}, nil
 	}
 
+	// No-bill VAs (feature 013-no-bill-payment-transaction) resolve from the VA
+	// registration, not from a transaction. This branch is what makes a
+	// first-ever payment possible: after this feature a freshly registered
+	// no-bill VA has no transaction row for the lookup below to find, and the
+	// ad-hoc fallback further down would insert a phantom one.
+	//
+	// A VA with no registration falls through unchanged, which is what keeps
+	// VAs created before this feature working (FR-022).
+	account, accErr := u.repo.GetVAAccount(ctx, req.VirtualAccountNo)
+	if accErr != nil && !errors.Is(accErr, domain.ErrVAAccountNotFound) {
+		return nil, domain.NewDomainError("5002400", errInternalServerError, accErr)
+	}
+	if account.IsNoBill() {
+		return u.inquiryNoBill(ctx, req, account)
+	}
+
 	// If this virtualAccountNo already has a merchant-created VA record, the
 	// inquiry reflects that existing VA and MUST NOT insert another row keyed
 	// by the vendor's own (possibly brand-new) inquiryRequestId — otherwise
 	// every inquiry against the same VA creates a duplicate, phantom record.
 	merchantVA, merr := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
 	if merr != nil && !isNotFound(merr) {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", merr)
+		return nil, domain.NewDomainError("5002400", errInternalServerError, merr)
 	}
 	if merchantVA != nil {
 		// Expiry detection (feature 007-merchant-expiry-callback, contracts/
@@ -100,7 +121,7 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 			(merchantVA.Status == "03" && merchantVA.ExpiredDate != nil && time.Now().After(*merchantVA.ExpiredDate))
 		if isExpired {
 			u.markExpiredAndNotify(ctx, merchantVA)
-			return nil, domain.NewDomainError("4042419", "Invalid Bill/Virtual Account", domain.ErrVAExpiredInquiry)
+			return nil, domain.NewDomainError("4042419", errInvalidBill, domain.ErrVAExpiredInquiry)
 		}
 
 		// Best-effort: bill details are supplementary — a lookup failure
@@ -147,7 +168,7 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 	}
 
 	if err := u.repo.SaveInquiry(ctx, record); err != nil {
-		return nil, domain.NewDomainError("5002400", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002400", errInternalServerError, err)
 	}
 
 	// Build success response
@@ -168,6 +189,204 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 	}, nil
 }
 
+// inquiryNoBill answers an inquiry for a no-bill VA from its registration
+// (feature 013-no-bill-payment-transaction, FR-015..FR-017).
+//
+// It persists nothing. A no-bill VA's inquiry is a pure read — "who owns this
+// number, and is it payable?" — so creating a record here would reintroduce
+// the phantom rows this feature exists to remove.
+func (u *VAUsecase) inquiryNoBill(ctx context.Context, req *domain.VAInquiryRequest, account *domain.VAAccount) (*domain.VAInquiryResponse, error) {
+	if account.IsExpired(time.Now()) {
+		u.markRegistrationExpiredAndNotify(ctx, account)
+		return nil, domain.NewDomainError("4042419", errInvalidBill, domain.ErrVAExpiredInquiry)
+	}
+	if account.Status != domain.VAAccountStatusActive {
+		return nil, domain.NewDomainError("4042419", errInvalidBill, domain.ErrVAAccountInactive)
+	}
+
+	// A no-bill VA asserts no bill amount — the customer chose what to pay at
+	// the channel — so the request's own amount is echoed back rather than a
+	// stored total.
+	totalAmount := &domain.Amount{Value: "0.00", Currency: "IDR"}
+	if req.Amount != nil {
+		totalAmount = req.Amount
+	}
+
+	return &domain.VAInquiryResponse{
+		ResponseCode:    "2002400",
+		ResponseMessage: "Successful",
+		VirtualAccountData: &domain.VAAccountData{
+			InquiryStatus:      "00",
+			InquiryReason:      &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+			PartnerServiceID:   account.PartnerServiceID,
+			CustomerNo:         account.CustomerNo,
+			VirtualAccountNo:   account.VirtualAccountNo,
+			VirtualAccountName: account.CustomerName,
+			InquiryRequestID:   req.InquiryRequestID,
+			TotalAmount:        totalAmount,
+			SubCompany:         "00000",
+		},
+	}, nil
+}
+
+// paymentNoBill records ONE payment against a no-bill VA as its own settled
+// transaction (feature 013-no-bill-payment-transaction, FR-008..FR-014).
+//
+// This is the heart of the fix. The old flow settled the single pending
+// transaction that /create-va had created, so the VA was payable exactly once.
+// Here nothing is settled and nothing is overwritten — a new row is inserted
+// per payment, keyed by the payment's own paymentRequestId, and the
+// registration is left untouched so it stays payable indefinitely.
+func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequest, account *domain.VAAccount) (*domain.VAPaymentResponse, error) {
+	// Expiry and deactivation are properties of the REGISTRATION now, since
+	// there is no pending transaction to carry them.
+	if account.IsExpired(time.Now()) {
+		u.markRegistrationExpiredAndNotify(ctx, account)
+		return nil, domain.NewDomainError("4042519", errInvalidBill, domain.ErrVAExpiredPayment)
+	}
+	if account.Status != domain.VAAccountStatusActive {
+		return nil, domain.NewDomainError("4042519", errInvalidBill, domain.ErrVAAccountInactive)
+	}
+
+	// A no-bill VA has no bill to match against, so the totalAmount/paidAmount
+	// equality check the billed path applies is deliberately skipped. The only
+	// amount rule left is that the payment must be a positive number.
+	paidValue, convErr := strconv.ParseFloat(req.PaidAmount.Value, 64)
+	if convErr != nil || paidValue <= 0 {
+		return nil, domain.NewDomainError("4002501", "Invalid Field Format [paidAmount]", nil)
+	}
+
+	transactionDate := time.Now()
+	if req.TrxDateTime != nil {
+		transactionDate = *req.TrxDateTime
+	}
+
+	// Holder details come from the registration — it is the source of truth for
+	// who owns this VA — with the payment channel's own values preferred where
+	// it supplied them.
+	customerName := account.CustomerName
+	if req.VirtualAccountName != "" {
+		customerName = req.VirtualAccountName
+	}
+	customerEmail := account.CustomerEmail
+	if req.VirtualAccountEmail != "" {
+		customerEmail = req.VirtualAccountEmail
+	}
+	customerPhone := account.CustomerPhone
+	if req.VirtualAccountPhone != "" {
+		customerPhone = req.VirtualAccountPhone
+	}
+
+	record := &domain.VAPaymentRecord{
+		PartnerServiceID: account.PartnerServiceID,
+		CustomerNo:       account.CustomerNo,
+		CustomerName:     customerName,
+		CustomerEmail:    customerEmail,
+		CustomerPhone:    customerPhone,
+		VirtualAccountNo: account.VirtualAccountNo,
+		// inquiry_request_id is set to paymentRequestId unconditionally,
+		// ignoring any inquiryRequestId/trxId the vendor sent. Those are shared
+		// across payments (or absent entirely), so keying on either would make
+		// two payments collide onto one row. paymentRequestId is mandatory and
+		// unique per payment, and the column's existing UNIQUE index then gives
+		// duplicate rejection for free (research.md R-003).
+		InquiryRequestID:      req.PaymentRequestID,
+		TrxID:                 account.TrxID,
+		NotificationURL:       account.NotificationURL,
+		PaymentRequestID:      req.PaymentRequestID,
+		PaidAmount:            req.PaidAmount.Value,
+		TotalAmount:           req.PaidAmount.Value, // no bill: the payment IS the total
+		Currency:              req.PaidAmount.Currency,
+		Status:                "00", // settled outright; there is no cumulative target to reach
+		VAType:                account.VAType,
+		ReferenceNo:           req.ReferenceNo,
+		ChannelCode:           req.ChannelCode,
+		HashedSourceAccountNo: req.HashedSourceAccountNo,
+		SourceBankCode:        req.SourceBankCode,
+		JournalNum:            req.JournalNum,
+		PaymentType:           req.PaymentType,
+		FlagAdvise:            req.FlagAdvise,
+		PaidBills:             req.PaidBills,
+		SubCompany:            req.SubCompany,
+		TrxDateTime:           req.TrxDateTime,
+		FreeTexts:             req.FreeTexts,
+		TransactionDate:       transactionDate,
+	}
+
+	if err := u.repo.SaveNoBillPayment(ctx, record); err != nil {
+		// A duplicate means a concurrent caller with the same paymentRequestId
+		// won the race past the GetPayment short-circuit above. Replay that
+		// payment's result instead of failing or double-recording — and notably
+		// without sending a second callback, since we are not the writer.
+		if errors.Is(err, domain.ErrVAPaymentDuplicate) {
+			if existing, getErr := u.repo.GetPayment(ctx, req.PaymentRequestID); getErr == nil && existing != nil {
+				return paymentResponseFromRecord(existing), nil
+			}
+		}
+		return nil, domain.NewDomainError("5002500", errInternalServerError, err)
+	}
+
+	log.Printf("event=va_nobill_payment_recorded virtual_account_no=%s payment_request_id=%s", account.VirtualAccountNo, req.PaymentRequestID)
+
+	u.notifyMerchantForAccount(ctx, req, account, transactionDate)
+
+	return &domain.VAPaymentResponse{
+		ResponseCode:    "2002500",
+		ResponseMessage: "Successful",
+		VirtualAccountData: &domain.VAPaymentStatus{
+			PartnerServiceID:    account.PartnerServiceID,
+			CustomerNo:          account.CustomerNo,
+			VirtualAccountNo:    account.VirtualAccountNo,
+			VirtualAccountName:  customerName,
+			VirtualAccountEmail: customerEmail,
+			VirtualAccountPhone: customerPhone,
+			TrxID:               account.TrxID,
+			PaymentRequestID:    req.PaymentRequestID,
+			PaidAmount:          req.PaidAmount,
+			PaidBills:           req.PaidBills,
+			TotalAmount:         &domain.Amount{Value: req.PaidAmount.Value, Currency: req.PaidAmount.Currency},
+			TrxDateTime:         &transactionDate,
+			ReferenceNo:         req.ReferenceNo,
+			JournalNum:          req.JournalNum,
+			PaymentType:         req.PaymentType,
+			FlagAdvise:          req.FlagAdvise,
+			PaymentFlagStatus:   "00",
+			PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+			BillDetails:         echoPaymentBillDetails(req.BillDetails),
+			FreeTexts:           req.FreeTexts,
+		},
+	}, nil
+}
+
+// paymentResponseFromRecord rebuilds the SNAP payment response from an
+// already-persisted payment, used for idempotent replays.
+func paymentResponseFromRecord(existing *domain.VAPaymentRecord) *domain.VAPaymentResponse {
+	txDate := existing.TransactionDate
+	return &domain.VAPaymentResponse{
+		ResponseCode:    "2002500",
+		ResponseMessage: "Successful",
+		VirtualAccountData: &domain.VAPaymentStatus{
+			PartnerServiceID:    existing.PartnerServiceID,
+			CustomerNo:          existing.CustomerNo,
+			VirtualAccountNo:    existing.VirtualAccountNo,
+			VirtualAccountName:  existing.CustomerName,
+			VirtualAccountEmail: existing.CustomerEmail,
+			VirtualAccountPhone: existing.CustomerPhone,
+			TrxID:               existing.TrxID,
+			PaymentRequestID:    existing.PaymentRequestID,
+			PaidAmount:          &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
+			PaidBills:           existing.PaidBills,
+			TrxDateTime:         &txDate,
+			ReferenceNo:         existing.ReferenceNo,
+			JournalNum:          existing.JournalNum,
+			PaymentType:         existing.PaymentType,
+			FlagAdvise:          existing.FlagAdvise,
+			PaymentFlagStatus:   "00",
+			PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+		},
+	}
+}
+
 // Payment handles VA payment notification from vendor
 func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (*domain.VAPaymentResponse, error) {
 	// Validate required fields
@@ -182,7 +401,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// Check if payment already exists (idempotency)
 	existing, err := u.repo.GetPayment(ctx, req.PaymentRequestID)
 	if err != nil && !isNotFound(err) {
-		return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002500", errInternalServerError, err)
 	}
 	if existing != nil {
 		// Return existing payment status, echoing the identity/amount fields
@@ -213,6 +432,22 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		}, nil
 	}
 
+	// No-bill VAs (vaType 01/04, feature 013-no-bill-payment-transaction) are
+	// durable payment addresses, not single transactions: each payment creates
+	// its OWN settled transaction, so the same VA number stays payable
+	// indefinitely. This branch sits ahead of the transaction lookup below
+	// precisely because there is no pending transaction to find.
+	//
+	// A VA with no registration falls through unchanged — that is what keeps
+	// VAs created before this feature working (FR-022).
+	account, accErr := u.repo.GetVAAccount(ctx, req.VirtualAccountNo)
+	if accErr != nil && !errors.Is(accErr, domain.ErrVAAccountNotFound) {
+		return nil, domain.NewDomainError("5002500", errInternalServerError, accErr)
+	}
+	if account.IsNoBill() {
+		return u.paymentNoBill(ctx, req, account)
+	}
+
 	// Inherit customer name / trx ID / notificationUrl / inquiry_request_id
 	// from the merchant's create-va record when one exists, so the mandatory
 	// columns stay populated and the UPSERT below lands on that same row
@@ -235,7 +470,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	notificationURL := ""
 	merchantVA, merr := u.repo.GetVAByVirtualAccountNo(ctx, req.VirtualAccountNo)
 	if merr != nil && !isNotFound(merr) {
-		return nil, domain.NewDomainError("5002500", "Internal Server Error", merr)
+		return nil, domain.NewDomainError("5002500", errInternalServerError, merr)
 	}
 
 	// A payment may only land on a transaction that is currently PENDING
@@ -254,7 +489,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 			(merchantVA.Status == "03" && merchantVA.ExpiredDate != nil && time.Now().After(*merchantVA.ExpiredDate))
 		if isExpired {
 			u.markExpiredAndNotify(ctx, merchantVA)
-			return nil, domain.NewDomainError("4042519", "Invalid Bill/Virtual Account", domain.ErrVAExpiredPayment)
+			return nil, domain.NewDomainError("4042519", errInvalidBill, domain.ErrVAExpiredPayment)
 		}
 
 		if merchantVA.Status != "03" {
@@ -271,7 +506,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	if merchantVA != nil && (merchantVA.VAType == "02" || merchantVA.VAType == "05") {
 		paidAmount, status, err := u.repo.SaveVAPayment(ctx, merchantVA.ID, req.PaidAmount.Value, req.ReferenceNo)
 		if err != nil {
-			return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
+			return nil, domain.NewDomainError("5002500", errInternalServerError, err)
 		}
 
 		transactionDate := time.Now()
@@ -376,12 +611,12 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	}
 
 	if err := u.repo.SavePayment(ctx, record); err != nil {
-		return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002500", errInternalServerError, err)
 	}
 
 	if len(req.BillDetails) > 0 {
 		if err := u.repo.SaveBillDetails(ctx, record.ID, paymentBillDetailsToBillDetail(req.BillDetails)); err != nil {
-			return nil, domain.NewDomainError("5002500", "Internal Server Error", err)
+			return nil, domain.NewDomainError("5002500", errInternalServerError, err)
 		}
 	}
 
@@ -546,6 +781,110 @@ func (u *VAUsecase) markExpiredAndNotify(ctx context.Context, merchantVA *domain
 	}
 }
 
+// markRegistrationExpiredAndNotify transitions a VA registration to EXPIRED
+// and, if this call is the one that actually applied the transition, enqueues
+// a single "va.expired" merchant callback (feature
+// 013-no-bill-payment-transaction, FR-017).
+//
+// This is markExpiredAndNotify's sibling, one level up. A no-bill VA has no
+// pending "03" transaction for that function's WHERE-clause guard to work on,
+// so the same exactly-once trick is applied to the registration instead:
+// UpdateVAAccountStatus is scoped to WHERE status='ACTIVE', and a zero-row
+// result means someone else already detected the expiry and notified.
+//
+// Best-effort throughout: notification delivery must never block or fail the
+// caller's SNAP response.
+func (u *VAUsecase) markRegistrationExpiredAndNotify(ctx context.Context, account *domain.VAAccount) {
+	if err := u.repo.UpdateVAAccountStatus(ctx, account.VirtualAccountNo, domain.VAAccountStatusExpired); err != nil {
+		return
+	}
+	log.Printf("event=va_account_expired virtual_account_no=%s event_type=%s", account.VirtualAccountNo, domain.NotificationEventVAExpired)
+
+	if account.NotificationURL == "" || u.notifier == nil {
+		return
+	}
+
+	// Belt-and-suspenders dedupe on top of the status guard above, mirroring
+	// markExpiredAndNotify (feature 007-merchant-expiry-callback, FR-005).
+	if u.deliveryRepo != nil {
+		exists, err := u.deliveryRepo.ExistsByVirtualAccountNoAndEventType(ctx, account.VirtualAccountNo, domain.NotificationEventVAExpired, domain.NotificationTriggerAuto)
+		if err == nil && exists {
+			return
+		}
+	}
+
+	expiredAt := ""
+	if account.ExpiredDate != nil {
+		expiredAt = account.ExpiredDate.Format(time.RFC3339)
+	}
+
+	payload := &domain.PaymentNotificationPayload{
+		EventType:        domain.NotificationEventVAExpired,
+		PartnerServiceID: account.PartnerServiceID,
+		CustomerNo:       account.CustomerNo,
+		VirtualAccountNo: account.VirtualAccountNo,
+		TrxID:            account.TrxID,
+		NotificationURL:  account.NotificationURL,
+		ExpiredAt:        expiredAt,
+	}
+
+	u.enqueueAndAudit(ctx, payload, account.VirtualAccountNo, domain.NotificationEventVAExpired)
+}
+
+// notifyMerchantForAccount enqueues the payment callback for a no-bill payment,
+// sourcing the destination URL and merchant trace ID from the VA registration
+// rather than from a transaction record. Best-effort: never blocks or fails the
+// vendor-facing response.
+func (u *VAUsecase) notifyMerchantForAccount(ctx context.Context, req *domain.VAPaymentRequest, account *domain.VAAccount, transactionDate time.Time) {
+	if u.notifier == nil || account.NotificationURL == "" {
+		return
+	}
+
+	payload := &domain.PaymentNotificationPayload{
+		EventType:        domain.NotificationEventPaymentReceived,
+		PartnerServiceID: account.PartnerServiceID,
+		CustomerNo:       account.CustomerNo,
+		VirtualAccountNo: account.VirtualAccountNo,
+		TrxID:            account.TrxID,
+		PaymentRequestID: req.PaymentRequestID,
+		PaidAmount:       req.PaidAmount,
+		PaidBills:        req.PaidBills,
+		// A no-bill VA has no bill, so the payment is its own total.
+		TotalAmount:     &domain.Amount{Value: req.PaidAmount.Value, Currency: req.PaidAmount.Currency},
+		TrxDateTime:     transactionDate.Format(time.RFC3339),
+		ReferenceNo:     req.ReferenceNo,
+		PaymentType:     req.PaymentType,
+		FlagAdvise:      req.FlagAdvise,
+		NotificationURL: account.NotificationURL,
+	}
+
+	u.enqueueAndAudit(ctx, payload, account.VirtualAccountNo, domain.NotificationEventPaymentReceived)
+}
+
+// enqueueAndAudit enqueues a merchant callback and records the delivery
+// attempt, swallowing both errors — callback delivery is best-effort and must
+// not affect the caller's response (Constitution: vendor-facing responses are
+// never blocked on merchant reachability).
+func (u *VAUsecase) enqueueAndAudit(ctx context.Context, payload *domain.PaymentNotificationPayload, virtualAccountNo, eventType string) {
+	deliveryStatus := domain.NotificationDeliveryStatusSuccess
+	errorDetail := ""
+	if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
+		deliveryStatus = domain.NotificationDeliveryStatusFailed
+		errorDetail = err.Error()
+	}
+
+	if u.deliveryRepo != nil {
+		_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
+			VirtualAccountNo: virtualAccountNo,
+			EventType:        eventType,
+			Trigger:          domain.NotificationTriggerAuto,
+			Status:           deliveryStatus,
+			AttemptedAt:      time.Now(),
+			ErrorDetail:      errorDetail,
+		})
+	}
+}
+
 // notifyMerchantWithVA enqueues an async callback carrying the payment
 // details to the merchant's registered notificationUrl. It never returns an
 // error to the caller: notification delivery is best-effort and must not
@@ -603,16 +942,16 @@ func (u *VAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest) (*d
 	// otherwise a paid VA is reported back to the vendor as still pending.
 	payment, err := u.repo.GetPayment(ctx, req.InquiryRequestID)
 	if err != nil && !isNotFound(err) {
-		return nil, domain.NewDomainError("5002600", "Internal Server Error", err)
+		return nil, domain.NewDomainError("5002600", errInternalServerError, err)
 	}
 	if err != nil {
 		// If no payment found, check inquiry
 		inquiry, inquiryErr := u.repo.GetInquiry(ctx, req.InquiryRequestID)
 		if inquiryErr != nil && !isNotFound(inquiryErr) {
-			return nil, domain.NewDomainError("5002600", "Internal Server Error", inquiryErr)
+			return nil, domain.NewDomainError("5002600", errInternalServerError, inquiryErr)
 		}
 		if inquiryErr != nil {
-			return nil, domain.NewDomainError("4042619", "Invalid Bill/Virtual Account", nil)
+			return nil, domain.NewDomainError("4042619", errInvalidBill, nil)
 		}
 
 		// Best-effort: bill details persisted at create-VA/inquiry time, if any.

@@ -23,8 +23,24 @@
 #   ./scripts/e2e-va-flow.sh -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> \
 #       -m <.env.merchant.NAME> -f <.env.vendor.channel> \
 #       [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] \
-#       [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>] \
-#       [-O <transcript-file>]
+#       [-b <billNo>] [-d <billName>] [-y <vaType>] [-N <payments>] \
+#       [-L <listener-port>] [-u <base-url>] [-O <transcript-file>]
+#
+# -y <vaType> routes the create-va through one of the six static/dynamic VA
+# type combinations (feature 006-static-dynamic-va). Omit it for an unmanaged
+# (legacy) VA on a non-reserved partnerServiceId.
+#
+# For NO-BILL types (01 static, 04 dynamic) the flow changes shape, per feature
+# 013-no-bill-payment-transaction:
+#   - -a is dropped from create-va: a no-bill VA carries no bill, and sending
+#     totalAmount is rejected with 4002706.
+#   - create-va writes only the VA registration — no transaction — so this
+#     script asserts a transaction count of 0 before any payment.
+#   - -N <payments> (default 3 for no-bill, 1 otherwise) repeats step 3 with a
+#     distinct paymentRequestId each time, proving the same VA number stays
+#     payable. Each payment becomes its own transaction.
+# The per-VA and per-payment counts are then read back through the merchant
+# listings, so the assertions come from the API rather than from the database.
 #
 # -O writes a full transcript of every request (URL, headers, stringToSign,
 # body) and response to <transcript-file> while still printing to the
@@ -68,13 +84,15 @@ MERCHANT_ENV_FILE=""
 VENDOR_ENV_FILE=""
 LISTENER_PORT="8099"
 OUTPUT_FILE=""
+VA_TYPE=""
+PAYMENT_COUNT=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -m <.env.merchant.NAME> -f <.env.vendor.channel> [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] [-b <billNo>] [-d <billName>] [-L <listener-port>] [-u <base-url>] [-O <transcript-file>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> -m <.env.merchant.NAME> -f <.env.vendor.channel> [-a <amount>] [-v <virtualAccountNo>] [-t <trxId>] [-w <notificationUrl>] [-b <billNo>] [-d <billName>] [-y <vaType>] [-N <payments>] [-L <listener-port>] [-u <base-url>] [-O <transcript-file>]" >&2
 	exit 1
 }
 
-while getopts "s:c:n:a:v:t:w:m:f:b:d:L:u:O:h" opt; do
+while getopts "s:c:n:a:v:t:w:m:f:b:d:y:N:L:u:O:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -87,12 +105,57 @@ while getopts "s:c:n:a:v:t:w:m:f:b:d:L:u:O:h" opt; do
 	f) VENDOR_ENV_FILE="$OPTARG" ;;
 	b) BILL_NO="$OPTARG" ;;
 	d) BILL_NAME="$OPTARG" ;;
+	y) VA_TYPE="$OPTARG" ;;
+	N) PAYMENT_COUNT="$OPTARG" ;;
 	L) LISTENER_PORT="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	O) OUTPUT_FILE="$OPTARG" ;;
 	h | *) usage ;;
 	esac
 done
+
+# No-bill VA types (feature 013-no-bill-payment-transaction). These are the
+# only types where create-va writes no transaction and the VA stays payable
+# indefinitely, so they take a different shape through this script.
+IS_NO_BILL=false
+case "$VA_TYPE" in
+01 | 04) IS_NO_BILL=true ;;
+esac
+
+# Dynamic VA types generate customerNo server-side, so -c must be EMPTY on the
+# create-va call (4002703 otherwise). The generated value is read back from the
+# response and used for the inquiry/payment steps.
+IS_DYNAMIC=false
+case "$VA_TYPE" in
+04 | 05 | 06) IS_DYNAMIC=true ;;
+esac
+
+if [[ -z "$PAYMENT_COUNT" ]]; then
+	# Repeat payments by default for no-bill: a single payment would not
+	# demonstrate the property that actually matters here.
+	if [[ "$IS_NO_BILL" == true ]]; then PAYMENT_COUNT=3; else PAYMENT_COUNT=1; fi
+fi
+
+CHECKS_PASSED=0
+CHECKS_FAILED=0
+check() {
+	local label="$1" ok="$2"
+	if [[ "$ok" == true ]]; then
+		echo "   [PASS] $label"
+		CHECKS_PASSED=$((CHECKS_PASSED + 1))
+	else
+		echo "   [FAIL] $label"
+		CHECKS_FAILED=$((CHECKS_FAILED + 1))
+	fi
+}
+
+# transaction_count_for <virtualAccountNo> — asks the merchant transaction
+# listing how many transactions exist for a VA. Used instead of a direct
+# database query so the assertions run against the real API surface.
+transaction_count_for() {
+	"$SCRIPT_DIR/merchant-list-transactions.sh" -v "$1" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL" 2>/dev/null |
+		jq -r '.pagination.totalRows // "?"'
+}
 
 # -O captures the whole run — every request (URL, headers, stringToSign, body)
 # and every response — into one transcript, while still streaming to the
@@ -108,7 +171,9 @@ if [[ -n "$OUTPUT_FILE" ]]; then
 	exec > >(tee -a "$OUTPUT_FILE") 2>&1
 fi
 
-[[ -z "$PARTNER_SERVICE_ID" || -z "$CUSTOMER_NO" || -z "$VA_NAME" || -z "$MERCHANT_ENV_FILE" || -z "$VENDOR_ENV_FILE" ]] && usage
+# customerNo is deliberately exempt for dynamic types: the server generates it.
+[[ -z "$PARTNER_SERVICE_ID" || -z "$VA_NAME" || -z "$MERCHANT_ENV_FILE" || -z "$VENDOR_ENV_FILE" ]] && usage
+[[ "$IS_DYNAMIC" == false && -z "$CUSTOMER_NO" ]] && usage
 [[ -f "$MERCHANT_ENV_FILE" ]] || { echo "merchant env file not found: $MERCHANT_ENV_FILE (run onboard-merchant.sh first)" >&2; exit 1; }
 [[ -f "$VENDOR_ENV_FILE" ]] || { echo "vendor env file not found: $VENDOR_ENV_FILE (run onboard-vendor.sh first)" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is required for this script" >&2; exit 1; }
@@ -178,7 +243,12 @@ echo
 echo "=================================================================="
 echo "Step 1/4: POST /openapi/v1.0/transfer-va/create-va (merchant identity)"
 echo "=================================================================="
-CREATE_VA_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -n "$VA_NAME" -a "$AMOUNT" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")
+CREATE_VA_ARGS=(-s "$PARTNER_SERVICE_ID" -n "$VA_NAME" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")
+# Dynamic types must send an EMPTY customerNo — the server assigns it.
+[[ "$IS_DYNAMIC" == false ]] && CREATE_VA_ARGS+=(-c "$CUSTOMER_NO")
+# A no-bill VA carries no bill: sending totalAmount is rejected with 4002706.
+[[ "$IS_NO_BILL" == false ]] && CREATE_VA_ARGS+=(-a "$AMOUNT")
+[[ -n "$VA_TYPE" ]] && CREATE_VA_ARGS+=(-y "$VA_TYPE")
 [[ -n "$VA_NO" ]] && CREATE_VA_ARGS+=(-v "$VA_NO")
 [[ -n "$TRX_ID" ]] && CREATE_VA_ARGS+=(-t "$TRX_ID")
 [[ -n "$NOTIFICATION_URL" ]] && CREATE_VA_ARGS+=(-w "$NOTIFICATION_URL")
@@ -204,12 +274,31 @@ elif [[ -z "$VA_NO" ]]; then
 fi
 echo "==> virtualAccountNo: ${VA_NO}"
 
+# For dynamic types the server assigned the customerNo — the inquiry and
+# payment steps must use that, not our (empty) input.
+CONFIRMED_CUSTOMER_NO="$(echo "$CREATE_VA_RESPONSE" | jq -r '.virtualAccountData.customerNo // empty')"
+if [[ -n "$CONFIRMED_CUSTOMER_NO" ]]; then
+	CUSTOMER_NO="$CONFIRMED_CUSTOMER_NO"
+	echo "==> customerNo: ${CUSTOMER_NO}"
+fi
+
 # The create-va trxId is what step 3 must send back as PaymentRequest.trxId —
 # per ASPI that field is "Mandatory if Payment comes from the Create VA
 # Request", which is exactly this flow. Inventing a fresh id there instead
 # would leave the payment unlinked to the VA the merchant created.
 CONFIRMED_TRX_ID="$(echo "$CREATE_VA_RESPONSE" | jq -r '.virtualAccountData.trxId // empty')"
 echo "==> trxId: ${CONFIRMED_TRX_ID}"
+
+# The defining property of a no-bill VA: create-va registers the VA number and
+# creates NO transaction. Before feature 013-no-bill-payment-transaction this
+# count would have been 1 (a pending transaction), which is exactly what made
+# the VA payable only once.
+if [[ "$IS_NO_BILL" == true ]]; then
+	TXN_AFTER_CREATE="$(transaction_count_for "$VA_NO")"
+	echo "==> transactions after create-va: ${TXN_AFTER_CREATE}"
+	check "no-bill create-va wrote NO transaction (expect 0, got ${TXN_AFTER_CREATE})" \
+		"$([[ "$TXN_AFTER_CREATE" == "0" ]] && echo true || echo false)"
+fi
 echo
 
 echo "=================================================================="
@@ -227,19 +316,51 @@ echo
 echo "=================================================================="
 echo "Step 3/4: POST /openapi/v1.0/transfer-va/payment (vendor identity)"
 echo "=================================================================="
-PAYMENT_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")
-[[ -n "$CONFIRMED_TRX_ID" ]] && PAYMENT_ARGS+=(-t "$CONFIRMED_TRX_ID")
-[[ -n "$CONFIRMED_INQUIRY_REQUEST_ID" ]] && PAYMENT_ARGS+=(-q "$CONFIRMED_INQUIRY_REQUEST_ID")
+for ((PAY_N = 1; PAY_N <= PAYMENT_COUNT; PAY_N++)); do
+	[[ "$PAYMENT_COUNT" -gt 1 ]] && echo "--- payment ${PAY_N}/${PAYMENT_COUNT} ---"
 
-PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" "${PAYMENT_ARGS[@]}")"
-echo "$PAYMENT_RESPONSE" | jq .
+	PAYMENT_ARGS=(-s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")
+	[[ -n "$CONFIRMED_TRX_ID" ]] && PAYMENT_ARGS+=(-t "$CONFIRMED_TRX_ID")
+	if [[ "$PAY_N" -eq 1 && -n "$CONFIRMED_INQUIRY_REQUEST_ID" ]]; then
+		# ASPI: when the payment follows an inquiry, paymentRequestId must equal
+		# that inquiryRequestId.
+		PAYMENT_ARGS+=(-q "$CONFIRMED_INQUIRY_REQUEST_ID")
+	else
+		# Each repeat payment is a distinct payment and must carry its own
+		# paymentRequestId — reusing one would (correctly) replay the first.
+		PAYMENT_ARGS+=(-q "PAY-$(date +%s%N)-${PAY_N}")
+	fi
 
-PAYMENT_CODE="$(echo "$PAYMENT_RESPONSE" | jq -r '.responseCode // empty')"
-if [[ "$PAYMENT_CODE" != 2* ]]; then
-	echo "!! payment did not return a success responseCode (got: ${PAYMENT_CODE:-<none>}) — aborting before callback check." >&2
-	exit 1
+	PAYMENT_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" "${PAYMENT_ARGS[@]}")"
+	echo "$PAYMENT_RESPONSE" | jq .
+
+	PAYMENT_CODE="$(echo "$PAYMENT_RESPONSE" | jq -r '.responseCode // empty')"
+	if [[ "$PAYMENT_COUNT" -gt 1 ]]; then
+		check "payment ${PAY_N} succeeded (got ${PAYMENT_CODE:-<none>})" \
+			"$([[ "$PAYMENT_CODE" == 2* ]] && echo true || echo false)"
+	fi
+	if [[ "$PAYMENT_CODE" != 2* ]]; then
+		echo "!! payment ${PAY_N} did not return a success responseCode (got: ${PAYMENT_CODE:-<none>}) — aborting before callback check." >&2
+		exit 1
+	fi
+	echo
+done
+
+# One VA, N transactions — each payment created its own. Before feature
+# 013-no-bill-payment-transaction, payment 2 here would have been rejected
+# with 4092500 "already paid or inactive".
+if [[ "$IS_NO_BILL" == true ]]; then
+	TXN_AFTER_PAYMENTS="$(transaction_count_for "$VA_NO")"
+	echo "==> transactions after ${PAYMENT_COUNT} payment(s): ${TXN_AFTER_PAYMENTS}"
+	check "each payment created its own transaction (expect ${PAYMENT_COUNT}, got ${TXN_AFTER_PAYMENTS})" \
+		"$([[ "$TXN_AFTER_PAYMENTS" == "$PAYMENT_COUNT" ]] && echo true || echo false)"
+
+	VA_ROWS="$("$SCRIPT_DIR/merchant-list-va.sh" -s "$PARTNER_SERVICE_ID" -v "$VA_NO" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL" 2>/dev/null |
+		jq -r '.pagination.totalRows // "?"')"
+	check "still exactly ONE registered VA after ${PAYMENT_COUNT} payments (expect 1, got ${VA_ROWS})" \
+		"$([[ "$VA_ROWS" == "1" ]] && echo true || echo false)"
+	echo
 fi
-echo
 
 echo "=================================================================="
 echo "Step 4/4: Merchant payment callback"
@@ -272,4 +393,10 @@ fi
 echo
 echo "=================================================================="
 echo "Done: VA ${VA_NO} created -> inquiry confirmed -> paid -> callback checked."
+if [[ $((CHECKS_PASSED + CHECKS_FAILED)) -gt 0 ]]; then
+	echo "Assertions: ${CHECKS_PASSED} passed, ${CHECKS_FAILED} failed"
+fi
 echo "=================================================================="
+
+[[ "$CHECKS_FAILED" -gt 0 ]] && exit 1
+exit 0

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // MockMerchantVARepository is a mock for testing merchant VA usecase
@@ -101,11 +102,6 @@ func (m *MockMerchantVARepository) UpdatePaymentStatus(ctx context.Context, paym
 	return args.Error(0)
 }
 
-func (m *MockMerchantVARepository) ListVA(ctx context.Context, filter *domain.VAListFilter) ([]domain.VAListItem, int, error) {
-	args := m.Called(ctx, filter)
-	return args.Get(0).([]domain.VAListItem), args.Int(1), args.Error(2)
-}
-
 func (m *MockMerchantVARepository) GetVABillDetails(ctx context.Context, transactionID string) ([]domain.BillDetail, error) {
 	args := m.Called(ctx, transactionID)
 	return args.Get(0).([]domain.BillDetail), args.Error(1)
@@ -142,6 +138,75 @@ func (m *MockMerchantVARepository) RegisterStaticCustomerNo(ctx context.Context,
 func (m *MockMerchantVARepository) SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (string, string, error) {
 	args := m.Called(ctx, transactionID, amount, referenceNo)
 	return args.String(0), args.String(1), args.Error(2)
+}
+
+// VA registry methods (feature 013-no-bill-payment-transaction).
+
+// hasExpectation reports whether the current test stubbed method. CreateVA now
+// writes a registration for every managed VA type, so tests written before
+// feature 013 would hit an un-stubbed SaveVAAccount and panic. Defaulting to
+// success keeps those tests exercising exactly the behavior they assert, while
+// tests that care about the registry stub it and get normal mock behavior.
+func (m *MockMerchantVARepository) hasExpectation(method string) bool {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockMerchantVARepository) SaveVAAccount(ctx context.Context, account *domain.VAAccount) error {
+	if !m.hasExpectation("SaveVAAccount") {
+		return nil
+	}
+	args := m.Called(ctx, account)
+	return args.Error(0)
+}
+
+func (m *MockMerchantVARepository) GetVAAccount(ctx context.Context, virtualAccountNo string) (*domain.VAAccount, error) {
+	if !m.hasExpectation("GetVAAccount") {
+		return nil, domain.ErrVAAccountNotFound
+	}
+	args := m.Called(ctx, virtualAccountNo)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.VAAccount), args.Error(1)
+}
+
+func (m *MockMerchantVARepository) GetVAAccountByPartnerAndCustomer(ctx context.Context, partnerServiceID, customerNo string) (*domain.VAAccount, error) {
+	if !m.hasExpectation("GetVAAccountByPartnerAndCustomer") {
+		return nil, domain.ErrVAAccountNotFound
+	}
+	args := m.Called(ctx, partnerServiceID, customerNo)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.VAAccount), args.Error(1)
+}
+
+func (m *MockMerchantVARepository) UpdateVAAccountStatus(ctx context.Context, virtualAccountNo string, status string) error {
+	if !m.hasExpectation("UpdateVAAccountStatus") {
+		return nil
+	}
+	args := m.Called(ctx, virtualAccountNo, status)
+	return args.Error(0)
+}
+
+func (m *MockMerchantVARepository) ListVAAccounts(ctx context.Context, filter *domain.VAAccountListFilter) ([]domain.VAAccountListItem, int, error) {
+	args := m.Called(ctx, filter)
+	return args.Get(0).([]domain.VAAccountListItem), args.Int(1), args.Error(2)
+}
+
+func (m *MockMerchantVARepository) ListVATransactions(ctx context.Context, filter *domain.VAListFilter) ([]domain.VATransactionListItem, int, error) {
+	args := m.Called(ctx, filter)
+	return args.Get(0).([]domain.VATransactionListItem), args.Int(1), args.Error(2)
+}
+
+func (m *MockMerchantVARepository) SaveNoBillPayment(ctx context.Context, payment *domain.VAPaymentRecord) error {
+	args := m.Called(ctx, payment)
+	return args.Error(0)
 }
 
 // --- CreateVA Tests ---
@@ -396,10 +461,12 @@ func TestMerchantVAUsecase_CreateVA_DynamicNoBill(t *testing.T) {
 		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
 	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000001", nil)
-	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
-		return r.CustomerNo == "04000000000000000001" && r.VAType == "04"
+	// Since feature 013-no-bill-payment-transaction this lands in the VA
+	// registry, not in a pending transaction — the customerNo generation and
+	// echo behavior this test covers is otherwise unchanged.
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.CustomerNo == "04000000000000000001" && a.VAType == "04"
 	})).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
@@ -465,10 +532,9 @@ func TestMerchantVAUsecase_CreateVA_DynamicConcurrent_DistinctCustomerNo(t *test
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, mock.Anything).Return(nil, domain.ErrMerchantVANotFound)
 	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000001", nil).Once()
 	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000002", nil).Once()
-	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.AnythingOfType("*domain.VAAccount")).Return(nil)
 
 	req1 := &domain.MerchantCreateVARequest{
 		PartnerServiceID: "15973", CustomerNo: "", VirtualAccountNo: "15973000000000000011",
@@ -527,9 +593,11 @@ func TestMerchantVAUsecase_CreateVA_StaticNoBill_EchoesCustomerNo(t *testing.T) 
 		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
-	mockRepo.On("RegisterStaticCustomerNo", mock.Anything, "15973", "0001234567").Return(nil)
-	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+	// Since feature 013-no-bill-payment-transaction a static no-bill VA is
+	// registered rather than transacted, and skips the one-shot
+	// RegisterStaticCustomerNo check so a repeat call can update it (FR-005).
+	// The customerNo echo behavior this test covers is unchanged.
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.AnythingOfType("*domain.VAAccount")).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
 
@@ -592,16 +660,22 @@ func TestMerchantVAUsecase_CreateVA_DuplicateStaticCustomerNo_Conflict(t *testin
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
+	// Retargeted from vaType 01 to 02 by feature
+	// 013-no-bill-payment-transaction: a repeat /create-va on a NO-BILL VA is
+	// now an update, not a conflict (FR-005). Static BILL-bearing types keep
+	// the one-shot customerNo rule unchanged (FR-021, research.md R-002), and
+	// that is the behavior this test now guards.
 	req := &domain.MerchantCreateVARequest{
-		PartnerServiceID:   "15973",
+		PartnerServiceID:   "15974",
 		CustomerNo:         "0001234567",
-		VirtualAccountNo:   "159730001234567",
-		VirtualAccountName: "Static NoBill Dup",
+		VirtualAccountNo:   "159740001234567",
+		VirtualAccountName: "Static VariableBill Dup",
 		TrxID:              "trx-static-dup",
-		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
+		TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
+		AdditionalInfo:     map[string]interface{}{"vaType": "02"},
 	}
 
-	mockRepo.On("RegisterStaticCustomerNo", mock.Anything, "15973", "0001234567").Return(domain.ErrVACustomerNoAlreadyRegistered)
+	mockRepo.On("RegisterStaticCustomerNo", mock.Anything, "15974", "0001234567").Return(domain.ErrVACustomerNoAlreadyRegistered)
 
 	resp, err := uc.CreateVA(context.Background(), req)
 
@@ -840,9 +914,10 @@ func TestMerchantVAUsecase_CreateVA_StaticVirtualAccountNoMatch_Succeeds(t *test
 		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
 	}
 
-	mockRepo.On("RegisterStaticCustomerNo", mock.Anything, "15973", "0001234567").Return(nil)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
-	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+	// Registry, not transaction, since feature 013-no-bill-payment-transaction.
+	// The partnerServiceId+customerNo consistency check this test covers is
+	// unchanged.
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.AnythingOfType("*domain.VAAccount")).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
 
@@ -888,9 +963,10 @@ func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoEmpty_AutoDerived(t *
 	}
 
 	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000099", nil)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304000000000000000099").Return(nil, domain.ErrMerchantVANotFound)
-	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
-		return r.VirtualAccountNo == "1597304000000000000000099" && r.CustomerNo == "04000000000000000099"
+	// Registry, not transaction, since feature 013-no-bill-payment-transaction.
+	// The VA-number derivation this test covers is unchanged.
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.VirtualAccountNo == "1597304000000000000000099" && a.CustomerNo == "04000000000000000099"
 	})).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
@@ -915,9 +991,10 @@ func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoSupplied_UsedAsIs(t *
 	}
 
 	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000100", nil)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304999999999999999").Return(nil, domain.ErrMerchantVANotFound)
-	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
-		return r.VirtualAccountNo == "1597304999999999999999" && r.CustomerNo == "04000000000000000100"
+	// Registry, not transaction, since feature 013-no-bill-payment-transaction.
+	// The "honor the merchant's own VA number" behavior is unchanged.
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.VirtualAccountNo == "1597304999999999999999" && a.CustomerNo == "04000000000000000100"
 	})).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
@@ -928,28 +1005,34 @@ func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoSupplied_UsedAsIs(t *
 	mockRepo.AssertExpectations(t)
 }
 
+// Retargeted from vaType 04 to 06 by feature 013-no-bill-payment-transaction:
+// a no-bill VA no longer HAS a pending transaction to conflict with — that
+// removal is the feature. Dynamic BILL-bearing types still create one at
+// create-VA time and still conflict on it (FR-021), which is what this test
+// now guards.
 func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoSupplied_ConflictOnPending(t *testing.T) {
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
 	req := &domain.MerchantCreateVARequest{
-		PartnerServiceID:   "15973",
+		PartnerServiceID:   "15975",
 		CustomerNo:         "",
-		VirtualAccountNo:   "1597304888888888888888",
+		VirtualAccountNo:   "1597506888888888888888",
 		VirtualAccountName: "Dynamic Merchant Chosen Conflict",
 		TrxID:              "trx-dyn-conflict",
-		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+		TotalAmount:        &domain.Amount{Value: "75000.00", Currency: "IDR"},
+		AdditionalInfo:     map[string]interface{}{"vaType": "06"},
 	}
 
 	existing := &domain.VAInquiryRecord{
 		ID:               "existing-id",
-		PartnerServiceID: "15973",
-		VirtualAccountNo: "1597304888888888888888",
+		PartnerServiceID: "15975",
+		VirtualAccountNo: "1597506888888888888888",
 		Status:           "03", // active pending transaction
 	}
 
-	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000101", nil)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304888888888888888").Return(existing, nil)
+	mockRepo.On("NextCustomerNoSequence", mock.Anything, "06").Return("06000000000000000101", nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597506888888888888888").Return(existing, nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
 
@@ -1029,8 +1112,10 @@ func TestMerchantVAUsecase_InquiryVA_UsesServerDerivedVirtualAccountNo(t *testin
 		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
 	}
 	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000200", nil)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "1597304000000000000000200").Return(nil, domain.ErrMerchantVANotFound).Once()
-	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
+	// Registry, not transaction, since feature 013-no-bill-payment-transaction;
+	// CreateVA no longer probes GetVAByVirtualAccountNo for a no-bill VA, so
+	// the only stub of it below belongs to this test's own lookup call.
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.AnythingOfType("*domain.VAAccount")).Return(nil)
 
 	createResp, err := uc.CreateVA(context.Background(), createReq)
 	assert.NoError(t, err)
@@ -1061,17 +1146,23 @@ func TestMerchantVAUsecase_ListVA_Success(t *testing.T) {
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
-	items := []domain.VAListItem{
+	// Since feature 013-no-bill-payment-transaction, ListVA lists registered VA
+	// numbers rather than transactions, so a VA with many payments shows once
+	// with a transaction count (FR-023).
+	items := []domain.VAAccountListItem{
 		{
 			VirtualAccountNo: "08889912345678901234567890",
 			CustomerNo:       "12345678901234567890",
 			CustomerName:     "Jokul Doe",
-			Status:           "03",
+			VAType:           "01",
+			Status:           domain.VAAccountStatusActive,
+			TransactionCount: 3,
+			TotalPaid:        &domain.Amount{Value: "60000.00", Currency: "IDR"},
 			CreatedAt:        time.Now(),
 		},
 	}
 
-	mockRepo.On("ListVA", mock.Anything, mock.AnythingOfType("*domain.VAListFilter")).Return(items, 1, nil)
+	mockRepo.On("ListVAAccounts", mock.Anything, mock.AnythingOfType("*domain.VAAccountListFilter")).Return(items, 1, nil)
 
 	req := &domain.MerchantListVARequest{
 		PartnerServiceID: "088899",
@@ -1093,7 +1184,7 @@ func TestMerchantVAUsecase_ListVA_EmptyResults(t *testing.T) {
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
-	mockRepo.On("ListVA", mock.Anything, mock.AnythingOfType("*domain.VAListFilter")).Return([]domain.VAListItem{}, 0, nil)
+	mockRepo.On("ListVAAccounts", mock.Anything, mock.AnythingOfType("*domain.VAAccountListFilter")).Return([]domain.VAAccountListItem{}, 0, nil)
 
 	req := &domain.MerchantListVARequest{
 		PartnerServiceID: "088899",
@@ -1114,7 +1205,7 @@ func TestMerchantVAUsecase_ListVA_DefaultPagination(t *testing.T) {
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
-	mockRepo.On("ListVA", mock.Anything, mock.AnythingOfType("*domain.VAListFilter")).Return([]domain.VAListItem{}, 0, nil)
+	mockRepo.On("ListVAAccounts", mock.Anything, mock.AnythingOfType("*domain.VAAccountListFilter")).Return([]domain.VAAccountListItem{}, 0, nil)
 
 	req := &domain.MerchantListVARequest{
 		Page:     0, // Invalid, should default to 1
@@ -1242,4 +1333,383 @@ func TestMerchantVAUsecase_DeleteVA_MissingFields(t *testing.T) {
 	var domainErr *domain.DomainError
 	assert.ErrorAs(t, err, &domainErr)
 	assert.Equal(t, "4003101", domainErr.SNAPCode)
+}
+
+// --- No-Bill VA registration (feature 013-no-bill-payment-transaction, US1) ---
+//
+// The defect these cover: /create-va used to insert a PENDING transaction for
+// a no-bill VA, which the first payment then consumed — making the VA payable
+// exactly once and forcing the merchant to re-register before every payment.
+// A no-bill VA is an address, not a transaction: registered once, paid many
+// times, like an e-wallet top-up number.
+
+// noBillCreateVAReq builds a minimal valid static no-bill (vaType 01) request.
+func noBillCreateVAReq() *domain.MerchantCreateVARequest {
+	return &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "0001234567",
+		VirtualAccountNo:   "159730001234567",
+		VirtualAccountName: "NoBill Holder",
+		TrxID:              "trx-nobill-1",
+		AdditionalInfo:     map[string]interface{}{"vaType": "01"},
+	}
+}
+
+// T020: FR-001 / SC-002 — the headline assertion. A no-bill /create-va
+// registers the VA and writes NO transaction.
+func TestMerchantVAUsecase_CreateVA_StaticNoBill_WritesRegistrationNotTransaction(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := noBillCreateVAReq()
+	req.VirtualAccountEmail = "holder@example.com"
+	req.VirtualAccountPhone = "628123456789"
+	req.AdditionalInfo["dbUrlProcess"] = "https://merchant.example.com/callback"
+
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.PartnerServiceID == "15973" &&
+			a.CustomerNo == "0001234567" &&
+			a.VirtualAccountNo == "159730001234567" &&
+			a.VAType == "01" &&
+			a.CustomerName == "NoBill Holder" &&
+			a.CustomerEmail == "holder@example.com" &&
+			a.CustomerPhone == "628123456789" &&
+			a.TrxID == "trx-nobill-1" &&
+			a.NotificationURL == "https://merchant.example.com/callback" &&
+			a.Status == domain.VAAccountStatusActive
+	})).Return(nil).Once()
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+	assert.Equal(t, "0001234567", resp.VirtualAccountData.CustomerNo)
+	mockRepo.AssertExpectations(t)
+	// The whole point of the feature: no transaction row, and no pending-VA
+	// lookup that would gate one.
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+	mockRepo.AssertNotCalled(t, "GetVAByVirtualAccountNo", mock.Anything, mock.Anything)
+}
+
+// T021: FR-003 — dynamic no-bill still generates a sequential customerNo and
+// derives the VA number, but lands in the registry rather than a transaction.
+func TestMerchantVAUsecase_CreateVA_DynamicNoBill_WritesRegistrationNotTransaction(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15973",
+		CustomerNo:         "",
+		VirtualAccountName: "Dynamic NoBill Holder",
+		TrxID:              "trx-dyn-nobill-1",
+		AdditionalInfo:     map[string]interface{}{"vaType": "04"},
+	}
+
+	mockRepo.On("NextCustomerNoSequence", mock.Anything, "04").Return("04000000000000000001", nil).Once()
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.CustomerNo == "04000000000000000001" &&
+			a.VAType == "04" &&
+			// virtualAccountNo omitted by the merchant, so derived per SNAP.
+			a.VirtualAccountNo == "1597304000000000000000001"
+	})).Return(nil).Once()
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+	assert.Equal(t, "04000000000000000001", resp.VirtualAccountData.CustomerNo)
+	assert.Equal(t, "1597304000000000000000001", resp.VirtualAccountData.VirtualAccountNo)
+	mockRepo.AssertExpectations(t)
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+// T022: FR-005 — "create-va only needs to be called once per VA number". A
+// repeat call updates the holder details instead of conflicting, because ASPI
+// models this endpoint as an upsert (VAUpsertRequest).
+func TestMerchantVAUsecase_CreateVA_NoBillRepeatCall_UpdatesRegistration(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	// No pre-read is stubbed on purpose: SaveVAAccount is an upsert keyed on
+	// virtual_account_no, so a repeat call needs no "does it exist yet?" query.
+	// That is precisely why the second call can't conflict.
+	req := noBillCreateVAReq()
+	req.VirtualAccountName = "Renamed Holder"
+	req.TrxID = "trx-nobill-2"
+
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.CustomerName == "Renamed Holder" && a.TrxID == "trx-nobill-2"
+	})).Return(nil).Once()
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+	mockRepo.AssertExpectations(t)
+	// Explicitly NOT 4092700 / 4092701, and still no transaction.
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+	// No-bill VAs skip the one-shot customerNo registration entirely — that
+	// check is what used to make a second call a conflict.
+	mockRepo.AssertNotCalled(t, "RegisterStaticCustomerNo", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// T023: FR-006 — a no-bill VA carries no bill, so totalAmount is rejected and
+// nothing at all is persisted.
+func TestMerchantVAUsecase_CreateVA_NoBillWithTotalAmount_PersistsNothing(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := noBillCreateVAReq()
+	req.TotalAmount = &domain.Amount{Value: "50000.00", Currency: "IDR"}
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4002706", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveVAAccount", mock.Anything, mock.Anything)
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+// T027: FR-021 / spec A-002 — bill-bearing types gain a registration for
+// identity but keep creating their pending transaction at create-VA time.
+func TestMerchantVAUsecase_CreateVA_FixedBill_WritesBothRegistrationAndTransaction(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "15975",
+		CustomerNo:         "0009876543",
+		VirtualAccountNo:   "159750009876543",
+		VirtualAccountName: "Fixed Bill Holder",
+		TrxID:              "trx-fixed-1",
+		TotalAmount:        &domain.Amount{Value: "75000.00", Currency: "IDR"},
+		AdditionalInfo:     map[string]interface{}{"vaType": "03"},
+	}
+
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("RegisterStaticCustomerNo", mock.Anything, "15975", "0009876543").Return(nil)
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.VAType == "03" && a.Status == domain.VAAccountStatusActive
+	})).Return(nil).Once()
+	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
+		return r.Status == "03" && r.TotalAmount == "75000.00" && r.VAType == "03"
+	})).Return(nil).Once()
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+	mockRepo.AssertExpectations(t)
+}
+
+// T028: a registration write failure must surface as a 500, matching how a
+// SaveInquiry failure is handled.
+func TestMerchantVAUsecase_CreateVA_NoBillRegistrationFailure_InternalError(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.Anything).Return(assert.AnError)
+
+	resp, err := uc.CreateVA(context.Background(), noBillCreateVAReq())
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "5002700", domainErr.SNAPCode)
+}
+
+// --- No-Bill VA deactivation (feature 013-no-bill-payment-transaction, US6) ---
+
+func noBillDeleteReq() *domain.MerchantDeleteVARequest {
+	return &domain.MerchantDeleteVARequest{
+		PartnerServiceID: "15973",
+		CustomerNo:       "0001234567",
+		VirtualAccountNo: "159730001234567",
+		TrxID:            "trx-del-1",
+	}
+}
+
+func activeNoBillAccount() *domain.VAAccount {
+	return &domain.VAAccount{
+		ID:               "acc-nobill-del",
+		PartnerServiceID: "15973",
+		CustomerNo:       "0001234567",
+		VirtualAccountNo: "159730001234567",
+		VAType:           "01",
+		Billing:          domain.VATypeBillingNone,
+		CustomerName:     "NoBill Holder",
+		Status:           domain.VAAccountStatusActive,
+	}
+}
+
+// T065 / T069: FR-019 / FR-020 — delete deactivates the registration, and
+// touches no historical transaction. A no-bill VA has no pending transaction
+// to cancel; its settled payments are history and must stay readable.
+func TestMerchantVAUsecase_DeleteVA_NoBill_DeactivatesRegistration(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	mockRepo.On("GetVAAccount", mock.Anything, "159730001234567").Return(activeNoBillAccount(), nil)
+	mockRepo.On("UpdateVAAccountStatus", mock.Anything, "159730001234567", domain.VAAccountStatusInactive).Return(nil).Once()
+
+	resp, err := uc.DeleteVA(context.Background(), noBillDeleteReq())
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2003100", resp.ResponseCode)
+	assert.Equal(t, "159730001234567", resp.VirtualAccountData.VirtualAccountNo)
+	mockRepo.AssertExpectations(t)
+	mockRepo.AssertNotCalled(t, "UpdateVAStatus", mock.Anything, mock.Anything, mock.Anything)
+	mockRepo.AssertNotCalled(t, "GetVAByVirtualAccountNo", mock.Anything, mock.Anything)
+}
+
+// T066: US6 AS4 — repeating the delete is a no-op success. The repository's
+// WHERE status='ACTIVE' guard reports "no ACTIVE row" via ErrVAAccountNotFound,
+// which here means "already deactivated", not "failed".
+func TestMerchantVAUsecase_DeleteVA_NoBill_RepeatIsIdempotent(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	inactive := activeNoBillAccount()
+	inactive.Status = domain.VAAccountStatusInactive
+	mockRepo.On("GetVAAccount", mock.Anything, "159730001234567").Return(inactive, nil)
+	mockRepo.On("UpdateVAAccountStatus", mock.Anything, "159730001234567", domain.VAAccountStatusInactive).
+		Return(domain.ErrVAAccountNotFound)
+
+	resp, err := uc.DeleteVA(context.Background(), noBillDeleteReq())
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2003100", resp.ResponseCode)
+}
+
+// A genuine persistence failure must still surface, not be swallowed by the
+// idempotency allowance above.
+func TestMerchantVAUsecase_DeleteVA_NoBill_PersistFailureIs500(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	mockRepo.On("GetVAAccount", mock.Anything, "159730001234567").Return(activeNoBillAccount(), nil)
+	mockRepo.On("UpdateVAAccountStatus", mock.Anything, "159730001234567", domain.VAAccountStatusInactive).
+		Return(assert.AnError)
+
+	resp, err := uc.DeleteVA(context.Background(), noBillDeleteReq())
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "5003100", domainErr.SNAPCode)
+}
+
+// T074: FR-005 — re-registering a deactivated VA reactivates it, because the
+// registration upsert always writes status=ACTIVE.
+func TestMerchantVAUsecase_CreateVA_NoBill_ReactivatesDeactivatedRegistration(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	mockRepo.On("SaveVAAccount", mock.Anything, mock.MatchedBy(func(a *domain.VAAccount) bool {
+		return a.Status == domain.VAAccountStatusActive
+	})).Return(nil).Once()
+
+	resp, err := uc.CreateVA(context.Background(), noBillCreateVAReq())
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+	mockRepo.AssertExpectations(t)
+}
+
+// Bill-bearing VAs keep the transaction-cancellation delete path untouched
+// (FR-021).
+func TestMerchantVAUsecase_DeleteVA_BillBearing_UsesTransactionPath(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	billed := activeNoBillAccount()
+	billed.VAType = "03"
+	billed.Billing = domain.VATypeBillingFixed
+	mockRepo.On("GetVAAccount", mock.Anything, "159730001234567").Return(billed, nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "159730001234567").
+		Return(&domain.VAInquiryRecord{ID: "txn-1", VirtualAccountNo: "159730001234567", Status: "03"}, nil)
+	mockRepo.On("UpdateVAStatus", mock.Anything, "159730001234567", "04").Return(nil).Once()
+
+	resp, err := uc.DeleteVA(context.Background(), noBillDeleteReq())
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2003100", resp.ResponseCode)
+	mockRepo.AssertExpectations(t)
+	mockRepo.AssertNotCalled(t, "UpdateVAAccountStatus", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// T012/T077/T078: FR-023 / SC-007 — the two listings answer different
+// questions. For a no-bill VA paid three times, ListVA returns 1 entry and
+// ListTransactions returns 3.
+func TestMerchantVAUsecase_ListVA_And_ListTransactions_SeparateViews(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	mockRepo.On("ListVAAccounts", mock.Anything, mock.AnythingOfType("*domain.VAAccountListFilter")).
+		Return([]domain.VAAccountListItem{{
+			VirtualAccountNo: "159730001234567",
+			TransactionCount: 3,
+			TotalPaid:        &domain.Amount{Value: "60000.00", Currency: "IDR"},
+			Status:           domain.VAAccountStatusActive,
+		}}, 1, nil)
+
+	mockRepo.On("ListVATransactions", mock.Anything, mock.AnythingOfType("*domain.VAListFilter")).
+		Return([]domain.VATransactionListItem{
+			{VirtualAccountNo: "159730001234567", PaymentRequestID: "PAY-1", Status: "00"},
+			{VirtualAccountNo: "159730001234567", PaymentRequestID: "PAY-2", Status: "00"},
+			{VirtualAccountNo: "159730001234567", PaymentRequestID: "PAY-3", Status: "00"},
+		}, 3, nil)
+
+	req := &domain.MerchantListVARequest{VirtualAccountNo: "159730001234567", Page: 1, PageSize: 20}
+
+	vaResp, err := uc.ListVA(context.Background(), req)
+	require.NoError(t, err)
+	assert.Len(t, vaResp.Data, 1, "one VA")
+	assert.Equal(t, 3, vaResp.Data[0].TransactionCount)
+
+	txnResp, err := uc.ListTransactions(context.Background(), req)
+	require.NoError(t, err)
+	assert.Len(t, txnResp.Data, 3, "three transactions")
+	assert.Equal(t, 3, txnResp.Pagination.TotalRows)
+	mockRepo.AssertExpectations(t)
+}
+
+// Paging is clamped identically on both listings.
+func TestMerchantVAUsecase_ListTransactions_NormalizesPaging(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	var captured *domain.VAListFilter
+	mockRepo.On("ListVATransactions", mock.Anything, mock.AnythingOfType("*domain.VAListFilter")).
+		Run(func(args mock.Arguments) { captured = args.Get(1).(*domain.VAListFilter) }).
+		Return([]domain.VATransactionListItem{}, 0, nil)
+
+	resp, err := uc.ListTransactions(context.Background(), &domain.MerchantListVARequest{Page: 0, PageSize: 5000})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Pagination.Page)
+	assert.Equal(t, 20, resp.Pagination.PageSize)
+	assert.Equal(t, 0, captured.Offset)
+	assert.Equal(t, 20, captured.Limit)
+}
+
+func TestMerchantVAUsecase_ListTransactions_RepositoryFailureIs500(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	mockRepo.On("ListVATransactions", mock.Anything, mock.Anything).
+		Return([]domain.VATransactionListItem{}, 0, assert.AnError)
+
+	resp, err := uc.ListTransactions(context.Background(), &domain.MerchantListVARequest{Page: 1, PageSize: 20})
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "5002400", domainErr.SNAPCode)
 }
