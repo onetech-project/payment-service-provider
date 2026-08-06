@@ -11,11 +11,17 @@ import (
 
 // VAInquiryRequest represents inbound inquiry from vendor
 type VAInquiryRequest struct {
-	PartnerServiceID string                 `json:"partnerServiceId"`
-	CustomerNo       string                 `json:"customerNo"`
-	VirtualAccountNo string                 `json:"virtualAccountNo"`
-	TrxDateInit      *time.Time             `json:"txnDateInit,omitempty"`
-	Amount           *Amount                `json:"amount"`
+	PartnerServiceID string `json:"partnerServiceId"`
+	CustomerNo       string `json:"customerNo"`
+	VirtualAccountNo string `json:"virtualAccountNo"`
+	// TrxDateInit is spelled trxDateInit by BCA (Developer API BCA, inquiry
+	// payload). It was previously tagged "txnDateInit", which silently never
+	// bound.
+	TrxDateInit *time.Time `json:"trxDateInit,omitempty"`
+	// Amount is NOT part of BCA's inquiry payload. It is kept as an optional
+	// passthrough for vendors that send one, but must never be required —
+	// requiring it rejects every conformant BCA inquiry.
+	Amount           *Amount                `json:"amount,omitempty"`
 	ChannelCode      int                    `json:"channelCode,omitempty"`
 	InquiryRequestID string                 `json:"inquiryRequestId"`
 	AdditionalInfo   map[string]interface{} `json:"additionalInfo,omitempty"`
@@ -153,9 +159,9 @@ func (r VAPaymentResponse) MarshalJSON() ([]byte, error) {
 // VAPaymentStatus contains payment flag status and echoes back the
 // identity/amount fields from PaymentResponse.virtualAccountData per ASPI spec.
 type VAPaymentStatus struct {
-	PartnerServiceID    string                `json:"partnerServiceId"`
-	CustomerNo          string                `json:"customerNo"`
-	VirtualAccountNo    string                `json:"virtualAccountNo"`
+	PartnerServiceID string `json:"partnerServiceId"`
+	CustomerNo       string `json:"customerNo"`
+	VirtualAccountNo string `json:"virtualAccountNo"`
 	// VirtualAccountName carries no omitempty: it is reported even when empty,
 	// including on the not-found rejection where there is no stored holder to
 	// name. Email/phone below stay omitempty — those are genuinely optional
@@ -209,9 +215,10 @@ type VAStatusRequest struct {
 
 // VAStatusResponse represents response to vendor status inquiry
 type VAStatusResponse struct {
-	ResponseCode       string        `json:"responseCode"`
-	ResponseMessage    string        `json:"responseMessage"`
-	VirtualAccountData *VAStatusData `json:"virtualAccountData,omitempty"`
+	ResponseCode       string                 `json:"responseCode"`
+	ResponseMessage    string                 `json:"responseMessage"`
+	VirtualAccountData *VAStatusData          `json:"virtualAccountData,omitempty"`
+	AdditionalInfo     map[string]interface{} `json:"additionalInfo,omitempty"`
 }
 
 // VAStatusData contains status inquiry result
@@ -306,7 +313,22 @@ type VARepository interface {
 	// Static/Dynamic VA methods (feature 006-static-dynamic-va)
 	NextCustomerNoSequence(ctx context.Context, vaType string) (string, error)
 	RegisterStaticCustomerNo(ctx context.Context, partnerServiceID, customerNo string) error
-	SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (paidAmount string, status string, err error)
+	// FindVAInstalment looks up an already-recorded variable-bill instalment
+	// by paymentRequestId, returning the transaction it belongs to and the
+	// cumulative amount paid against that transaction. found is false when no
+	// such instalment exists.
+	//
+	// Instalments live in their own table, not in va_transactions, so the
+	// GetPayment idempotency check cannot see them. Without this lookup a
+	// replayed instalment whose bill has since settled is answered "Paid
+	// Bill" instead of being replayed.
+	FindVAInstalment(ctx context.Context, paymentRequestID string) (transactionID string, cumulativePaid string, found bool, err error)
+	// SaveVAPayment records one instalment against a variable-bill VA and
+	// returns the cumulative total and resulting transaction status.
+	// paymentRequestID is the dedup key: recorded is false when an instalment
+	// with that id was already on file, so the caller replays the outcome
+	// instead of crediting the same money twice.
+	SaveVAPayment(ctx context.Context, transactionID, paymentRequestID, amount, referenceNo string) (paidAmount string, status string, recorded bool, err error)
 	// VA registry methods (feature 013-no-bill-payment-transaction)
 	SaveVAAccount(ctx context.Context, account *VAAccount) error
 	GetVAAccount(ctx context.Context, virtualAccountNo string) (*VAAccount, error)
@@ -731,6 +753,44 @@ const (
 	VATypeBillingVariable VATypeBilling = "variable" // variable bill: cumulative target, multiple payments allowed
 	VATypeBillingFixed    VATypeBilling = "fixed"    // fixed bill: single fixed amount set at creation
 )
+
+// IsPlaceholderInquiryRequestID reports whether a transaction's stored
+// inquiry_request_id is a create-va placeholder rather than a vendor's real
+// id, and may therefore be claimed by the first inquiry that arrives.
+//
+// Three shapes are placeholders, one per generation of the create-va writer:
+// "" (before the UNIQUE constraint on the column made that unusable for more
+// than one VA), a copy of trxId, and the VA number itself (current).
+func IsPlaceholderInquiryRequestID(inquiryRequestID, trxID, virtualAccountNo string) bool {
+	return inquiryRequestID == "" ||
+		(trxID != "" && inquiryRequestID == trxID) ||
+		inquiryRequestID == virtualAccountNo
+}
+
+// BillingForVAType classifies a bare vaType code when no va_accounts
+// registration is available to read Billing from — i.e. transactions created
+// before feature 013's registry existed. The seeded master_va_type mapping is
+// mirrored here (01/04 none, 02/05 variable, 03/06 fixed).
+//
+// This is the FALLBACK only. When a registration exists, its stored Billing is
+// authoritative: it was resolved from master data at create-va time, so a VA
+// keeps the contract it was issued under, and operator-added VA types work
+// with no code change.
+func BillingForVAType(vaType string) VATypeBilling {
+	switch vaType {
+	case "01", "04":
+		return VATypeBillingNone
+	case "02", "05":
+		return VATypeBillingVariable
+	case "03", "06":
+		return VATypeBillingFixed
+	default:
+		// An unknown or empty vaType predates the classification entirely.
+		// Treating it as fixed would impose an exact-amount check that such a
+		// VA was never issued under, so it is left unclassified.
+		return ""
+	}
+}
 
 // VATypeRule describes one of the recognized partnerServiceId +
 // additionalInfo.vaType combinations, sourced from the master_va_type table

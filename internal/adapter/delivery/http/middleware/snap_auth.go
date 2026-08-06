@@ -14,133 +14,234 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// SNAPAuthMiddleware validates SNAP authentication headers based on vendor
-// config. skipSkewCheck disables the ±5 minute X-TIMESTAMP freshness check —
+// maxExternalIDLength is BCA's documented X-EXTERNAL-ID limit (String(36) Max)
+// for every transfer-va service.
+const maxExternalIDLength = 36
+
+// SNAP header names.
+const (
+	headerTimestamp  = "X-TIMESTAMP"
+	headerSignature  = "X-SIGNATURE"
+	headerPartnerID  = "X-PARTNER-ID"
+	headerExternalID = "X-EXTERNAL-ID"
+	headerChannelID  = "CHANNEL-ID"
+)
+
+// SNAPAuthMiddleware validates SNAP authentication headers for a single
+// vendor. skipSkewCheck disables the ±5 minute X-TIMESTAMP freshness check —
 // intended for APP_ENV=dev/uat only.
 func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTIssuer, skipSkewCheck bool) echo.MiddlewareFunc {
+	return MultiVendorSNAPAuth([]*config.VendorConfig{vendorConfig}, jwtIssuer, skipSkewCheck)
+}
+
+// MultiVendorSNAPAuth authenticates a request against ANY of the configured
+// vendors, and records which one on the echo context.
+//
+// This exists because the router cannot do it. Registering the same
+// method+path once per vendor — each wrapped in its own single-vendor
+// middleware — does not stack: echo replaces the route, so only the last
+// vendor registered was ever reachable and every other vendor's traffic was
+// rejected with that vendor's credentials. Resolution has to happen inside one
+// handler chain, keyed on what the request actually carries.
+//
+// Every rejection carries the service code of the endpoint being called
+// (24 inquiry / 25 payment / 26 status), because BCA matches responseCode
+// against the service it invoked and rejects the transaction outright if the
+// code is not one it recognises for that service.
+func MultiVendorSNAPAuth(vendorConfigs []*config.VendorConfig, jwtIssuer domain.JWTIssuer, skipSkewCheck bool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			// Get required headers from config
-			requiredHeaders := vendorConfig.RequiredHeaders
-			if len(requiredHeaders) == 0 {
-				// Default SNAP required headers per ASPI spec for transfer-va
-				// endpoints: X-TIMESTAMP, X-SIGNATURE, X-PARTNER-ID, X-EXTERNAL-ID.
-				// X-CLIENT-KEY is NOT part of this list — it is only used on the
-				// access-token endpoint, never on transaction endpoints.
-				requiredHeaders = []string{"X-TIMESTAMP", "X-SIGNATURE"}
-			}
+			service := domain.ServiceCodeForPath(c.Request().URL.Path)
 
-			// Validate required headers
-			for _, header := range requiredHeaders {
-				value := c.Request().Header.Get(header)
-				if value == "" {
-					return c.JSON(http.StatusUnauthorized, map[string]string{
-						"responseCode":    "4010000",
-						"responseMessage": "Unauthorized. [Missing required header: " + header + "]",
-					})
-				}
-			}
-
-			// Validate timestamp format (ISO 8601)
-			timestamp := c.Request().Header.Get("X-TIMESTAMP")
-			if !isValidISO8601(timestamp) {
-				return c.JSON(http.StatusBadRequest, map[string]string{
-					"responseCode":    "4000001",
-					"responseMessage": "Invalid Field Format [X-TIMESTAMP]",
-				})
-			}
-
-			// Validate CHANNEL-ID if required
-			if vendorConfig.ChannelID != "" {
-				channelID := c.Request().Header.Get("CHANNEL-ID")
-				if channelID == "" {
-					return c.JSON(http.StatusBadRequest, map[string]string{
-						"responseCode":    "4000002",
-						"responseMessage": "Invalid Mandatory Field [CHANNEL-ID]",
-					})
-				}
-			}
-
-			// Validate X-PARTNER-ID if required
-			if vendorConfig.PartnerID != "" {
-				partnerID := c.Request().Header.Get("X-PARTNER-ID")
-				if partnerID == "" {
-					return c.JSON(http.StatusBadRequest, map[string]string{
-						"responseCode":    "4000002",
-						"responseMessage": "Invalid Mandatory Field [X-PARTNER-ID]",
-					})
-				}
-			}
-
-			// Validate X-EXTERNAL-ID for non-GET requests
-			if c.Request().Method != http.MethodGet {
-				externalID := c.Request().Header.Get("X-EXTERNAL-ID")
-				if externalID == "" {
-					return c.JSON(http.StatusBadRequest, map[string]string{
-						"responseCode":    "4000002",
-						"responseMessage": "Invalid Mandatory Field [X-EXTERNAL-ID]",
-					})
-				}
-			}
-
-			// Timestamp freshness (feature 009-transfer-va-auth, FR-003):
-			// reject requests whose X-TIMESTAMP is stale or too far in the
-			// future, independent of signature validity. Same ±5 minute
-			// tolerance already used for the B2B token endpoint
-			// (internal/usecase/token_usecase.go), skippable via skipSkewCheck.
-			parsedTimestamp, err := time.Parse(time.RFC3339, timestamp)
-			if err != nil {
-				return c.JSON(http.StatusUnauthorized, map[string]string{
-					"responseCode":    "4010000",
-					"responseMessage": "Unauthorized. [Invalid X-TIMESTAMP]",
-				})
-			}
-			if !skipSkewCheck && (time.Since(parsedTimestamp) > 5*time.Minute || time.Until(parsedTimestamp) > 5*time.Minute) {
-				return c.JSON(http.StatusUnauthorized, map[string]string{
-					"responseCode":    "4010000",
-					"responseMessage": "Unauthorized. [Timestamp skew exceeds 5 minutes]",
-				})
-			}
-
-			// HMAC signature verification (feature 009-transfer-va-auth,
-			// FR-001/FR-002/FR-004): recompute the expected signature from
-			// the raw request body using the vendor/channel's shared secret,
-			// and compare against X-SIGNATURE. Fails closed (rejects) if the
-			// shared secret is unconfigured. The request body is read here
-			// and immediately re-buffered so the downstream handler can
-			// still bind it (same pattern as IdempotencyMiddleware).
-			// Access-token binding (feature 011-vendor-access-token-signature):
-			// vendors migrated to ClientID-based onboarding must present a
-			// valid bearer token, which becomes the AccessToken component of
-			// stringToSign below. Legacy vendors (no ClientID configured)
-			// keep today's empty-string convention unchanged.
-			accessToken, errResp := resolveVendorAccessToken(c, vendorConfig, jwtIssuer)
-			if errResp != nil {
-				return errResp(c)
-			}
-
+			// The body is read once, here, and re-buffered for the handler
+			// (same pattern as IdempotencyMiddleware). Reading it per
+			// candidate would consume it after the first attempt.
 			bodyBytes, err := io.ReadAll(c.Request().Body)
 			if err != nil {
-				return c.JSON(http.StatusUnauthorized, map[string]string{
-					"responseCode":    "4010000",
-					"responseMessage": "Unauthorized. [Unable to read request body]",
-				})
+				return snapUnauthorized(c, service, "Unauthorized. [Unable to read request body]")
 			}
 			c.Request().Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-			bodyHash := crypto.HashSHA256Base64(string(bodyBytes))
-			stringToSign := crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, accessToken, bodyHash, timestamp)
-			signer := crypto.NewHMACSigner(vendorConfig.ClientSecret, vendorConfig.SignatureAlgorithm)
-			if vendorConfig.ClientSecret == "" || !signer.Verify(stringToSign, c.Request().Header.Get("X-SIGNATURE")) {
-				return c.JSON(http.StatusUnauthorized, map[string]string{
-					"responseCode":    "4010000",
-					"responseMessage": "Unauthorized. [Invalid signature]",
-				})
+			candidates := candidateVendors(c, vendorConfigs)
+			if len(candidates) == 0 {
+				return snapUnauthorized(c, service, "Unauthorized. [Unknown client]")
 			}
 
-			return next(c)
+			// Try each candidate in turn. The first vendor whose credentials
+			// verify owns the request; if none does, the first candidate's
+			// rejection is the one reported, since that is the vendor the
+			// headers claimed to be.
+			var firstRejection func(echo.Context) error
+			for _, vendorConfig := range candidates {
+				rejection := authenticateVendor(c, vendorConfig, jwtIssuer, service, skipSkewCheck, bodyBytes)
+				if rejection == nil {
+					c.Set(domain.ContextKeyVendor, domain.VendorContext{
+						Vendor:                vendorConfig.Vendor,
+						Channel:               vendorConfig.Channel,
+						StrictMandatoryFields: vendorConfig.StrictMandatoryFields,
+					})
+					c.Request().Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+					return next(c)
+				}
+				if firstRejection == nil {
+					firstRejection = rejection
+				}
+			}
+			return firstRejection(c)
 		}
 	}
+}
+
+// candidateVendors narrows the configured vendors to those whose pinned
+// X-PARTNER-ID / CHANNEL-ID match what the request carries. A vendor that
+// pins neither matches anything, which is how a single-vendor deployment with
+// no allow-list keeps working.
+func candidateVendors(c echo.Context, vendorConfigs []*config.VendorConfig) []*config.VendorConfig {
+	partnerID := c.Request().Header.Get(headerPartnerID)
+	channelID := c.Request().Header.Get(headerChannelID)
+
+	var candidates []*config.VendorConfig
+	for _, vendorConfig := range vendorConfigs {
+		if vendorConfig.PartnerID != "" && partnerID != "" && !matchesAllowedValue(partnerID, vendorConfig.PartnerID) {
+			continue
+		}
+		if vendorConfig.ChannelID != "" && channelID != "" && !matchesAllowedValue(channelID, vendorConfig.ChannelID) {
+			continue
+		}
+		candidates = append(candidates, vendorConfig)
+	}
+
+	// No vendor claims these header values. Keep every config as a candidate
+	// so the rejection comes from the normal header/signature checks — which
+	// name the offending header — rather than a bare "unknown client".
+	if len(candidates) == 0 {
+		return vendorConfigs
+	}
+	return candidates
+}
+
+// authenticateVendor runs the full check chain for one vendor, returning nil
+// when the request is authentic and a rejection renderer otherwise.
+func authenticateVendor(
+	c echo.Context,
+	vendorConfig *config.VendorConfig,
+	jwtIssuer domain.JWTIssuer,
+	service string,
+	skipSkewCheck bool,
+	bodyBytes []byte,
+) func(echo.Context) error {
+	if resp := validateSNAPHeaders(c, vendorConfig, service); resp != nil {
+		return resp
+	}
+
+	timestamp := c.Request().Header.Get(headerTimestamp)
+	if resp := validateSNAPTimestamp(timestamp, service, skipSkewCheck); resp != nil {
+		return resp
+	}
+
+	// Access-token binding (feature 011-vendor-access-token-signature):
+	// vendors migrated to ClientID-based onboarding must present a valid
+	// `Authorization: Bearer <token>` header, which becomes the AccessToken
+	// component of stringToSign below. Legacy vendors (no ClientID
+	// configured) keep today's empty-string convention unchanged.
+	accessToken, errResp := resolveVendorAccessToken(c, vendorConfig, jwtIssuer, service)
+	if errResp != nil {
+		return errResp
+	}
+
+	// stringToSign per BCA "Signature Symmetric":
+	//   HTTPMethod:RelativeUrl:AccessToken:
+	//   Lowercase(HexEncode(SHA-256(MinifyJson(RequestBody)))):Timestamp
+	// The minify step and the hash encoding both live in HashRequestBody; the
+	// encoding is per-vendor so vendors onboarded under feature
+	// 012-base64-hash-encoding keep working.
+	bodyHash := crypto.HashRequestBody(bodyBytes, vendorConfig.BodyHashEncoding)
+	stringToSign := crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, accessToken, bodyHash, timestamp)
+	signer := crypto.NewHMACSigner(vendorConfig.ClientSecret, vendorConfig.SignatureAlgorithm)
+	if vendorConfig.ClientSecret == "" || !signer.Verify(stringToSign, c.Request().Header.Get(headerSignature)) {
+		return snapUnauthorizedFn(service, "Unauthorized. [Signature]")
+	}
+
+	return nil
+}
+
+// validateSNAPHeaders checks presence, format and — where the vendor config
+// pins them — the VALUES of the SNAP headers. Comparing the values is the
+// point: a CHANNEL-ID/X-PARTNER-ID that is merely non-empty proves nothing,
+// and BCA pins both (CHANNEL-ID 95231 for VA, X-PARTNER-ID = company code).
+func validateSNAPHeaders(c echo.Context, vendorConfig *config.VendorConfig, service string) func(echo.Context) error {
+	requiredHeaders := vendorConfig.RequiredHeaders
+	if len(requiredHeaders) == 0 {
+		// Default SNAP required headers per ASPI spec for transfer-va
+		// endpoints. X-CLIENT-KEY is NOT part of this list — it is only used
+		// on the access-token endpoint, never on transaction endpoints.
+		requiredHeaders = []string{"X-TIMESTAMP", "X-SIGNATURE"}
+	}
+
+	for _, header := range requiredHeaders {
+		if c.Request().Header.Get(strings.TrimSpace(header)) == "" {
+			return snapMissingMandatory(service, strings.TrimSpace(header))
+		}
+	}
+
+	if resp := validatePinnedHeader(c, headerChannelID, vendorConfig.ChannelID, service, "Unauthorized. [Unknown channel]"); resp != nil {
+		return resp
+	}
+	if resp := validatePinnedHeader(c, headerPartnerID, vendorConfig.PartnerID, service, "Unauthorized. [Unknown client]"); resp != nil {
+		return resp
+	}
+
+	if c.Request().Method != http.MethodGet {
+		externalID := c.Request().Header.Get(headerExternalID)
+		if externalID == "" {
+			return snapMissingMandatory(service, headerExternalID)
+		}
+		if len(externalID) > maxExternalIDLength {
+			return snapInvalidField(service, headerExternalID)
+		}
+	}
+
+	return nil
+}
+
+// validatePinnedHeader enforces a header whose accepted value(s) the vendor
+// config pins. A blank allowed value means the vendor has not pinned it, in
+// which case the header is not enforced here at all.
+func validatePinnedHeader(c echo.Context, header, allowed, service, mismatchMessage string) func(echo.Context) error {
+	if allowed == "" {
+		return nil
+	}
+	value := c.Request().Header.Get(header)
+	if value == "" {
+		return snapMissingMandatory(service, header)
+	}
+	if !matchesAllowedValue(value, allowed) {
+		return snapUnauthorizedFn(service, mismatchMessage)
+	}
+	return nil
+}
+
+// matchesAllowedValue reports whether value matches one of a comma-separated
+// allow-list. Comma-separated is supported because one deployment commonly
+// serves several company codes for the same vendor.
+func matchesAllowedValue(value, allowed string) bool {
+	for _, entry := range strings.Split(allowed, ",") {
+		if strings.TrimSpace(entry) == strings.TrimSpace(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateSNAPTimestamp(timestamp, service string, skipSkewCheck bool) func(echo.Context) error {
+	parsed, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return snapInvalidField(service, "X-TIMESTAMP")
+	}
+	if !skipSkewCheck && (time.Since(parsed) > 5*time.Minute || time.Until(parsed) > 5*time.Minute) {
+		return snapUnauthorizedFn(service, "Unauthorized. [Timestamp skew exceeds 5 minutes]")
+	}
+	return nil
 }
 
 // resolveVendorAccessToken implements feature 011-vendor-access-token-signature:
@@ -150,60 +251,69 @@ func SNAPAuthMiddleware(vendorConfig *config.VendorConfig, jwtIssuer domain.JWTI
 // to be bound into stringToSign. Legacy vendors (ClientID empty) are
 // untouched — "", nil is returned immediately, preserving today's
 // empty-AccessToken-component convention.
-func resolveVendorAccessToken(c echo.Context, vendorConfig *config.VendorConfig, jwtIssuer domain.JWTIssuer) (string, func(echo.Context) error) {
+func resolveVendorAccessToken(c echo.Context, vendorConfig *config.VendorConfig, jwtIssuer domain.JWTIssuer, service string) (string, func(echo.Context) error) {
 	if vendorConfig.ClientID == "" {
 		return "", nil
 	}
 
 	authHeader := c.Request().Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return "", func(c echo.Context) error {
-			return c.JSON(http.StatusUnauthorized, map[string]string{
-				"responseCode":    "4010000",
-				"responseMessage": "Unauthorized. [Missing or invalid Authorization header]",
-			})
-		}
+		return "", snapInvalidTokenFn(service)
 	}
 
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 	claims, err := jwtIssuer.ValidateToken(token)
 	if err != nil {
-		return "", func(c echo.Context) error {
-			return c.JSON(http.StatusUnauthorized, map[string]string{
-				"responseCode":    "4010000",
-				"responseMessage": "Unauthorized. [Invalid or expired access token]",
-			})
-		}
+		return "", snapInvalidTokenFn(service)
 	}
 
 	if claims.ClientID != vendorConfig.ClientID {
-		return "", func(c echo.Context) error {
-			return c.JSON(http.StatusUnauthorized, map[string]string{
-				"responseCode":    "4010000",
-				"responseMessage": "Unauthorized. [Invalid signature]",
-			})
-		}
+		return "", snapUnauthorizedFn(service, "Unauthorized. [Unknown client]")
 	}
 
 	return token, nil
 }
 
-// isValidISO8601 validates ISO 8601 timestamp format
-func isValidISO8601(s string) bool {
-	// Basic validation: must contain 'T' and be at least 19 chars
-	if len(s) < 19 {
-		return false
+// --- rejection helpers -------------------------------------------------
+//
+// 401s carry the bare two-field body: BCA's Appendix A shows "-" in the
+// status column for both Unauthorized and Invalid Token, meaning no
+// virtualAccountData is expected. 400s DO carry it, with status "01".
+
+func snapUnauthorized(c echo.Context, service, message string) error {
+	return c.JSON(http.StatusUnauthorized,
+		domain.NewSNAPErrorResponse(domain.CodeUnauthorized(service), message))
+}
+
+func snapUnauthorizedFn(service, message string) func(echo.Context) error {
+	return func(c echo.Context) error { return snapUnauthorized(c, service, message) }
+}
+
+func snapInvalidTokenFn(service string) func(echo.Context) error {
+	return func(c echo.Context) error {
+		return c.JSON(http.StatusUnauthorized,
+			domain.NewSNAPErrorResponse(domain.CodeInvalidToken(service), "Invalid Token (B2B)"))
 	}
-	if !strings.Contains(s, "T") {
-		return false
+}
+
+func snapMissingMandatory(service, field string) func(echo.Context) error {
+	return func(c echo.Context) error {
+		return c.JSON(http.StatusBadRequest, domain.NewSNAPErrorBody(
+			service,
+			domain.CodeMissingMandatory(service),
+			"Invalid Mandatory Field ["+field+"]",
+			domain.VAIdentityEcho{},
+		))
 	}
-	// Check date part (YYYY-MM-DD)
-	if s[4] != '-' || s[7] != '-' {
-		return false
+}
+
+func snapInvalidField(service, field string) func(echo.Context) error {
+	return func(c echo.Context) error {
+		return c.JSON(http.StatusBadRequest, domain.NewSNAPErrorBody(
+			service,
+			domain.CodeInvalidField(service),
+			"Invalid Field Format ["+field+"]",
+			domain.VAIdentityEcho{},
+		))
 	}
-	// Check time part (HH:MM:SS)
-	if s[13] != ':' || s[16] != ':' {
-		return false
-	}
-	return true
 }

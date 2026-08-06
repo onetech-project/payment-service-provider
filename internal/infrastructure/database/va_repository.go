@@ -130,6 +130,16 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 			notification_url = EXCLUDED.notification_url,
 			sub_company = COALESCE(NULLIF(EXCLUDED.sub_company, ''), va_transactions.sub_company),
 			expired_date = EXCLUDED.expired_date,
+			-- A VA number is reusable once its previous transaction reached a
+			-- terminal state, and the new cycle may carry a different bill.
+			-- Leaving these untouched kept the OLD amount and holder on the
+			-- row, so the next payment was validated against the previous
+			-- cycle's bill.
+			customer_name = COALESCE(NULLIF(EXCLUDED.customer_name, ''), va_transactions.customer_name),
+			trx_id = COALESCE(NULLIF(EXCLUDED.trx_id, ''), va_transactions.trx_id),
+			va_type = COALESCE(NULLIF(EXCLUDED.va_type, ''), va_transactions.va_type),
+			total_amount = EXCLUDED.total_amount,
+			currency = EXCLUDED.currency,
 			updated_at = EXCLUDED.updated_at
 		RETURNING id`
 
@@ -207,19 +217,29 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 // inquiry with a different id can never rewrite the value that Status and
 // Payment resolve this transaction by.
 //
-// Unclaimed has two shapes. '' is what create-va writes. A copy of trx_id is
+// Unclaimed has two shapes. ” is what create-va writes. A copy of trx_id is
 // what rows written before create-va stopped filling the column carry — also a
 // placeholder, never a vendor-supplied id, so it is replaced the same way.
 func (r *VARepository) ClaimInquiryRequestID(ctx context.Context, id string, inquiryRequestID string) error {
-	// NULL is a third spelling of "no vendor id yet", alongside '' and a copy of
-	// trx_id: rows created before create-va started writing '' carry it. It has
-	// to be named explicitly — NULL = '' is unknown, not true, so without this
-	// the UPDATE silently matches 0 rows and the VA stays permanently
-	// unreachable by inquiryRequestId (Status and Payment resolve it by that id).
+	// The placeholder set must stay in step with
+	// domain.IsPlaceholderInquiryRequestID: '' and a copy of trx_id from
+	// earlier create-va generations, and the VA number from the current one.
+	// A placeholder missing from this list makes the claim a silent no-op —
+	// the row keeps the placeholder, and every later Status() lookup by the
+	// vendor's real inquiryRequestId reports Transaction Not Found.
+	//
+	// NULL is a fourth spelling, carried by rows created before create-va
+	// started writing '' at all. It has to be named explicitly — NULL = '' is
+	// unknown, not true, so without the IS NULL arm the UPDATE silently matches
+	// 0 rows and the VA stays permanently unreachable by inquiryRequestId.
 	query := `
 		UPDATE va_transactions
 		SET inquiry_request_id = $2, updated_at = NOW()
-		WHERE id = $1 AND (inquiry_request_id IS NULL OR inquiry_request_id = '' OR inquiry_request_id = trx_id)`
+		WHERE id = $1
+		  AND (inquiry_request_id IS NULL
+		       OR inquiry_request_id = ''
+		       OR inquiry_request_id = trx_id
+		       OR inquiry_request_id = virtual_account_no)`
 
 	_, err := r.pool.Exec(ctx, query, id, inquiryRequestID)
 	return err
@@ -324,14 +344,21 @@ func (r *VARepository) SavePayment(ctx context.Context, payment *domain.VAPaymen
 
 // GetPayment retrieves a VA payment by payment request ID
 func (r *VARepository) GetPayment(ctx context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
+	// payment_request_id, paid_amount and reference_no are NULL on a row that
+	// has not been through the single-settlement payment path — a
+	// variable-bill VA settles through va_payments instead, and its
+	// transaction row keeps them NULL. Scanning those into strings failed,
+	// turning a perfectly good status inquiry into a 500.
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, COALESCE(customer_email, ''),
-			COALESCE(customer_phone, ''), virtual_account_no, inquiry_request_id, trx_id, payment_request_id,
-			COALESCE(total_amount, paid_amount), paid_amount, currency, status, reference_no,
+			COALESCE(customer_phone, ''), virtual_account_no, inquiry_request_id, trx_id,
+			COALESCE(payment_request_id, ''),
+			COALESCE(total_amount, paid_amount, 0), COALESCE(paid_amount, 0), currency, status,
+			COALESCE(reference_no, ''),
 			COALESCE(channel_code, ''), COALESCE(hashed_source_account_no, ''), COALESCE(source_bank_code, ''),
 			COALESCE(journal_num, ''), COALESCE(payment_type, ''), COALESCE(flag_advise, ''),
 			COALESCE(paid_bills, ''), COALESCE(sub_company, ''), trx_date_time, free_texts,
-			transaction_date, created_at, updated_at
+			COALESCE(transaction_date, updated_at), created_at, updated_at
 		FROM va_transactions
 		WHERE payment_request_id = $1 OR inquiry_request_id = $1`
 
@@ -823,19 +850,55 @@ func (r *VARepository) RegisterStaticCustomerNo(ctx context.Context, partnerServ
 // transaction, recalculates the cumulative paid_amount, and transitions the
 // transaction to fully-paid ("00") once it reaches total_amount (feature
 // 006-static-dynamic-va, FR-013).
-func (r *VARepository) SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (paidAmount string, status string, err error) {
+// FindVAInstalment implements domain.VARepository.
+func (r *VARepository) FindVAInstalment(ctx context.Context, paymentRequestID string) (string, string, bool, error) {
+	if paymentRequestID == "" {
+		return "", "", false, nil
+	}
+
+	var transactionID string
+	err := r.pool.QueryRow(ctx,
+		`SELECT transaction_id FROM va_payments WHERE payment_request_id = $1`,
+		paymentRequestID,
+	).Scan(&transactionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+
+	var cumulative string
+	if err := r.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(amount), 0)::text FROM va_payments WHERE transaction_id = $1`,
+		transactionID,
+	).Scan(&cumulative); err != nil {
+		return "", "", false, err
+	}
+	return transactionID, cumulative, true, nil
+}
+
+func (r *VARepository) SaveVAPayment(ctx context.Context, transactionID, paymentRequestID, amount, referenceNo string) (paidAmount string, status string, recorded bool, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO va_payments (id, transaction_id, amount, reference_no) VALUES ($1, $2, $3, $4)`,
-		uuid.New().String(), transactionID, amount, referenceNo,
-	); err != nil {
-		return "", "", err
+	// ON CONFLICT DO NOTHING on paymentRequestId is what stops a retried or
+	// double-flagged instalment from being credited twice. recorded=false
+	// tells the caller this payment was already on file, so it should replay
+	// the outcome rather than notify the merchant again.
+	tag, execErr := tx.Exec(ctx,
+		`INSERT INTO va_payments (id, transaction_id, payment_request_id, amount, reference_no)
+		 VALUES ($1, $2, NULLIF($3, ''), $4, $5)
+		 ON CONFLICT (payment_request_id) WHERE payment_request_id IS NOT NULL DO NOTHING`,
+		uuid.New().String(), transactionID, paymentRequestID, amount, referenceNo,
+	)
+	if execErr != nil {
+		return "", "", false, execErr
 	}
+	recorded = tag.RowsAffected() > 0
 
 	var totalAmount string
 	err = tx.QueryRow(ctx,
@@ -843,7 +906,7 @@ func (r *VARepository) SaveVAPayment(ctx context.Context, transactionID string, 
 		transactionID,
 	).Scan(&paidAmount)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 
 	err = tx.QueryRow(ctx,
@@ -851,7 +914,7 @@ func (r *VARepository) SaveVAPayment(ctx context.Context, transactionID string, 
 		transactionID,
 	).Scan(&totalAmount)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 
 	status = "03"
@@ -865,14 +928,14 @@ func (r *VARepository) SaveVAPayment(ctx context.Context, transactionID string, 
 		`UPDATE va_transactions SET paid_amount = $2, status = $3, updated_at = NOW() WHERE id = $1`,
 		transactionID, paidAmount, status,
 	); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 
 	if err = tx.Commit(ctx); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 
-	return paidAmount, status, nil
+	return paidAmount, status, recorded, nil
 }
 
 // VA registry persistence (feature 013-no-bill-payment-transaction).

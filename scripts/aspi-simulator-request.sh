@@ -197,7 +197,7 @@ delete-va)
 esac
 
 # SNAP symmetric signature over the exact minified body emitted below.
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | openssl base64 -A)"
+BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
 STRING_TO_SIGN="${METHOD}:${EP}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 

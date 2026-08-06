@@ -226,12 +226,23 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		return nil, domain.NewDomainError("4092700", "Conflict: VA already has an active pending transaction", nil)
 	}
 
-	// Save transaction
+	// Save transaction.
+	//
+	// inquiry_request_id carries a placeholder, not "". The column is UNIQUE,
+	// and the vendor's real inquiryRequestId does not exist yet at create-va
+	// time — so writing "" made every billed VA after the first collide with
+	// it on SaveInquiry's ON CONFLICT, leaving the second and later VAs with
+	// no transaction row at all: invisible to inquiry (4042412) and, worse,
+	// payable for any amount because there was no stored bill to check
+	// against. The VA number is the natural placeholder: unique per VA,
+	// stable across billing cycles on that number, and recognised as
+	// claimable by the first inquiry (see domain.IsPlaceholderInquiryRequestID).
 	record := &domain.VAInquiryRecord{
 		PartnerServiceID: req.PartnerServiceID,
 		CustomerNo:       customerNo,
 		CustomerName:     req.VirtualAccountName,
 		VirtualAccountNo: vaNo,
+		InquiryRequestID: vaNo,
 		TrxID:            req.TrxID,
 		NotificationURL:  notificationURLFromAdditionalInfo(req.AdditionalInfo),
 		Status:           "03",

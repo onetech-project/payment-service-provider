@@ -140,12 +140,14 @@ JSON
 )
 
 # SNAP symmetric signature: HMAC_SHA512(clientSecret, stringToSign)
-# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Base64(SHA-256(minify(body))):Timestamp
+# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp
 # AccessToken is the real accessToken for migrated vendors (feature
 # 011-vendor-access-token-signature), or "" for legacy (non-migrated) vendors.
-# bodyHash/signature are base64-encoded (feature 012-base64-hash-encoding),
-# not hex.
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | openssl base64 -A)"
+# The body hash is lowercase hex, per BCA's Signature Symmetric spec. Set
+# BODY_HASH_ENCODER="openssl base64 -A" for a vendor configured with
+# VENDOR_BODY_HASH_ENCODING=base64 (feature 012-base64-hash-encoding).
+# X-SIGNATURE itself is always base64.
+BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
 STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 

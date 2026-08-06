@@ -93,8 +93,11 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body []
 	// Generate timestamp
 	timestamp := time.Now().Format(time.RFC3339)
 
-	// Hash request body
-	bodyHash := crypto.HashSHA256Base64(string(body))
+	// Hash the request body per BCA's Signature Symmetric spec:
+	// Lowercase(HexEncode(SHA-256(MinifyJson(RequestBody)))). The encoding
+	// comes from this vendor's config, so an outbound call is signed the same
+	// way the vendor verifies it.
+	bodyHash := crypto.HashRequestBody(body, c.config.BodyHashEncoding)
 
 	// Build string to sign
 	stringToSign := crypto.BuildStringToSign(method, endpoint, "", bodyHash, timestamp)

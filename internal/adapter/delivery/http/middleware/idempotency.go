@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"time"
 
+	"backbone-new/internal/domain"
+
 	"github.com/labstack/echo/v4"
 )
 
@@ -49,8 +51,9 @@ type idempotencyConfig struct {
 
 // WithReplaySuppressedFor stops the middleware from replaying the cached
 // response for requests pred matches, letting the duplicate reach the handler
-// instead. The payload-mismatch (4227300) and in-flight-lock (4097300) guards
-// are untouched — only the "identical key, identical payload" replay is.
+// instead. The payload-mismatch and in-flight-lock guards (both 409 Conflict,
+// per-service code) are untouched — only the "identical key, identical
+// payload" replay is.
 //
 // The VA payment endpoint needs this: a resubmit of the same X-EXTERNAL-ID
 // with the same paymentRequestId must answer 4042518 Inconsistent Request,
@@ -83,12 +86,20 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 				return next(c)
 			}
 
-			idempotencyKey := req.Header.Get("X-EXTERNAL-ID")
+			// Rejections here carry the service code of the endpoint being
+			// called, and the SNAP envelope for it: this middleware runs
+			// before SNAPAuthMiddleware, so for a request missing or reusing
+			// X-EXTERNAL-ID it is the only thing that answers BCA.
+			service := domain.ServiceCodeForPath(req.URL.Path)
+
+			idempotencyKey := req.Header.Get(headerExternalID)
 			if idempotencyKey == "" {
-				return c.JSON(http.StatusBadRequest, map[string]string{
-					"responseCode":    "4007300",
-					"responseMessage": "Bad Request. X-EXTERNAL-ID header is required.",
-				})
+				return c.JSON(http.StatusBadRequest, domain.NewSNAPErrorBody(
+					service,
+					domain.CodeMissingMandatory(service),
+					"Invalid Mandatory Field ["+headerExternalID+"]",
+					domain.VAIdentityEcho{},
+				))
 			}
 
 			// Read and hash payload
@@ -107,11 +118,17 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 			if err == nil && cachedBytes != nil {
 				var cached CachedResponse
 				if err := json.Unmarshal(cachedBytes, &cached); err == nil {
+					// Same key, different payload. SNAP has no 422 — BCA
+					// documents this exact case ("same X-EXTERNAL-ID but a
+					// different paymentRequestId") as 409 Conflict, so that is
+					// what we answer.
 					if cached.PayloadHash != payloadHash {
-						return c.JSON(http.StatusUnprocessableEntity, map[string]string{
-							"responseCode":    "4227300",
-							"responseMessage": "Unprocessable Entity. X-EXTERNAL-ID payload mismatch.",
-						})
+						return c.JSON(http.StatusConflict, domain.NewSNAPErrorBody(
+							service,
+							domain.CodeConflict(service),
+							"Conflict",
+							domain.VAIdentityEcho{},
+						))
 					}
 
 					if cfg.suppressReplay == nil || !cfg.suppressReplay(c) {
@@ -129,10 +146,12 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 			// Acquire lock
 			locked, err := redisClient.AcquireLock(ctx, idempotencyKey, lockTTL)
 			if err != nil || !locked {
-				return c.JSON(http.StatusConflict, map[string]string{
-					"responseCode":    "4097300",
-					"responseMessage": "Conflict. Request currently in progress for this X-EXTERNAL-ID.",
-				})
+				return c.JSON(http.StatusConflict, domain.NewSNAPErrorBody(
+					service,
+					domain.CodeConflict(service),
+					"Conflict",
+					domain.VAIdentityEcho{},
+				))
 			}
 			defer func() { _ = redisClient.ReleaseLock(ctx, idempotencyKey) }()
 

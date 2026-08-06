@@ -140,9 +140,13 @@ func (m *MockMerchantVARepository) RegisterStaticCustomerNo(ctx context.Context,
 	return args.Error(0)
 }
 
-func (m *MockMerchantVARepository) SaveVAPayment(ctx context.Context, transactionID string, amount string, referenceNo string) (string, string, error) {
-	args := m.Called(ctx, transactionID, amount, referenceNo)
-	return args.String(0), args.String(1), args.Error(2)
+func (m *MockMerchantVARepository) FindVAInstalment(ctx context.Context, paymentRequestID string) (string, string, bool, error) {
+	return "", "", false, nil
+}
+
+func (m *MockMerchantVARepository) SaveVAPayment(ctx context.Context, transactionID, paymentRequestID, amount, referenceNo string) (string, string, bool, error) {
+	args := m.Called(ctx, transactionID, paymentRequestID, amount, referenceNo)
+	return args.String(0), args.String(1), args.Bool(2), args.Error(3)
 }
 
 // VA registry methods (feature 013-no-bill-payment-transaction).

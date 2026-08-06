@@ -63,14 +63,26 @@ func TestVAInquiryRequest(t *testing.T) {
 	assert.Equal(t, "100000.00", req.Amount.Value)
 }
 
-func TestVAInquiryRequest_UnmarshalsTxnDateInit(t *testing.T) {
-	body := []byte(`{"txnDateInit": "2026-07-23T10:00:00+07:00"}`)
+func TestVAInquiryRequest_UnmarshalsTrxDateInit(t *testing.T) {
+	// BCA spells this field trxDateInit. It was tagged "txnDateInit", which
+	// meant the value BCA actually sends silently never bound.
+	body := []byte(`{"trxDateInit": "2026-07-23T10:00:00+07:00"}`)
 
 	var req VAInquiryRequest
 	err := json.Unmarshal(body, &req)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, req.TrxDateInit)
+}
+
+func TestVAInquiryRequest_IgnoresLegacyTxnDateInitSpelling(t *testing.T) {
+	body := []byte(`{"txnDateInit": "2026-07-23T10:00:00+07:00"}`)
+
+	var req VAInquiryRequest
+	err := json.Unmarshal(body, &req)
+
+	assert.NoError(t, err)
+	assert.Nil(t, req.TrxDateInit, "the misspelled tag must no longer bind")
 }
 
 func TestVAInquiryResponse(t *testing.T) {
