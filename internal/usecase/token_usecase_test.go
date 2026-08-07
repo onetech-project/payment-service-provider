@@ -140,18 +140,23 @@ func TestTokenUsecase_GenerateB2BToken(t *testing.T) {
 		_, err := uc.GenerateB2BToken(ctx, clientID, timestamp, signature, "wrong_grant")
 		assert.Error(t, err)
 		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrInvalidGrantType)
+		assert.Equal(t, domain.CodeTokenInvalidField, err.(*domain.DomainError).SNAPCode)
 	})
 
 	t.Run("Missing clientID", func(t *testing.T) {
 		_, err := uc.GenerateB2BToken(ctx, "", timestamp, signature, "client_credentials")
 		assert.Error(t, err)
 		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrMissingHeader)
+		// BCA names this header specifically: "Invalid mandatory field
+		// [X-CLIENT-KEY]" is 4007302, not the endpoint-wide 4007300.
+		assert.Equal(t, domain.CodeTokenMissingClientKey, err.(*domain.DomainError).SNAPCode)
 	})
 
 	t.Run("Missing timestamp", func(t *testing.T) {
 		_, err := uc.GenerateB2BToken(ctx, clientID, "", signature, "client_credentials")
 		assert.Error(t, err)
 		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrMissingHeader)
+		assert.Equal(t, domain.CodeTokenInvalidTimestamp, err.(*domain.DomainError).SNAPCode)
 	})
 
 	t.Run("Missing signature", func(t *testing.T) {
@@ -163,6 +168,8 @@ func TestTokenUsecase_GenerateB2BToken(t *testing.T) {
 	t.Run("Invalid timestamp format", func(t *testing.T) {
 		_, err := uc.GenerateB2BToken(ctx, clientID, "not-a-timestamp", signature, "client_credentials")
 		assert.Error(t, err)
+		assert.Equal(t, domain.CodeTokenInvalidTimestamp, err.(*domain.DomainError).SNAPCode)
+		assert.Equal(t, "Invalid field format [X-TIMESTAMP]", err.(*domain.DomainError).Message)
 	})
 
 	t.Run("Timestamp skew too far in future", func(t *testing.T) {
@@ -170,6 +177,9 @@ func TestTokenUsecase_GenerateB2BToken(t *testing.T) {
 		_, err := uc.GenerateB2BToken(ctx, clientID, futureTS, signature, "client_credentials")
 		assert.Error(t, err)
 		assert.ErrorIs(t, err.(*domain.DomainError).Err, domain.ErrInvalidTimestamp)
+		// A stale timestamp shares 4007301 with a malformed one: BCA publishes
+		// no separate code for staleness on this endpoint.
+		assert.Equal(t, domain.CodeTokenInvalidTimestamp, err.(*domain.DomainError).SNAPCode)
 	})
 
 	t.Run("Timestamp skew too far in past", func(t *testing.T) {

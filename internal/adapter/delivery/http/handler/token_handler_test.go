@@ -45,19 +45,30 @@ func TestTokenHandler_GetB2BAccessToken(t *testing.T) {
 	reqBody := []byte(`{"grantType":"client_credentials"}`)
 	timestamp := time.Now().Format(time.RFC3339)
 
+	// Missing headers reach the usecase as empty strings rather than being
+	// short-circuited here: BCA names the offending header in the code
+	// (4007302 for X-CLIENT-KEY), which only the usecase's per-field checks
+	// can distinguish. The handler's job is to map that code onto the HTTP
+	// status, which is what this asserts.
 	t.Run("Missing Headers", func(t *testing.T) {
+		missingUC := new(MockTokenUsecase)
+		missingUC.On("GenerateB2BToken", mock.Anything, "", "", "", "client_credentials").
+			Return(nil, domain.NewDomainError(domain.CodeTokenMissingClientKey,
+				"Invalid mandatory field [X-CLIENT-KEY]", domain.ErrMissingHeader))
+
 		req := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/access-token/b2b", bytes.NewBuffer(reqBody))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		rec := httptest.NewRecorder()
 		c := e.NewContext(req, rec)
 
-		err := h.GetB2BAccessToken(c)
+		err := handler.NewTokenHandler(missingUC).GetB2BAccessToken(c)
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
 
 		var resp domain.SNAPTokenResponse
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-		assert.Equal(t, "4007300", resp.ResponseCode)
+		assert.Equal(t, "4007302", resp.ResponseCode)
+		assert.Equal(t, "Invalid mandatory field [X-CLIENT-KEY]", resp.ResponseMessage)
 	})
 
 	t.Run("Successful SNAP Token Request", func(t *testing.T) {

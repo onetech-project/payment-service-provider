@@ -116,6 +116,27 @@ const (
 	CodeStatusNotFound    = "4042601"
 	CodeStatusBadRequest  = "4002600"
 	CodeStatusInternalErr = "5002601"
+
+	// Access token (service 73). These come from the "Errors" table in
+	// Developer API BCA's AUTHENTICATION SNAP section, which — unlike the
+	// transfer-va services — gives the failing HEADER its own case code rather
+	// than one code for the whole endpoint. Collapsing them into 4007300 tells
+	// the caller only "something in your request was wrong".
+	CodeTokenSuccess = "2007300"
+	// CodeTokenInvalidField is BCA's "Invalid field format
+	// [clientId/clientSecret/grantType]" — a body field, or a header with no
+	// case code of its own.
+	CodeTokenInvalidField = "4007300"
+	// CodeTokenInvalidTimestamp is "Invalid field format [X-TIMESTAMP]",
+	// covering both an unparseable timestamp and one outside the freshness
+	// window: BCA publishes no separate code for staleness.
+	CodeTokenInvalidTimestamp = "4007301"
+	// CodeTokenMissingClientKey is "Invalid mandatory field [X-CLIENT-KEY]".
+	CodeTokenMissingClientKey = "4007302"
+	// CodeTokenUnauthorized is "Unauthorized. [Signature]" / "[Unknown
+	// client]" — signature verification and client resolution alike.
+	CodeTokenUnauthorized  = "4017300"
+	CodeTokenInternalError = "5007300"
 )
 
 // SNAP transaction-status values.

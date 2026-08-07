@@ -37,44 +37,56 @@ func (h *TokenHandler) GetB2BAccessToken(c echo.Context) error {
 	var req domain.SNAPTokenRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, domain.SNAPTokenResponse{
-			ResponseCode:    "4007300",
-			ResponseMessage: "Bad Request. Invalid request payload format.",
+			ResponseCode:    domain.CodeTokenInvalidField,
+			ResponseMessage: "Invalid field format [clientId/clientSecret/grantType]",
 		})
 	}
 
-	clientID := c.Request().Header.Get("X-CLIENT-KEY")
-	timestamp := c.Request().Header.Get("X-TIMESTAMP")
-	signature := c.Request().Header.Get("X-SIGNATURE")
-
-	if clientID == "" || timestamp == "" || signature == "" {
-		return c.JSON(http.StatusBadRequest, domain.SNAPTokenResponse{
-			ResponseCode:    "4007300",
-			ResponseMessage: "Bad Request. Missing required SNAP headers (X-CLIENT-KEY, X-TIMESTAMP, X-SIGNATURE).",
-		})
-	}
-
+	// The headers are passed through to the usecase rather than pre-checked
+	// here: BCA gives each one its own case code (4007302 for X-CLIENT-KEY,
+	// 4007301 for X-TIMESTAMP), and a blanket "missing required SNAP headers"
+	// at this layer answered 4007300 for all of them — losing the distinction
+	// and naming no field.
 	ctx := c.Request().Context()
-	resp, err := h.tokenUsecase.GenerateB2BToken(ctx, clientID, timestamp, signature, req.GrantType)
+	resp, err := h.tokenUsecase.GenerateB2BToken(ctx,
+		c.Request().Header.Get("X-CLIENT-KEY"),
+		c.Request().Header.Get("X-TIMESTAMP"),
+		c.Request().Header.Get("X-SIGNATURE"),
+		req.GrantType,
+	)
 	if err != nil {
 		var domainErr *domain.DomainError
 		if errors.As(err, &domainErr) {
-			statusCode := http.StatusInternalServerError
-			switch domainErr.SNAPCode {
-			case "4007300":
-				statusCode = http.StatusBadRequest
-			case "4017300":
-				statusCode = http.StatusUnauthorized
-			}
-			return c.JSON(statusCode, domain.SNAPTokenResponse{
+			return c.JSON(tokenHTTPStatus(domainErr.SNAPCode), domain.SNAPTokenResponse{
 				ResponseCode:    domainErr.SNAPCode,
 				ResponseMessage: domainErr.Message,
 			})
 		}
 		return c.JSON(http.StatusInternalServerError, domain.SNAPTokenResponse{
-			ResponseCode:    "5007300",
+			ResponseCode:    domain.CodeTokenInternalError,
 			ResponseMessage: "Internal Server Error",
 		})
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// tokenHTTPStatus maps an access-token responseCode to the HTTP status BCA's
+// error table pairs it with. Derived from the code's own leading three digits
+// rather than enumerated, so a code added to domain never silently defaults to
+// 500 here — that is exactly how 4007301/4007302 would have been swallowed.
+func tokenHTTPStatus(snapCode string) int {
+	if len(snapCode) < 3 {
+		return http.StatusInternalServerError
+	}
+	switch snapCode[:3] {
+	case "400":
+		return http.StatusBadRequest
+	case "401":
+		return http.StatusUnauthorized
+	case "504":
+		return http.StatusGatewayTimeout
+	default:
+		return http.StatusInternalServerError
+	}
 }
