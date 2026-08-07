@@ -273,3 +273,55 @@ func findRepoFile(name string) ([]byte, error) {
 	}
 	return nil, os.ErrNotExist
 }
+
+// A vendor config that names no endpoint must still produce BCA's documented
+// paths, version prefix included. The prefix is not cosmetic: it is the
+// RelativeUrl component of stringToSign, so a fallback that omits it signs a
+// path that was never requested and the call fails 401 rather than 404 —
+// pointing the investigation at the credentials instead of the route.
+//
+// Status is v2.0 and inquiry is v1.0. That difference is BCA's own.
+func TestClient_DefaultEndpoints_CarryBCAVersionPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		wantPath string
+		call     func(*Client) error
+	}{
+		{
+			name:     "status",
+			wantPath: "/openapi/v2.0/transfer-va/status",
+			call: func(c *Client) error {
+				_, err := c.PaymentStatus(context.Background(), &domain.VAStatusRequest{})
+				return err
+			},
+		},
+		{
+			name:     "inquiry",
+			wantPath: "/openapi/v1.0/transfer-va/inquiry",
+			call: func(c *Client) error {
+				_, err := c.Inquiry(context.Background(), &domain.VAInquiryRequest{})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotSignature string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotSignature = r.Header.Get("X-SIGNATURE")
+				body, _ := io.ReadAll(r.Body)
+				_, _ = w.Write([]byte(`{"responseCode":"2002600"}`))
+				_ = body
+			}))
+			defer server.Close()
+
+			cfg := outboundConfig(server.URL)
+			cfg.APIEndpoints = map[string]string{} // no endpoints configured
+			client := NewClient(cfg, nil)
+
+			require.NoError(t, tc.call(client))
+			assert.Equal(t, tc.wantPath, gotPath)
+			assert.NotEmpty(t, gotSignature, "the request must still be signed")
+		})
+	}
+}

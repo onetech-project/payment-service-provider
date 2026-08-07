@@ -394,11 +394,15 @@ func main() {
 		snapBasePaths = []string{"/openapi/v1.0", "/api/v1.0", "/v1.0"}
 	}
 
-	// BCA calls the inquiry-status service at v2.0
-	// (POST /openapi/v2.0/transfer-va/status in Developer API BCA) while
-	// inquiry and payment stay at v1.0. Without this the status endpoint
-	// exists only under v1.0 and BCA's call 404s. v1.0 is kept registered
+	// Developer API BCA versions the inquiry-status service at v2.0 while
+	// inquiry and payment stay at v1.0, so the endpoint we expose is mirrored
+	// there to match the shape vendors expect. v1.0 is kept registered
 	// alongside it so vendors already pointed there are not broken.
+	//
+	// Note this is for ASPI-generic vendors that put service 26 on the PJP.
+	// BCA itself never calls it — service 26 runs partner→BCA, and our side of
+	// that is the outbound reconciler, not this route. See
+	// internal/domain/reconciliation.go for why the two directions differ.
 	statusBasePaths := []string{"/openapi/v2.0"}
 	if appEnv == "dev" || appEnv == "uat" {
 		statusBasePaths = []string{"/openapi/v2.0", "/api/v2.0", "/v2.0"}

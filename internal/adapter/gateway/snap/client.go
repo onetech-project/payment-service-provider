@@ -15,6 +15,24 @@ import (
 	"backbone-new/internal/infrastructure/crypto"
 )
 
+// Fallback endpoint paths for a vendor whose config names none, taken from
+// Developer API BCA's own curl samples.
+//
+// They carry the /openapi/<version> prefix on purpose. The bare
+// "/transfer-va/..." forms these replace could not work against any SNAP
+// vendor: the prefix is part of the relative URL, so dropping it produced both
+// a 404 and — since the same string is the RelativeUrl component of
+// stringToSign — a signature computed over a path that was never requested,
+// which surfaces as an unexplained 401 rather than a routing error.
+//
+// Status is v2.0 while inquiry is v1.0. That asymmetry is BCA's, not a typo:
+// service 26 runs partner→BCA and is versioned separately from the two
+// services BCA calls on us.
+const (
+	defaultInquiryEndpoint = "/openapi/v1.0/transfer-va/inquiry"
+	defaultStatusEndpoint  = "/openapi/v2.0/transfer-va/status"
+)
+
 // Client implements domain.VAGateway using generic SNAP configuration
 type Client struct {
 	config     *config.VendorConfig
@@ -59,7 +77,7 @@ func newExternalID() string {
 func (c *Client) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (*domain.VAInquiryResponse, error) {
 	endpoint := c.config.APIEndpoints["INQUIRY"]
 	if endpoint == "" {
-		endpoint = "/transfer-va/inquiry"
+		endpoint = defaultInquiryEndpoint
 	}
 
 	body, err := json.Marshal(req)
@@ -84,7 +102,7 @@ func (c *Client) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (*do
 func (c *Client) PaymentStatus(ctx context.Context, req *domain.VAStatusRequest) (*domain.VAStatusResponse, error) {
 	endpoint := c.config.APIEndpoints["STATUS"]
 	if endpoint == "" {
-		endpoint = "/transfer-va/status"
+		endpoint = defaultStatusEndpoint
 	}
 
 	body, err := json.Marshal(req)
