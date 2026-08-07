@@ -2,12 +2,40 @@ package handler
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
+	"backbone-new/internal/adapter/delivery/http/middleware"
 	"backbone-new/internal/domain"
 
 	"github.com/labstack/echo/v4"
 )
+
+// logCreateVAFailure records why a create-va was refused. The SNAP body carries
+// only the code and a terse message, so without this the reason a merchant's
+// request bounced — which field, which VA-type rule — survives nowhere. The
+// request's Content-Type is logged alongside the bound fields because the two
+// failure modes look identical from outside: echo's binder silently leaves the
+// struct zeroed for a non-JSON content type, which then trips the very same
+// "missing mandatory field" check a genuinely incomplete body does.
+func logCreateVAFailure(c echo.Context, req *domain.MerchantCreateVARequest, snapCode, message string) {
+	if middleware.Logger == nil {
+		return
+	}
+
+	middleware.Logger.Warn("create_va_rejected",
+		slog.String("responseCode", snapCode),
+		slog.String("responseMessage", message),
+		slog.String("contentType", c.Request().Header.Get(echo.HeaderContentType)),
+		slog.Int64("contentLength", c.Request().ContentLength),
+		slog.String("partnerServiceId", req.PartnerServiceID),
+		slog.String("customerNo", req.CustomerNo),
+		slog.String("virtualAccountNo", req.VirtualAccountNo),
+		slog.String("trxId", req.TrxID),
+		slog.Bool("hasTotalAmount", req.TotalAmount != nil),
+		slog.Any("additionalInfo", req.AdditionalInfo),
+	)
+}
 
 // MerchantVAHandler handles merchant VA HTTP requests
 type MerchantVAHandler struct {
@@ -57,6 +85,7 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 	// virtualAccountNo optional (server-derived) too — those mode-dependent
 	// checks are performed in the usecase layer instead.
 	if req.PartnerServiceID == "" || req.VirtualAccountName == "" || req.TrxID == "" {
+		logCreateVAFailure(c, &req, "4002701", "Invalid Mandatory Field")
 		return c.JSON(http.StatusBadRequest, domain.MerchantCreateVAResponse{
 			ResponseCode:    "4002701",
 			ResponseMessage: "Invalid Mandatory Field",
@@ -68,12 +97,14 @@ func (h *MerchantVAHandler) CreateVA(c echo.Context) error {
 	if err != nil {
 		var domainErr *domain.DomainError
 		if errors.As(err, &domainErr) {
+			logCreateVAFailure(c, &req, domainErr.SNAPCode, domainErr.Error())
 			statusCode := mapSNAPCodeToHTTP(domainErr.SNAPCode)
 			return c.JSON(statusCode, domain.MerchantCreateVAResponse{
 				ResponseCode:    domainErr.SNAPCode,
 				ResponseMessage: domainErr.Message,
 			})
 		}
+		logCreateVAFailure(c, &req, "5002700", err.Error())
 		return c.JSON(http.StatusInternalServerError, domain.MerchantCreateVAResponse{
 			ResponseCode:    "5002700",
 			ResponseMessage: "Internal Server Error",

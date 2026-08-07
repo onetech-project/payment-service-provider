@@ -32,14 +32,14 @@ This branch is what makes a first-ever payment possible: after this feature, a f
     "virtualAccountNo": "   15973000000000000000001",
     "virtualAccountName": "John Doe",
     "inquiryRequestId": "INQ-20260805-0001",
-    "totalAmount": { "value": "50000.00", "currency": "IDR" },
+    "totalAmount": { "value": "0.00", "currency": "IDR" },
     "subCompany": "00000"
   }
 }
 ```
 
 - `virtualAccountName` comes from `va_accounts.customer_name` — the registered holder (FR-016).
-- `totalAmount` echoes the **request's own `amount`** (spec A-005). A no-bill VA asserts no bill; the customer chose the amount at the channel. When the request carries no `amount`, `"0.00"` is echoed.
+- `totalAmount.value` is **always `"0.00"`** (spec A-005). A no-bill VA owes nothing, and any non-zero figure here reads as an amount due to vendors that display totalAmount that way. Only the currency follows the request, defaulting to `IDR`. It does **not** echo the request's `amount`: the customer's chosen amount belongs to the payment, not to a bill that does not exist.
 - `billDetails` is absent — a no-bill VA has none.
 
 ## Side effects

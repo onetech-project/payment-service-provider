@@ -2,8 +2,10 @@ package handler
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
+	"backbone-new/internal/adapter/delivery/http/middleware"
 	"backbone-new/internal/domain"
 
 	"github.com/labstack/echo/v4"
@@ -63,24 +65,21 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 	ctx := c.Request().Context()
 	resp, err := h.vaUsecase.Inquiry(ctx, &req)
 	if err != nil {
+		logInquiryFailure(&req, err)
 		var domainErr *domain.DomainError
 		if errors.As(err, &domainErr) {
 			statusCode := mapSNAPCodeToHTTP(domainErr.SNAPCode)
-			inquiryResp := domain.VAInquiryResponse{
-				ResponseCode:    domainErr.SNAPCode,
-				ResponseMessage: domainErr.Message,
-			}
-			// A rejected inquiry carries the reason in virtualAccountData as
-			// inquiryStatus "01" + inquiryReason (contracts/inquiry-expired.md
-			// for the expired case), so the vendor learns WHY the bill is not
-			// payable, not merely that it isn't.
-			if reason := inquiryRejectionReason(domainErr.SNAPCode); reason != nil {
-				inquiryResp.VirtualAccountData = &domain.VAAccountData{
-					InquiryStatus: "01",
-					InquiryReason: reason,
-				}
-			}
-			return c.JSON(statusCode, inquiryResp)
+			// A rejected inquiry carries the VA it refused in
+			// virtualAccountData, with inquiryStatus "01" + inquiryReason
+			// (contracts/inquiry-expired.md for the expired case), so the
+			// vendor learns WHICH bill is not payable and WHY, not merely that
+			// one isn't. The usecase resolves it — validation/auth/server
+			// errors have no VA behind them and leave it nil.
+			return c.JSON(statusCode, domain.VAInquiryResponse{
+				ResponseCode:       domainErr.SNAPCode,
+				ResponseMessage:    domainErr.Message,
+				VirtualAccountData: domainErr.InquiryData,
+			})
 		}
 		return c.JSON(http.StatusInternalServerError, domain.VAInquiryResponse{
 			ResponseCode:    "5002400",
@@ -107,7 +106,7 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 // @Success 200 {object} domain.VAPaymentResponse
 // @Failure 400 {object} domain.VAPaymentResponse "Invalid Field Format / Invalid Mandatory Field"
 // @Failure 401 {object} domain.VAPaymentResponse "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window"
-// @Failure 404 {object} domain.VAPaymentResponse "Not Found (mapped from downstream error), or 4042519 Expired Transaction (virtualAccountData.paymentFlagStatus=01, feature 007-merchant-expiry-callback)"
+// @Failure 404 {object} domain.VAPaymentResponse "4042512 Invalid Bill/Virtual Account [Not Found] when the VA exists in neither the registry nor any transaction (virtualAccountData echoes the request keys, paymentFlagStatus=01, empty paidAmount/totalAmount); 4042518 Inconsistent Request when X-EXTERNAL-ID and paymentRequestId are both reused (virtualAccountData echoes the payment it collided with); or 4042519 Expired Transaction (virtualAccountData.paymentFlagStatus=01, feature 007-merchant-expiry-callback)"
 // @Failure 409 {object} domain.VAPaymentResponse "Conflict (mapped from downstream error, or in-flight request with same X-EXTERNAL-ID)"
 // @Failure 422 {object} domain.VAPaymentResponse "X-EXTERNAL-ID reused with a different payload"
 // @Failure 500 {object} domain.VAPaymentResponse "Internal Server Error"
@@ -140,13 +139,14 @@ func (h *VAHandler) Payment(c echo.Context) error {
 				ResponseCode:    domainErr.SNAPCode,
 				ResponseMessage: domainErr.Message,
 			}
-			// Expired-transaction response (contracts/notify-expired.md)
-			// carries paymentFlagStatus/paymentFlagReason in virtualAccountData.
-			if domainErr.SNAPCode == "4042519" {
-				paymentResp.VirtualAccountData = &domain.VAPaymentStatus{
-					PaymentFlagStatus: "01",
-					PaymentFlagReason: &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"},
-				}
+			// Every payment rejection that has a VA behind it reports that VA:
+			// the not-found echo (4042512), the payment it collided with
+			// (4042518), the expired transaction (4042519, contracts/
+			// notify-expired.md) and the closed bill (4092500). The usecase
+			// builds the block — it is the layer that knows which VA was
+			// resolved — and the handler only forwards it.
+			if domainErr.PaymentData != nil {
+				paymentResp.VirtualAccountData = domainErr.PaymentData
 			}
 			return c.JSON(statusCode, paymentResp)
 		}
@@ -217,24 +217,35 @@ func (h *VAHandler) Status(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-// mapSNAPCodeToHTTP maps SNAP response codes to HTTP status codes
-// inquiryRejectionReason returns the bilingual inquiryReason to report for a
-// rejected inquiry, or nil for codes that carry no virtualAccountData (generic
-// validation/auth/server failures, which say all they have to say in
-// responseCode + responseMessage).
-func inquiryRejectionReason(snapCode string) *domain.BilingualText {
-	switch snapCode {
-	case "4042419":
-		return &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"}
-	case "4042414":
-		return &domain.BilingualText{English: "paid bill", Indonesia: "tagihan sudah dibayar"}
-	case "4042412":
-		return &domain.BilingualText{English: "invalid bill/virtual account", Indonesia: "tagihan/virtual account tidak valid"}
-	default:
-		return nil
+// logInquiryFailure records why an inquiry was not answered 2002400. Without
+// it a 5002400 reaches the vendor with the underlying cause discarded — the
+// SNAP body deliberately says nothing beyond "Internal Server Error", so the
+// log is the only place the real error can survive. Rejections (4xx) are logged
+// at Warn: they are ordinary outcomes, not faults.
+func logInquiryFailure(req *domain.VAInquiryRequest, err error) {
+	if middleware.Logger == nil {
+		return
 	}
+
+	attrs := []any{
+		slog.String("endpoint", "inquiry"),
+		slog.String("virtualAccountNo", req.VirtualAccountNo),
+		slog.String("inquiryRequestId", req.InquiryRequestID),
+		slog.String("error", err.Error()),
+	}
+
+	var domainErr *domain.DomainError
+	if errors.As(err, &domainErr) {
+		attrs = append(attrs, slog.String("responseCode", domainErr.SNAPCode))
+		if mapSNAPCodeToHTTP(domainErr.SNAPCode) < http.StatusInternalServerError {
+			middleware.Logger.Warn("va_inquiry_rejected", attrs...)
+			return
+		}
+	}
+	middleware.Logger.Error("va_inquiry_failed", attrs...)
 }
 
+// mapSNAPCodeToHTTP maps SNAP response codes to HTTP status codes
 func mapSNAPCodeToHTTP(snapCode string) int {
 	if len(snapCode) < 3 {
 		return http.StatusInternalServerError

@@ -160,7 +160,7 @@ Apply with `docker compose up -d migrate`; verify the backfill row count matches
 | # | Task | File |
 |---|---|---|
 | T-019 | **Failing test first**: inquiry against a registered, never-paid no-bill VA returns `2002400` with the registered holder name and writes zero rows. | `va_usecase_test.go` |
-| T-020 | Insert the registry branch in `Inquiry` after the `GetInquiry` short-circuit and before `GetVAByVirtualAccountNo`; build the response from the registration, echo the request `amount` as `totalAmount`, and return without `SaveInquiry`. | `va_usecase.go` |
+| T-020 | Insert the registry branch in `Inquiry` after the `GetInquiry` short-circuit and before `GetVAByVirtualAccountNo`; build the response from the registration, report `totalAmount` as `0.00`, and return without `SaveInquiry`. | `va_usecase.go` |
 | T-021 | Add the expiry/inactive guards on the registration, delegating to `markRegistrationExpiredAndNotify`. Test `4042419` for both, and exactly-once callback on repeated expired inquiries. | both |
 | T-022 | Test that a VA with no registration still falls through to the unchanged legacy path (FR-022). | `va_usecase_test.go` |
 

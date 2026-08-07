@@ -200,18 +200,53 @@ console.log('stringToSign:', stringToSign);
   "responseCode": "2002400",
   "responseMessage": "Successful",
   "virtualAccountData": {
-    "inquiryStatus": "00",
-    "inquiryReason": { "english": "Success", "indonesia": "Sukses" },
     "partnerServiceId": "15973",
     "customerNo": "66666666",
     "virtualAccountNo": "1597366666666",
     "virtualAccountName": "test lagi",
     "inquiryRequestId": "INQ-...",
     "totalAmount": { "value": "0", "currency": "IDR" },
-    "subCompany": "00000"
-  }
+    "subCompany": "00000",
+    "billDetails": [],
+    "freeTexts": [],
+    "inquiryStatus": "00",
+    "inquiryReason": { "english": "Success", "indonesia": "Sukses" }
+  },
+  "additionalInfo": {}
 }
 ```
+
+A rejected inquiry answers with the **same** `virtualAccountData` block — only
+`responseCode`/`responseMessage` and the `inquiryStatus: "01"` + `inquiryReason`
+pair change, so the vendor still learns which bill was refused:
+
+```json
+{
+  "responseCode": "4042414",
+  "responseMessage": "Paid Bill",
+  "virtualAccountData": {
+    "partnerServiceId": "   15974",
+    "customerNo": "77121730326",
+    "virtualAccountNo": "   1597477121730326",
+    "virtualAccountName": "budi manjo bill var",
+    "inquiryRequestId": "202607021545081597400051562507",
+    "totalAmount": { "value": "150000.00", "currency": "IDR" },
+    "subCompany": "00000",
+    "billDetails": [],
+    "freeTexts": [],
+    "inquiryStatus": "01",
+    "inquiryReason": { "english": "Bill has been paid", "indonesia": "Tagihan telah dibayar" }
+  },
+  "additionalInfo": {}
+}
+```
+
+| Outcome | `responseCode` | `responseMessage` | `inquiryReason.english` |
+|---|---|---|---|
+| Payable bill | `2002400` | Successful | Success |
+| Already paid | `4042414` | Paid Bill | Bill has been paid |
+| Expired | `4042419` | Invalid Bill/Virtual Account | expired transaction |
+| Unknown / deleted VA | `4042412` | Invalid Bill/Virtual Account | Bill not found |
 
 ---
 

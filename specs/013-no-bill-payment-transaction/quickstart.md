@@ -68,7 +68,7 @@ psqlc "SELECT COUNT(*) FROM va_transactions
   --amount "50000.00"
 ```
 
-**Expected**: `responseCode` = `2002400`, `inquiryStatus` = `00`, `virtualAccountName` = `Quickstart NoBill Static`, `totalAmount.value` = `50000.00` (echoed from the request — a no-bill VA asserts no bill).
+**Expected**: `responseCode` = `2002400`, `inquiryStatus` = `00`, `virtualAccountName` = `Quickstart NoBill Static`, `totalAmount.value` = `0.00` — always zero, NOT the `50000.00` sent above, because a no-bill VA asserts no bill.
 
 **Assert** the inquiry created nothing:
 

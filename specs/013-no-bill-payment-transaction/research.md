@@ -62,7 +62,7 @@ This document records the design decisions taken before implementation, each gro
 
 **Rationale**: FR-016 forbids creating a transaction at inquiry time. The current code path at `va_usecase.go:128-151` unconditionally inserts an inquiry-only row when no merchant VA is found, which after this change would be *every* first inquiry on a no-bill VA — reintroducing phantom rows through a different door.
 
-**Amount echoed**: `totalAmount` is echoed from the inquiry request's own `amount` (spec A-005), not asserted from the registration, because a no-bill VA has no bill.
+**Amount always zero**: `totalAmount.value` is `"0.00"` on every no-bill inquiry (spec A-005) — not asserted from the registration, and not echoed from the request's own `amount` either. A no-bill VA has no bill, and a vendor that renders `totalAmount` as the amount due cannot tell an echo apart from an assertion.
 
 **Ordering note**: The registry lookup must come after the `GetInquiry` idempotency short-circuit (`va_usecase.go:60`) so retried inquiry request IDs keep their existing behavior.
 

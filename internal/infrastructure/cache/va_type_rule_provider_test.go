@@ -142,6 +142,32 @@ func TestCachedVATypeRuleProvider_LookupVATypeRule_NotFound(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// SNAP sends partnerServiceId left-padded with spaces to 8 characters, while
+// the master tables store the bare id — a padded lookup must still resolve, or
+// every spec-conformant create-va is rejected 4002702.
+func TestCachedVATypeRuleProvider_SNAPPaddedPartnerServiceID_Resolves(t *testing.T) {
+	repo := new(mockRepo)
+	c := new(mockCache)
+	c.On("GetVATypes", mock.Anything).Return(sampleRules, nil)
+	c.On("GetPartnerServiceIDs", mock.Anything).Return(samplePartnerIDs, nil)
+
+	p := NewCachedVATypeRuleProvider(repo, c)
+
+	rule, ok, err := p.LookupVATypeRule(context.Background(), "   15973", "04")
+	assert.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "04", rule.VAType)
+
+	reserved, err := p.IsReservedPartnerServiceID(context.Background(), "   15973")
+	assert.NoError(t, err)
+	assert.True(t, reserved)
+
+	// Padding is not a wildcard — a different biller still misses.
+	_, ok, err = p.LookupVATypeRule(context.Background(), "   99999", "04")
+	assert.NoError(t, err)
+	assert.False(t, ok)
+}
+
 func TestCachedVATypeRuleProvider_RefreshNow_PopulatesCacheAndSnapshot(t *testing.T) {
 	repo := new(mockRepo)
 	c := new(mockCache)
