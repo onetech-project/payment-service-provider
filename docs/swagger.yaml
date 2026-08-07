@@ -324,6 +324,9 @@ definitions:
     type: object
   domain.SNAPErrorResponse:
     properties:
+      data:
+        additionalProperties: {}
+        type: object
       responseCode:
         type: string
       responseMessage:
@@ -437,16 +440,37 @@ definitions:
         allOf:
         - $ref: '#/definitions/domain.Amount'
         description: |-
-          Amount is NOT part of BCA's inquiry payload. It is kept as an optional
-          passthrough for vendors that send one, but must never be required —
-          requiring it rejects every conformant BCA inquiry.
+          Amount is Optional (N) on the inquiry payload. It was absent from the
+          table altogether in the older documentation and reappears in
+          VA-BillPresentment v2.4; it has never been mandatory, and requiring it
+          would reject every inquiry that omits it. Treated as a passthrough: the
+          amount a customer entered belongs to the payment, not to the bill this
+          inquiry presents.
       channelCode:
         type: integer
       customerNo:
         type: string
+      hashedSourceAccountNo:
+        description: |-
+          HashedSourceAccountNo String(32) and SourceBankCode String(3) are both
+          Optional, and both carry the paying account's identity through from the
+          channel.
+        type: string
       inquiryRequestId:
         type: string
+      language:
+        description: Language is String(2) ISO-639-1, Optional.
+        type: string
       partnerServiceId:
+        type: string
+      passApp:
+        description: |-
+          PassApp is String(64) Optional, "Key for 3rd party to access API like
+          client secret". Bound and length-checked but never acted on: this
+          service authenticates on X-SIGNATURE, and treating a body field as a
+          second credential would be a way in that the signature does not cover.
+        type: string
+      sourceBankCode:
         type: string
       trxDateInit:
         description: |-
@@ -613,6 +637,11 @@ definitions:
       virtualAccountEmail:
         type: string
       virtualAccountName:
+        description: |-
+          VirtualAccountName carries no omitempty: it is reported even when empty,
+          including on the not-found rejection where there is no stored holder to
+          name. Email/phone below stay omitempty — those are genuinely optional
+          and vendors do not expect placeholders for them.
         type: string
       virtualAccountNo:
         type: string
@@ -740,6 +769,13 @@ definitions:
       virtualAccountNo:
         type: string
     type: object
+  handler.amount:
+    properties:
+      currency:
+        type: string
+      value:
+        type: string
+    type: object
   handler.clientResponse:
     properties:
       client:
@@ -751,6 +787,31 @@ definitions:
       secret:
         $ref: '#/definitions/domain.ClientSecret'
       status:
+        type: string
+    type: object
+  handler.reconcileErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  handler.reconcileResponse:
+    properties:
+      outcome:
+        type: string
+      paidAmount:
+        $ref: '#/definitions/handler.amount'
+      reconciledAt:
+        type: string
+      settled:
+        type: boolean
+      vendorPaymentFlagStatus:
+        type: string
+      vendorResponseCode:
+        description: |-
+          The vendor's raw answer is echoed so an operator can see what the
+          outcome was inferred from rather than having to trust it.
+        type: string
+      virtualAccountNo:
         type: string
     type: object
   handler.resendCallbackErrorResponse:
@@ -1032,6 +1093,46 @@ paths:
       summary: Revoke a merchant shared secret
       tags:
       - Admin Client Management
+  /admin/transactions/{virtualAccountNo}/reconcile:
+    post:
+      description: 'Admin-only: calls the vendor''s SNAP Inquiry Status service (code
+        26) for the given virtualAccountNo. If the vendor reports the payment as successful
+        while this service still had it pending, the transaction is settled and the
+        merchant payment callback is sent. Safe to call repeatedly — an already-settled
+        transaction is reported back without a second callback.'
+      parameters:
+      - description: Admin API key
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Virtual account number
+        in: path
+        name: virtualAccountNo
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.reconcileResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.reconcileErrorResponse'
+        "404":
+          description: Transaction not found
+          schema:
+            $ref: '#/definitions/handler.reconcileErrorResponse'
+        "503":
+          description: Reconciliation is not configured for this deployment
+          schema:
+            $ref: '#/definitions/handler.reconcileErrorResponse'
+      security:
+      - AdminAPIKey: []
+      summary: Ask the vendor what really happened to a pending transaction
+      tags:
+      - Admin
   /admin/transactions/{virtualAccountNo}/resend-callback:
     post:
       description: 'Admin-only: redelivers the most recent callback event (payment.received
@@ -1412,8 +1513,8 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Partner identifier, max 36 chars. Value-checked whenever the
-          vendor config sets VENDOR_PARTNER_ID
+      - description: Partner ID using Company Code VA, max 8 chars (BCA tech docs
+          v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID
         in: header
         name: X-PARTNER-ID
         required: true
@@ -1648,8 +1749,8 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Partner identifier, max 36 chars. Value-checked whenever the
-          vendor config sets VENDOR_PARTNER_ID
+      - description: Partner ID using Company Code VA, max 8 chars (BCA tech docs
+          v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID
         in: header
         name: X-PARTNER-ID
         required: true
@@ -1683,18 +1784,25 @@ paths:
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "401":
-          description: 4012500 Unauthorized. [reason], 4012501 Invalid Token (B2B)
+          description: 4012500 Unauthorized. [reason] (invalid HMAC signature, or
+            X-TIMESTAMP outside the ±5 minute freshness window), 4012501 Invalid Token
+            (B2B)
           schema:
             $ref: '#/definitions/domain.SNAPErrorResponse'
         "404":
           description: 'All with virtualAccountData.paymentFlagStatus=01 unless noted:
-            4042512 Invalid Bill/Virtual Account [Not Found], 4042513 Invalid Amount,
-            4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay, echoes
-            the ORIGINAL flag status), 4042519 Invalid Bill/Virtual Account (expired)'
+            4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither
+            the registry nor any transaction; virtualAccountData echoes the request
+            keys with empty paidAmount/totalAmount), 4042513 Invalid Amount, 4042514
+            Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID
+            and paymentRequestId; echoes the ORIGINAL flag status and the payment
+            it collided with), 4042519 Invalid Bill/Virtual Account (expired, feature
+            007-merchant-expiry-callback)'
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "409":
-          description: 4092500 Conflict — same X-EXTERNAL-ID with a different paymentRequestId
+          description: 4092500 Conflict — same X-EXTERNAL-ID with a different paymentRequestId,
+            or an in-flight request still holding the key
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "500":
@@ -1730,8 +1838,8 @@ paths:
         name: X-SIGNATURE
         required: true
         type: string
-      - description: Partner identifier, max 36 chars. Value-checked whenever the
-          vendor config sets VENDOR_PARTNER_ID
+      - description: Partner ID using Company Code VA, max 8 chars (BCA tech docs
+          v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID
         in: header
         name: X-PARTNER-ID
         required: true

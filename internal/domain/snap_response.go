@@ -13,16 +13,27 @@ package domain
 // carry no virtualAccountData. Callers signal that by using the bare
 // SNAPErrorResponse below.
 
-// SNAPErrorResponse is the two-field body used for authentication failures and
-// for endpoints outside the transfer-va services (access-token).
+// SNAPErrorResponse is the body used for authentication failures on the
+// transfer-va services.
+//
+// It carries a `data` object as well as the code and message. BCA API OAuth &
+// Signature v1.1 shows the HMAC-mismatch response as
+//
+//	{"responseCode": "401xx00", "responseMessage": "Unauthorized. [Signature]", "data": {}}
+//
+// and notes "xx -> customize to each service code" — so the shape belongs to
+// every transfer-va 401, not only to the access-token endpoint. The object is
+// always empty; it exists so a client that dereferences `data` unconditionally
+// does not fault on a rejection.
 type SNAPErrorResponse struct {
-	ResponseCode    string `json:"responseCode"`
-	ResponseMessage string `json:"responseMessage"`
+	ResponseCode    string         `json:"responseCode"`
+	ResponseMessage string         `json:"responseMessage"`
+	Data            map[string]any `json:"data"`
 }
 
-// NewSNAPErrorResponse builds the bare two-field error body.
+// NewSNAPErrorResponse builds the SNAP authentication-failure body.
 func NewSNAPErrorResponse(code, message string) SNAPErrorResponse {
-	return SNAPErrorResponse{ResponseCode: code, ResponseMessage: message}
+	return SNAPErrorResponse{ResponseCode: code, ResponseMessage: message, Data: map[string]any{}}
 }
 
 // VAIdentityEcho carries the request identity fields a rejection echoes back.

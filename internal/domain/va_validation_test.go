@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -9,11 +10,13 @@ import (
 )
 
 func validInquiryRequest() *VAInquiryRequest {
+	trxDateInit := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 	return &VAInquiryRequest{
 		PartnerServiceID: "   12345",
 		CustomerNo:       "123456789012345678",
 		VirtualAccountNo: "   12345123456789012345678",
 		InquiryRequestID: "202202110909311234500001136962",
+		TrxDateInit:      &trxDateInit,
 		ChannelCode:      6011,
 	}
 }
@@ -38,7 +41,7 @@ func validPaymentRequest() *VAPaymentRequest {
 // --- Inquiry ------------------------------------------------------------
 
 func TestValidateInquiryRequest_Valid(t *testing.T) {
-	assert.Nil(t, ValidateInquiryRequest(validInquiryRequest()))
+	assert.Nil(t, ValidateInquiryRequest(validInquiryRequest(), true))
 }
 
 func TestValidateInquiryRequest_AmountIsNotRequired(t *testing.T) {
@@ -47,7 +50,7 @@ func TestValidateInquiryRequest_AmountIsNotRequired(t *testing.T) {
 	req := validInquiryRequest()
 	req.Amount = nil
 
-	assert.Nil(t, ValidateInquiryRequest(req))
+	assert.Nil(t, ValidateInquiryRequest(req, true))
 }
 
 func TestValidateInquiryRequest_MandatoryFields(t *testing.T) {
@@ -65,7 +68,7 @@ func TestValidateInquiryRequest_MandatoryFields(t *testing.T) {
 			req := validInquiryRequest()
 			tc.mutate(req)
 
-			v := ValidateInquiryRequest(req)
+			v := ValidateInquiryRequest(req, true)
 
 			require.NotNil(t, v)
 			assert.Equal(t, ViolationMandatory, v.Kind)
@@ -91,7 +94,7 @@ func TestValidate_TwentyDigitCustomerNoAcceptedOnEveryService(t *testing.T) {
 	inquiry.PartnerServiceID = partnerServiceID
 	inquiry.CustomerNo = customerNo
 	inquiry.VirtualAccountNo = virtualAccountNo
-	assert.Nil(t, ValidateInquiryRequest(inquiry))
+	assert.Nil(t, ValidateInquiryRequest(inquiry, true))
 
 	payment := validPaymentRequest()
 	payment.PartnerServiceID = partnerServiceID
@@ -113,7 +116,7 @@ func TestValidateInquiryRequest_OverLongCustomerNo(t *testing.T) {
 	req.CustomerNo = "123456789012345678901"
 	req.VirtualAccountNo = "   12345123456789012345678901"
 
-	v := ValidateInquiryRequest(req)
+	v := ValidateInquiryRequest(req, true)
 
 	require.NotNil(t, v)
 	assert.Equal(t, ViolationFormat, v.Kind)
@@ -358,4 +361,78 @@ func TestValidateStatusRequest_InquiryRequestIDLimitIs30(t *testing.T) {
 	require.NotNil(t, v)
 	assert.Equal(t, ViolationFormat, v.Kind)
 	assert.Equal(t, "inquiryRequestId", v.Field)
+}
+
+// --- Alignment with the current BCA technical documentation ---
+// (VA-BillPresentment v2.4, VA-Payment-Flag v2.3, VA-Payment-Status V2 v1.0)
+
+// v2.4 puts inquiryRequestId at String(30), down from the 128 the older
+// documentation gave it. The cap is not cosmetic: paymentRequestId "must be
+// the same with inquiryRequestId" and is itself capped at 30, so a longer id
+// accepted here would only fail at the payment that follows.
+func TestValidateInquiryRequest_InquiryRequestIDCappedAt30(t *testing.T) {
+	req := validInquiryRequest()
+	req.InquiryRequestID = strings.Repeat("9", 30)
+	assert.Nil(t, ValidateInquiryRequest(req, true), "30 characters is exactly the limit")
+
+	req.InquiryRequestID = strings.Repeat("9", 31)
+	v := ValidateInquiryRequest(req, true)
+	if assert.NotNil(t, v) {
+		assert.Equal(t, "inquiryRequestId", v.Field)
+		assert.Equal(t, ViolationFormat, v.Kind)
+	}
+}
+
+// trxDateInit and channelCode are Mandatory (Y) on the v2.4 inquiry payload,
+// and are required of a vendor configured for BCA's field tables — the same
+// per-vendor switch payment's extended mandatory set already runs behind.
+//
+// They were previously never required, on the reasoning that being more
+// permissive on receive cannot produce a wrong answer. True as far as it goes,
+// but it also meant a BCA request that dropped a mandatory field was answered
+// as if nothing were missing, and it left inquiry inconsistent with payment,
+// where the identical fields are enforced. Gating rather than dropping the
+// check keeps the permissive behaviour available to the vendors it was for.
+func TestValidateInquiryRequest_BCAMandatoryFieldsGatedByStrictness(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*VAInquiryRequest)
+		field  string
+	}{
+		{"trxDateInit", func(r *VAInquiryRequest) { r.TrxDateInit = nil }, "trxDateInit"},
+		{"channelCode", func(r *VAInquiryRequest) { r.ChannelCode = 0 }, "channelCode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := validInquiryRequest()
+			tc.mutate(req)
+
+			v := ValidateInquiryRequest(req, true)
+			if assert.NotNil(t, v, "BCA marks %s Mandatory", tc.field) {
+				assert.Equal(t, ViolationMandatory, v.Kind)
+				assert.Equal(t, tc.field, v.Field)
+			}
+
+			assert.Nil(t, ValidateInquiryRequest(req, false),
+				"a vendor that does not follow BCA's field table is unaffected")
+		})
+	}
+}
+
+// Only the COUNT of freeTexts was checked before, so an over-long entry was
+// accepted and then echoed into the response, where BCA fails the whole
+// transaction on it.
+func TestValidatePaymentRequest_FreeTextEntryLength(t *testing.T) {
+	req := validPaymentRequest()
+	req.FreeTexts = []BilingualText{{English: strings.Repeat("a", MaxFreeTextLength), Indonesia: "ok"}}
+	assert.Nil(t, ValidatePaymentRequest(req, true), "32 characters is exactly the limit")
+
+	req.FreeTexts = []BilingualText{{English: strings.Repeat("a", MaxFreeTextLength+1), Indonesia: "ok"}}
+	v := ValidatePaymentRequest(req, true)
+	if assert.NotNil(t, v) {
+		assert.Equal(t, "freeTexts", v.Field)
+	}
+
+	// The Indonesian side is bounded by the same limit, not just the English.
+	req.FreeTexts = []BilingualText{{English: "ok", Indonesia: strings.Repeat("b", MaxFreeTextLength+1)}}
+	assert.NotNil(t, ValidatePaymentRequest(req, true))
 }

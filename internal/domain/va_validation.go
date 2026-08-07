@@ -5,14 +5,17 @@ import (
 	"strings"
 )
 
-// SNAP request validation, transcribed from the field tables in Developer API
-// BCA, "Virtual Account untuk Biller".
+// SNAP request validation, transcribed from the field tables in the current
+// BCA technical documentation: VA-BillPresentment v2.4 (service 24),
+// VA-Payment-Flag v2.3 (25) and VA-Payment-Status V2 v1.0 (26).
 //
-// The limits genuinely differ between services — inquiry allows customerNo(20)
-// / virtualAccountNo(28) / inquiryRequestId(128) while payment and status
-// allow (18) / (26) / (30) — so they are spelled out per service rather than
-// shared. Getting this wrong is silent: an over-long value is accepted here and
-// then truncated or rejected downstream at BCA.
+// The three services once published DIFFERENT limits for the same fields —
+// inquiry allowed customerNo(20)/virtualAccountNo(28)/inquiryRequestId(128)
+// where payment and status allowed (18)/(26)/(30). v2.4 converged them all
+// onto the narrower set, so the split below is no longer a spec difference:
+// what remains of it is a deliberate receive-side allowance, documented at
+// each constant. Getting this wrong is silent — an over-long value is accepted
+// here and then truncated or rejected downstream at BCA.
 
 // Field length limits per BCA's tables.
 const (
@@ -23,42 +26,59 @@ const (
 	// unpadded 5-character company code keep working.
 	maxPartnerServiceID = 8
 
-	// Inquiry (service 24)
+	// Inquiry (service 24).
+	//
+	// inquiryRequestId is String(30) Fixed as of v2.4, down from the 128 the
+	// older documentation gave it. 30 is enforced: the two are not independent
+	// — "If payment comes from the Inquiry process, paymentRequestId must be
+	// the same with inquiryRequestId", and paymentRequestId is capped at 30 on
+	// the payment service. Accepting a 40-character id at inquiry only defers
+	// the rejection to the payment that follows it, by which point the
+	// customer has already been shown a bill.
 	maxInquiryCustomerNo       = 20
 	maxInquiryVirtualAccountNo = 28
-	maxInquiryRequestID        = 128
+	maxInquiryRequestID        = 30
+	// language is String(2) ISO-639-1 and passApp String(64); both Optional,
+	// both inquiry-only (VA-BillPresentment v2.4).
+	maxLanguage = 2
+	maxPassApp  = 64
 
 	// Payment (service 25) and status (service 26).
 	//
-	// BCA's payment/status tables say customerNo(18)/virtualAccountNo(26)
-	// while its inquiry table says (20)/(28) for the same two fields. INBOUND
-	// we accept the wider pair, purely for backward compatibility: the dynamic
-	// sequence used to emit 20-digit customerNo values, and VA numbers already
-	// in customers' hands from that era must stay payable. Rejecting them here
-	// would break VAs this very system issued.
+	// Every current table — inquiry included, since v2.4 — says
+	// customerNo(18)/virtualAccountNo(26). INBOUND we still accept (20)/(28),
+	// purely for backward compatibility: the dynamic sequence used to emit
+	// 20-digit customerNo values, and VA numbers already in customers' hands
+	// from that era must stay payable. Rejecting them here would break VAs
+	// this very system issued.
 	//
 	// This is a receive-side allowance only. Issuance is now 18/26 — see
-	// NextCustomerNoSequence — so every NEW VA number fits BCA's narrower
-	// payment/status limit. Being more permissive than BCA on receive is safe
-	// (BCA never sends more than it generated); being more permissive on issue
-	// was not, and that is the half that was fixed.
+	// NextCustomerNoSequence — so every NEW VA number fits BCA's limit. Being
+	// more permissive than BCA on receive is safe (BCA never sends more than
+	// it generated); being more permissive on issue was not, and that is the
+	// half that was fixed.
 	maxPaymentCustomerNo       = 20
 	maxPaymentVirtualAccountNo = 28
 	maxPaymentRequestID        = 30
-	maxVirtualAccountName      = 30
-	maxVirtualAccountEmail     = 255
-	maxVirtualAccountPhone     = 30
-	maxTrxID                   = 64
-	maxHashedSourceAccountNo   = 32
-	maxSourceBankCode          = 3
-	maxPaidBills               = 6
-	maxReferenceNo             = 11
-	maxJournalNum              = 6
-	maxPaymentType             = 1
-	maxFlagAdvise              = 1
-	maxSubCompany              = 5
-	maxPaymentBillDetails      = 5
-	maxFreeTexts               = 9
+	// MaxVirtualAccountName is String(30) Max on the payment REQUEST and on
+	// the inquiry RESPONSE alike (VA-Payment-Flag v2.3, VA-BillPresentment
+	// v2.4). Exported because create-va must enforce it too: a name accepted
+	// there is echoed on every later inquiry, so the limit has to bite at
+	// registration rather than at the channel.
+	MaxVirtualAccountName    = 30
+	maxVirtualAccountEmail   = 255
+	maxVirtualAccountPhone   = 30
+	maxTrxID                 = 64
+	maxHashedSourceAccountNo = 32
+	maxSourceBankCode        = 3
+	maxPaidBills             = 6
+	maxReferenceNo           = 11
+	maxJournalNum            = 6
+	maxPaymentType           = 1
+	maxFlagAdvise            = 1
+	maxSubCompany            = 5
+	maxPaymentBillDetails    = 5
+	maxFreeTexts             = 9
 
 	// MaxInquiryBillDetails and MaxInquiryFreeTexts bound what the INQUIRY
 	// response may carry. BCA's inquiry field table nominally allows 24
@@ -69,6 +89,12 @@ const (
 	// a merchant creates the VA and again when the response is built.
 	MaxInquiryBillDetails = 5
 	MaxInquiryFreeTexts   = 5
+
+	// MaxFreeTextLength bounds each freeTexts entry's english/indonesia string.
+	// Exported because create-va enforces it too: a freeText stored there is
+	// echoed verbatim into every inquiry response for the VA, so an over-long
+	// entry fails the inquiry at BCA rather than at the point it was accepted.
+	MaxFreeTextLength = 32
 
 	// MaxIssuedCustomerNo and MaxIssuedVirtualAccountNo bound what this
 	// gateway may ISSUE, as opposed to what it will accept inbound.
@@ -146,10 +172,15 @@ func badFormat(field string) *FieldViolation {
 	return &FieldViolation{Kind: ViolationFormat, Field: field}
 }
 
-// ValidateInquiryRequest checks an InquiryRequest against BCA's service-24
-// field table. Note what is NOT here: `amount`. BCA's inquiry payload has no
-// such field, so requiring one rejects every conformant inquiry.
-func ValidateInquiryRequest(req *VAInquiryRequest) *FieldViolation {
+// ValidateInquiryRequest checks an InquiryRequest against the service-24 field
+// table in Tech. Doc. OpenAPI VA-BillPresentment v2.4.
+//
+// trxDateInit and channelCode are marked Mandatory (Y) there but are NOT
+// required here. Both are BCA-generated and always present on a real BCA
+// inquiry; requiring them would only reject other vendors that omit what BCA
+// happens to send. Being more permissive than the spec on RECEIVE cannot
+// produce a wrong answer — the reverse would.
+func ValidateInquiryRequest(req *VAInquiryRequest, strictMandatory bool) *FieldViolation {
 	if v := requireVAIdentity(req.PartnerServiceID, req.CustomerNo, req.VirtualAccountNo,
 		maxInquiryCustomerNo, maxInquiryVirtualAccountNo); v != nil {
 		return v
@@ -160,16 +191,48 @@ func ValidateInquiryRequest(req *VAInquiryRequest) *FieldViolation {
 	if len(req.InquiryRequestID) > maxInquiryRequestID {
 		return badFormat("inquiryRequestId")
 	}
-	// channelCode is Optional (N) on inquiry, so 0/absent is fine; a value that
-	// IS sent must still be one BCA generates.
+	// A value that IS sent must be one BCA generates, whether or not the field
+	// was obligatory.
 	if req.ChannelCode != 0 && !allowedPaymentChannelCodes[req.ChannelCode] {
 		return badFormat("channelCode")
 	}
-	// amount is not part of BCA's inquiry payload, but a vendor that sends it
-	// anyway must still send it well-formed.
+	// amount IS part of the inquiry payload as of v2.4 (Object, Mandatory N).
+	// It is still never required — the customer-entered amount belongs to the
+	// payment — but when sent it must be well-formed.
 	if req.Amount != nil {
 		if v := validateAmount(req.Amount, "amount"); v != nil {
 			return v
+		}
+	}
+	if strictMandatory {
+		// trxDateInit and channelCode are both Mandatory (Y) on the v2.4
+		// inquiry payload. They are gated behind the same per-vendor switch as
+		// payment's extended mandatory set: BCA always sends them, but this
+		// gateway fronts other vendors whose field tables do not, and one
+		// vendor's contract must not be imposed on the rest.
+		if req.TrxDateInit == nil {
+			return mandatory("trxDateInit")
+		}
+		if req.ChannelCode == 0 {
+			return mandatory("channelCode")
+		}
+	}
+	// The remaining Optional fields of the v2.4 payload. They are inert here —
+	// nothing in the bill this inquiry presents depends on them — but a value
+	// that IS sent still has to fit, or it is accepted at inquiry and rejected
+	// at the payment that quotes it back.
+	for _, check := range []struct {
+		field string
+		value string
+		max   int
+	}{
+		{"language", req.Language, maxLanguage},
+		{"hashedSourceAccountNo", req.HashedSourceAccountNo, maxHashedSourceAccountNo},
+		{"sourceBankCode", req.SourceBankCode, maxSourceBankCode},
+		{"passApp", req.PassApp, maxPassApp},
+	} {
+		if len(check.value) > check.max {
+			return badFormat(check.field)
 		}
 	}
 	return nil
@@ -245,7 +308,7 @@ func validatePaymentOptionalLengths(req *VAPaymentRequest) *FieldViolation {
 		value string
 		max   int
 	}{
-		{"virtualAccountName", req.VirtualAccountName, maxVirtualAccountName},
+		{"virtualAccountName", req.VirtualAccountName, MaxVirtualAccountName},
 		{"virtualAccountEmail", req.VirtualAccountEmail, maxVirtualAccountEmail},
 		{"virtualAccountPhone", req.VirtualAccountPhone, maxVirtualAccountPhone},
 		{"trxId", req.TrxID, maxTrxID},
@@ -277,6 +340,24 @@ func validatePaymentOptionalLengths(req *VAPaymentRequest) *FieldViolation {
 	return nil
 }
 
+// validateFreeTextLengths enforces the per-entry limit on freeTexts. Only the
+// COUNT was checked before, so an over-long entry passed here and was then
+// echoed into the inquiry/payment response, where BCA fails the whole
+// transaction on it ("The length of the characters sent must not exceed the
+// number stated in the technical documentation").
+//
+// 32 is the current figure (VA-BillPresentment v2.4, VA-Payment-Flag v2.3);
+// the older documentation said 18, so this is a widening — nothing that used
+// to pass starts failing.
+func validateFreeTextLengths(texts []BilingualText) *FieldViolation {
+	for _, t := range texts {
+		if len(t.English) > MaxFreeTextLength || len(t.Indonesia) > MaxFreeTextLength {
+			return badFormat("freeTexts")
+		}
+	}
+	return nil
+}
+
 func validatePaymentAmountsAndBills(req *VAPaymentRequest) *FieldViolation {
 	if req.TotalAmount != nil {
 		if v := validateAmount(req.TotalAmount, "totalAmount"); v != nil {
@@ -298,6 +379,9 @@ func validatePaymentAmountsAndBills(req *VAPaymentRequest) *FieldViolation {
 	}
 	if len(req.FreeTexts) > maxFreeTexts {
 		return badFormat("freeTexts")
+	}
+	if v := validateFreeTextLengths(req.FreeTexts); v != nil {
+		return v
 	}
 	for _, bill := range req.BillDetails {
 		if bill.BillAmount == nil {

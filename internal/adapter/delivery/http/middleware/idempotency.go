@@ -65,8 +65,16 @@ func WithReplaySuppressedFor(pred func(echo.Context) bool) IdempotencyOption {
 }
 
 // IdempotencyMiddleware enforces idempotency for mutating requests, keyed on
-// the ASPI-standard X-EXTERNAL-ID header (rather than a custom Idempotency-Key
-// header, which isn't part of the SNAP/ASPI contract). lockTTL bounds how
+// X-EXTERNAL-ID.
+//
+// That is the only key there is. BCA's header tables — the common one in
+// OAuth & Signature v1.1 and the per-service ones in VA-BillPresentment v2.4,
+// VA-Payment-Flag v2.3 and VA-Payment-Status V2 v1.0 — publish exactly
+// Content-Type, Authorization, X-TIMESTAMP, X-SIGNATURE, ORIGIN (optional),
+// CHANNEL-ID, X-PARTNER-ID and X-EXTERNAL-ID. There is no Idempotency-Key in
+// any of them, so none is read or sent anywhere in this service.
+//
+// lockTTL bounds how
 // long a concurrent duplicate request is held off while the original is in
 // flight; cacheTTL is how long the completed response is replayed for a
 // repeated key. Both are caller-supplied (sourced from env, e.g.

@@ -210,8 +210,14 @@ of how correctly it's signed.
 Idempotency is keyed on `X-EXTERNAL-ID` alone (not scoped per endpoint):
 replaying the same value with the **same** body returns the original
 response with an `X-Cache-Replay: true` header; with a **different** body you
-get `422 Unprocessable Entity` (`4227300`), and while the first request is
-still in flight you get `409 Conflict` (`4097300`).
+get `409 Conflict`, and while the first request is still in flight you also get
+`409 Conflict`. Both carry the calling service's own conflict code (e.g.
+`4092700` on create-va).
+
+> This used to answer `422 Unprocessable Entity` (`4227300`) for the
+> payload-mismatch case. `422` is not a SNAP status at all, and a reused
+> `X-EXTERNAL-ID` is a conflict — BCA documents exactly this as `Conflict`. If
+> you matched on `4227300`, switch to the `409`.
 
 ## Response codes
 
@@ -220,8 +226,8 @@ code, `CC` = case code. The service code differs **per endpoint**:
 
 | Endpoint | Method | Success | Common failures |
 |---|---|---|---|
-| `/access-token/b2b` | POST | `2007300` | `4017300` unknown client or bad RSA signature |
-| `/transfer-va/create-va` (27) | POST | `2002700` | `4002700` field format · `4002701` missing mandatory · `5002700` |
+| `/access-token/b2b` | POST | `2007300` | `4007301` invalid field format (`grantType` or `X-TIMESTAMP`) · `4007302` missing `X-CLIENT-KEY` · `4017300` unknown client or bad RSA signature |
+| `/transfer-va/create-va` (27) | POST | `2002700` | `4002700` field format (incl. over-long `freeTexts`) · `4002701` missing mandatory · `4002702` invalid field format (over-long `virtualAccountName`, bad `vaType` combination) · `4092700` number still has a pending bill · `5002700` |
 | `/transfer-va/delete-va` (31) | DELETE | `2003100` | `4003101` field format / missing mandatory · `5003100` |
 | `/transfer-va/list` | POST | `2002400` | not an ASPI-defined endpoint — a dashboard convenience API |
 | `/transfer-va/list-transactions` | POST | `2002400` | not an ASPI-defined endpoint — a dashboard convenience API |
@@ -239,6 +245,17 @@ worth calling out:
   `virtualAccountNo` is `partnerServiceId` + `customerNo` — so
   `"   12345"` + `"0001234567"` gives `"   123450001234567"`. Sending an
   unpadded `partnerServiceId` is the single most common create-va mistake.
+- **`virtualAccountName` is capped at 30 characters** (`4002702` if longer),
+  and each `freeTexts` entry at 32 (`4002700`). These are not our limits —
+  both fields are echoed verbatim into the SNAP inquiry response, where BCA
+  caps them (*Tech. Doc. OpenAPI VA-BillPresentment v2.4*) and fails the whole
+  inquiry on an over-long value. Enforcing them at create-va means you find out
+  here, rather than discovering it when a customer is standing at an ATM. We
+  reject rather than truncate: a silently shortened holder name is not the name
+  you registered.
+- **`customerNo` is up to 18 digits** and `virtualAccountNo` up to 26. VAs we
+  issue use those widths. Numbers issued under our older sequence went to
+  20/28 and remain payable, but new ones will not exceed 18/26.
 - **`additionalInfo.dbUrlProcess`** is where you register the callback URL
   for this VA. When the vendor later reports a payment, we POST a
   `payment.received` notification there asynchronously. Without it, the VA

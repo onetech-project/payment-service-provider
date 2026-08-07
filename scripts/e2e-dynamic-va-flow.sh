@@ -84,7 +84,7 @@ RUN_ID="$(date +%s)$RANDOM"
 echo "=================================================================="
 echo "Test 1/3: Dynamic No Bill (partnerServiceId=15973, vaType=04)"
 echo "=================================================================="
-CREATE_RESP_1="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15973 -n "Dynamic NoBill ${RUN_ID}" -y 04 -t "trx-dyn-nobill-${RUN_ID}" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")"
+CREATE_RESP_1="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15973 -n "Dyn NoBill ${RUN_ID}" -y 04 -t "trx-dyn-nobill-${RUN_ID}" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")"
 echo "$CREATE_RESP_1" | jq .
 
 RESP_CODE_1="$(echo "$CREATE_RESP_1" | jq -r '.responseCode // empty')"
@@ -116,7 +116,7 @@ echo "=================================================================="
 echo "Test 2/3: Dynamic Fixed Bill (partnerServiceId=15975, vaType=06)"
 echo "=================================================================="
 FIXED_AMOUNT="150000.00"
-CREATE_RESP_2="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15975 -n "Dynamic Fixed ${RUN_ID}" -y 06 -a "$FIXED_AMOUNT" -t "trx-dyn-fixed-${RUN_ID}" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")"
+CREATE_RESP_2="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15975 -n "Dyn Fixed ${RUN_ID}" -y 06 -a "$FIXED_AMOUNT" -t "trx-dyn-fixed-${RUN_ID}" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")"
 echo "$CREATE_RESP_2" | jq .
 
 RESP_CODE_2="$(echo "$CREATE_RESP_2" | jq -r '.responseCode // empty')"
@@ -151,7 +151,7 @@ echo "=================================================================="
 echo "Test 3/3: Dynamic Variable Bill (partnerServiceId=15974, vaType=05)"
 echo "=================================================================="
 TARGET_AMOUNT="100000.00"
-CREATE_RESP_3="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15974 -n "Dynamic Variable ${RUN_ID}" -y 05 -a "$TARGET_AMOUNT" -t "trx-dyn-variable-${RUN_ID}" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")"
+CREATE_RESP_3="$("$SCRIPT_DIR/merchant-create-va.sh" -s 15974 -n "Dyn Var ${RUN_ID}" -y 05 -a "$TARGET_AMOUNT" -t "trx-dyn-variable-${RUN_ID}" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL")"
 echo "$CREATE_RESP_3" | jq .
 
 RESP_CODE_3="$(echo "$CREATE_RESP_3" | jq -r '.responseCode // empty')"

@@ -55,7 +55,7 @@ func (h *VAHandler) strictMandatoryFor(c echo.Context) bool {
 // @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
-// @Param X-PARTNER-ID header string true "Partner identifier, max 36 chars. Value-checked whenever the vendor config sets VENDOR_PARTNER_ID"
+// @Param X-PARTNER-ID header string true "Partner ID using Company Code VA, max 8 chars (BCA tech docs v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID"
 // @Param X-EXTERNAL-ID header string true "Numeric string, max 36 chars, unique per calendar day. Doubles as the idempotency key"
 // @Param CHANNEL-ID header string true "PJP channel id (BCA VA: 95231). Value-checked whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAInquiryRequest true "VA inquiry request"
@@ -78,7 +78,7 @@ func (h *VAHandler) Inquiry(c echo.Context) error {
 	}
 
 	echoData := inquiryEcho(&req)
-	if v := domain.ValidateInquiryRequest(&req); v != nil {
+	if v := domain.ValidateInquiryRequest(&req, h.strictMandatoryFor(c)); v != nil {
 		code, message := violationCode(domain.ServiceCodeInquiry, v)
 		return c.JSON(http.StatusBadRequest,
 			domain.NewInquiryErrorResponse(code, message, echoData))
@@ -132,7 +132,7 @@ func (h *VAHandler) inquiryError(c echo.Context, err error, echoData domain.VAId
 // @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
-// @Param X-PARTNER-ID header string true "Partner identifier, max 36 chars. Value-checked whenever the vendor config sets VENDOR_PARTNER_ID"
+// @Param X-PARTNER-ID header string true "Partner ID using Company Code VA, max 8 chars (BCA tech docs v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID"
 // @Param X-EXTERNAL-ID header string true "Numeric string, max 36 chars, unique per calendar day. Doubles as the idempotency key"
 // @Param CHANNEL-ID header string true "PJP channel id (BCA VA: 95231). Value-checked whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAPaymentRequest true "VA payment notification"
@@ -223,7 +223,7 @@ func (h *VAHandler) paymentError(c echo.Context, err error, req *domain.VAPaymen
 // @Param Authorization header string true "Bearer accessToken issued by POST /openapi/v1.0/access-token/b2b. Required for vendors onboarded with a VENDOR_CLIENT_ID; the token is also bound into the AccessToken component of stringToSign"
 // @Param X-TIMESTAMP header string true "Request timestamp, ISO 8601"
 // @Param X-SIGNATURE header string true "Symmetric signature; compute via POST /api/v1/utilities/signature-service"
-// @Param X-PARTNER-ID header string true "Partner identifier, max 36 chars. Value-checked whenever the vendor config sets VENDOR_PARTNER_ID"
+// @Param X-PARTNER-ID header string true "Partner ID using Company Code VA, max 8 chars (BCA tech docs v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID"
 // @Param X-EXTERNAL-ID header string true "Numeric string, max 36 chars, unique per calendar day. Doubles as the idempotency key"
 // @Param CHANNEL-ID header string true "PJP channel id (BCA VA: 95231). Value-checked whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAStatusRequest true "VA status request"

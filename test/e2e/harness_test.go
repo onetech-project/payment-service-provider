@@ -451,6 +451,9 @@ type requestOptions struct {
 	secret       string // signs with a different secret
 	rawBody      string // sent verbatim, e.g. malformed JSON
 	bodyEncoding string
+	// extraHeaders are sent on top of the documented set, to prove the
+	// service ignores anything BCA does not publish.
+	extraHeaders map[string]string
 }
 
 // call signs and sends a request exactly as a vendor would: stringToSign over
@@ -498,6 +501,10 @@ func (s *server) call(t *testing.T, path string, payload any, opts ...func(*requ
 		req.Header.Set("X-PARTNER-ID", o.partnerID)
 	}
 
+	for name, value := range o.extraHeaders {
+		req.Header.Set(name, value)
+	}
+
 	rec := httptest.NewRecorder()
 	s.echo.ServeHTTP(rec, req)
 
@@ -542,6 +549,15 @@ func withRawBody(body string) func(*requestOptions) {
 
 func withBodyEncoding(encoding string) func(*requestOptions) {
 	return func(o *requestOptions) { o.bodyEncoding = encoding }
+}
+
+func withExtraHeader(name, value string) func(*requestOptions) {
+	return func(o *requestOptions) {
+		if o.extraHeaders == nil {
+			o.extraHeaders = map[string]string{}
+		}
+		o.extraHeaders[name] = value
+	}
 }
 
 // --- payload builders ---------------------------------------------------

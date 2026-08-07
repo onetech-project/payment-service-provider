@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -1038,7 +1039,7 @@ func TestMerchantVAUsecase_CreateVA_DynamicVirtualAccountNoSupplied_ConflictOnPe
 		PartnerServiceID:   "15975",
 		CustomerNo:         "",
 		VirtualAccountNo:   "1597506888888888888888",
-		VirtualAccountName: "Dynamic Merchant Chosen Conflict",
+		VirtualAccountName: "Dynamic Chosen Conflict",
 		TrxID:              "trx-dyn-conflict",
 		TotalAmount:        &domain.Amount{Value: "75000.00", Currency: "IDR"},
 		AdditionalInfo:     map[string]interface{}{"vaType": "06"},
@@ -1732,4 +1733,82 @@ func TestMerchantVAUsecase_ListTransactions_RepositoryFailureIs500(t *testing.T)
 	var domainErr *domain.DomainError
 	require.ErrorAs(t, err, &domainErr)
 	assert.Equal(t, "5002400", domainErr.SNAPCode)
+}
+
+// A name longer than 30 must be refused at create-va, not stored.
+// virtualAccountName is String(30) Max on the inquiry RESPONSE
+// (VA-BillPresentment v2.4), so a longer name accepted here is echoed on every
+// later inquiry and BCA fails the transaction at the channel — in front of the
+// customer, with nothing pointing back at the call that caused it.
+func TestMerchantVAUsecase_CreateVA_RejectsOverLongVirtualAccountName(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "088899",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
+		VirtualAccountName: strings.Repeat("N", domain.MaxVirtualAccountName+1),
+		TrxID:              "trx-longname",
+		TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
+	}
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4002702", domainErr.SNAPCode)
+	assert.Contains(t, domainErr.Message, "virtualAccountName")
+	// Refused before any persistence — nothing over-long reaches the database.
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
+}
+
+// Exactly 30 is inside the limit; the boundary must not be off by one.
+func TestMerchantVAUsecase_CreateVA_AcceptsNameAtExactlyThirty(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "088899",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
+		VirtualAccountName: strings.Repeat("N", domain.MaxVirtualAccountName),
+		TrxID:              "trx-name30",
+		TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
+	}
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("SaveInquiry", mock.Anything, mock.Anything).Return(nil)
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "2002700", resp.ResponseCode)
+}
+
+// freeTexts are echoed verbatim into the inquiry response, so an over-long
+// entry has to be refused where the merchant can still shorten it.
+func TestMerchantVAUsecase_CreateVA_RejectsOverLongFreeText(t *testing.T) {
+	mockRepo := new(MockMerchantVARepository)
+	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
+
+	req := &domain.MerchantCreateVARequest{
+		PartnerServiceID:   "088899",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
+		VirtualAccountName: "Jokul Doe",
+		TrxID:              "trx-freetext",
+		TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
+		FreeTexts: []domain.BilingualText{
+			{English: strings.Repeat("x", domain.MaxFreeTextLength+1), Indonesia: "ok"},
+		},
+	}
+
+	resp, err := uc.CreateVA(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Contains(t, domainErr.Message, "freeTexts")
+	mockRepo.AssertNotCalled(t, "SaveInquiry", mock.Anything, mock.Anything)
 }

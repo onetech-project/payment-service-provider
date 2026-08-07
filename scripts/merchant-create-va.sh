@@ -273,7 +273,6 @@ curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "CHANNEL-ID: ${CHANNEL_ID}" \
 	-H "X-PARTNER-ID: ${PARTNER_ID}" \
 	-H "X-EXTERNAL-ID: ${EXTERNAL_ID}" \
-	-H "Idempotency-Key: $(uuidgen)" \
 	"${AUTH_HEADER[@]}" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)

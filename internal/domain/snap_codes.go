@@ -117,24 +117,26 @@ const (
 	CodeStatusBadRequest  = "4002600"
 	CodeStatusInternalErr = "5002601"
 
-	// Access token (service 73). These come from the "Errors" table in
-	// Developer API BCA's AUTHENTICATION SNAP section, which — unlike the
-	// transfer-va services — gives the failing HEADER its own case code rather
-	// than one code for the whole endpoint. Collapsing them into 4007300 tells
-	// the caller only "something in your request was wrong".
+	// Access token (service 73). These come from the Errors table in
+	// "BCA API - OAuth & Signature OpenAPI" v1.1, which — unlike the
+	// transfer-va services — gives the failing FIELD its own case code rather
+	// than one code for the whole endpoint. Collapsing them tells the caller
+	// only "something in your request was wrong".
 	CodeTokenSuccess = "2007300"
-	// CodeTokenInvalidField is BCA's "Invalid field format
-	// [clientId/clientSecret/grantType]" — a body field, or a header with no
-	// case code of its own.
-	CodeTokenInvalidField = "4007300"
-	// CodeTokenInvalidTimestamp is "Invalid field format [X-TIMESTAMP]",
-	// covering both an unparseable timestamp and one outside the freshness
-	// window: BCA publishes no separate code for staleness.
+	// CodeTokenInvalidField and CodeTokenInvalidTimestamp share 4007301: v1.1
+	// lists "Invalid field format [clientId/clientSecret/grantType]" and
+	// "Invalid field format [X-TIMESTAMP]" under the SAME code, which is
+	// consistent with case code 01 meaning "invalid field format" throughout
+	// SNAP. The earlier Developer API BCA doc had the first row at 4007300;
+	// v1.1 drops 4007300 from the list entirely, so it is deliberately not
+	// declared here — the message is what distinguishes the two.
+	CodeTokenInvalidField     = "4007301"
 	CodeTokenInvalidTimestamp = "4007301"
 	// CodeTokenMissingClientKey is "Invalid mandatory field [X-CLIENT-KEY]".
 	CodeTokenMissingClientKey = "4007302"
 	// CodeTokenUnauthorized is "Unauthorized. [Signature]" / "[Unknown
-	// client]" — signature verification and client resolution alike.
+	// client]" / "[Connection not allowed]". v1.1 moved the last of those from
+	// HTTP 400 to 401, so every reason on this code is now a 401.
 	CodeTokenUnauthorized  = "4017300"
 	CodeTokenInternalError = "5007300"
 )

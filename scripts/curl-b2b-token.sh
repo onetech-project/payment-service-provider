@@ -59,6 +59,5 @@ curl -sS -X POST "${BASE_URL}/openapi/v1.0/access-token/b2b" \
 	-H "X-CLIENT-KEY: ${CLIENT_ID}" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
 	-H "X-SIGNATURE: ${SIGNATURE}" \
-	-H "Idempotency-Key: $(uuidgen)" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)

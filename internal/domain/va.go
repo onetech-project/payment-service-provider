@@ -18,13 +18,28 @@ type VAInquiryRequest struct {
 	// payload). It was previously tagged "txnDateInit", which silently never
 	// bound.
 	TrxDateInit *time.Time `json:"trxDateInit,omitempty"`
-	// Amount is NOT part of BCA's inquiry payload. It is kept as an optional
-	// passthrough for vendors that send one, but must never be required —
-	// requiring it rejects every conformant BCA inquiry.
-	Amount           *Amount                `json:"amount,omitempty"`
-	ChannelCode      int                    `json:"channelCode,omitempty"`
-	InquiryRequestID string                 `json:"inquiryRequestId"`
-	AdditionalInfo   map[string]interface{} `json:"additionalInfo,omitempty"`
+	// Amount is Optional (N) on the inquiry payload. It was absent from the
+	// table altogether in the older documentation and reappears in
+	// VA-BillPresentment v2.4; it has never been mandatory, and requiring it
+	// would reject every inquiry that omits it. Treated as a passthrough: the
+	// amount a customer entered belongs to the payment, not to the bill this
+	// inquiry presents.
+	Amount      *Amount `json:"amount,omitempty"`
+	ChannelCode int     `json:"channelCode,omitempty"`
+	// Language is String(2) ISO-639-1, Optional.
+	Language string `json:"language,omitempty"`
+	// HashedSourceAccountNo String(32) and SourceBankCode String(3) are both
+	// Optional, and both carry the paying account's identity through from the
+	// channel.
+	HashedSourceAccountNo string                 `json:"hashedSourceAccountNo,omitempty"`
+	SourceBankCode        string                 `json:"sourceBankCode,omitempty"`
+	InquiryRequestID      string                 `json:"inquiryRequestId"`
+	AdditionalInfo        map[string]interface{} `json:"additionalInfo,omitempty"`
+	// PassApp is String(64) Optional, "Key for 3rd party to access API like
+	// client secret". Bound and length-checked but never acted on: this
+	// service authenticates on X-SIGNATURE, and treating a body field as a
+	// second credential would be a way in that the signature does not cover.
+	PassApp string `json:"passApp,omitempty"`
 }
 
 // VAInquiryResponse represents response to vendor inquiry
@@ -218,7 +233,19 @@ type VAStatusResponse struct {
 	ResponseCode       string                 `json:"responseCode"`
 	ResponseMessage    string                 `json:"responseMessage"`
 	VirtualAccountData *VAStatusData          `json:"virtualAccountData,omitempty"`
-	AdditionalInfo     map[string]interface{} `json:"additionalInfo,omitempty"`
+	AdditionalInfo     map[string]interface{} `json:"additionalInfo"`
+}
+
+// MarshalJSON renders additionalInfo as {} rather than null when nothing was
+// set, matching the inquiry and payment envelopes and BCA's own status
+// response sample, which emits the key unconditionally.
+func (r VAStatusResponse) MarshalJSON() ([]byte, error) {
+	type alias VAStatusResponse
+	out := alias(r)
+	if out.AdditionalInfo == nil {
+		out.AdditionalInfo = map[string]interface{}{}
+	}
+	return json.Marshal(out)
 }
 
 // VAStatusData contains status inquiry result

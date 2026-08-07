@@ -474,3 +474,36 @@ func TestE2E_ResponseCodesCarryTheCalledServiceCode(t *testing.T) {
 		assert.Equal(t, service, code[3:5], "%s must answer with service code %s, got %s", path, service, code)
 	}
 }
+
+// BCA's header tables are closed sets. A request carrying an extra header must
+// still be processed normally — the service reads only what BCA publishes, so
+// a stray Idempotency-Key (which this service used to send, and which appears
+// in no BCA document) can neither be required nor change the outcome.
+func TestE2E_UndocumentedHeadersAreIgnored(t *testing.T) {
+	s := newServer(t)
+	seedFixedBill(s, testPartnerID, "678901234567890260", "1000.00")
+
+	resp := s.call(t, paymentPath,
+		paymentPayload(testPartnerID, "678901234567890260", "PAY-HDR-1", "1000.00"),
+		withExtraHeader("Idempotency-Key", "d3b07384-d9a0-4c9b-9b0e-1f2a3b4c5d6e"),
+		withExtraHeader("X-CLIENT-KEY", "some-client-key"),
+		withExtraHeader("X-DEVICE-ID", "device-1"))
+
+	require.Equal(t, http.StatusOK, resp.status, resp.raw)
+	assert.Equal(t, domain.CodePaymentSuccess, resp.code())
+}
+
+// The signature covers METHOD:PATH:TOKEN:BODYHASH:TIMESTAMP and nothing else,
+// so an extra header cannot invalidate it either.
+func TestE2E_UndocumentedHeadersDoNotBreakTheSignature(t *testing.T) {
+	s := newServer(t)
+
+	resp := s.call(t, inquiryPath,
+		inquiryPayload(testPartnerID, "678901234567890261", "INQ-HDR-1"),
+		withExtraHeader("Idempotency-Key", "irrelevant"))
+
+	// The VA does not exist, but the request got as far as the business
+	// decision — it was not rejected as unauthorized.
+	require.Equal(t, http.StatusNotFound, resp.status, resp.raw)
+	assert.Equal(t, domain.CodeInquiryNotFound, resp.code())
+}

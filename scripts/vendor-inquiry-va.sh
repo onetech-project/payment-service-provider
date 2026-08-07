@@ -45,10 +45,9 @@ ENV_FILE=""
 CHANNEL_ID="95231"
 PARTNER_ID="111111"
 ACCESS_TOKEN=""
-CLIENT_KEY=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-k <client-key>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -67,7 +66,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:v:a:e:f:o:k:i:p:u:h" opt; do
+while getopts "s:c:v:a:e:f:o:i:p:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -76,7 +75,6 @@ while getopts "s:c:v:a:e:f:o:k:i:p:u:h" opt; do
 	e) CLIENT_SECRET="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
 	o) ACCESS_TOKEN="$OPTARG" ;;
-	k) CLIENT_KEY="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
@@ -93,12 +91,6 @@ if [[ -n "$ENV_FILE" ]]; then
 	[[ -z "$CLIENT_SECRET" ]] && echo "!! ${ENV_FILE}: VENDOR_CLIENT_SECRET is empty — fill it in, or pass -e <client-secret> directly." >&2
 
 	VENDOR_CLIENT_ID="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
-	# X-CLIENT-KEY is not an ASPI transaction-request header, but a deployment
-	# is free to list it in VENDOR_REQUIRED_HEADERS, and the UAT instance does
-	# — SNAPAuthMiddleware then rejects inquiry/payment/status without it
-	# ("Missing required header: X-CLIENT-KEY"). Default it to the vendor's
-	# clientId so those deployments work; -k overrides.
-	[[ -z "$CLIENT_KEY" ]] && CLIENT_KEY="$VENDOR_CLIENT_ID"
 
 	if [[ -z "$ACCESS_TOKEN" ]]; then
 		VENDOR_PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" VENDOR_PRIVATE_KEY_PATH || true)"
@@ -172,20 +164,13 @@ echo >&2
 AUTH_HEADER=()
 [[ -n "$ACCESS_TOKEN" ]] && AUTH_HEADER=(-H "Authorization: Bearer ${ACCESS_TOKEN}")
 
-# X-CLIENT-KEY is sent only when known — it is never part of stringToSign, so
-# adding it is inert on deployments that don't list it as required.
-CLIENT_KEY_HEADER=()
-[[ -n "$CLIENT_KEY" ]] && CLIENT_KEY_HEADER=(-H "X-CLIENT-KEY: ${CLIENT_KEY}")
-
 curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "Content-Type: application/json" \
 	"${AUTH_HEADER[@]}" \
-	"${CLIENT_KEY_HEADER[@]}" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
 	-H "X-SIGNATURE: ${SIGNATURE}" \
 	-H "CHANNEL-ID: ${CHANNEL_ID}" \
 	-H "X-PARTNER-ID: ${PARTNER_ID}" \
 	-H "X-EXTERNAL-ID: ${EXTERNAL_ID}" \
-	-H "Idempotency-Key: $(uuidgen)" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)

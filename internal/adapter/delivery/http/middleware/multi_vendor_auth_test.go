@@ -181,3 +181,54 @@ func TestMultiVendorSNAPAuth_BodyIsReadableByTheHandler(t *testing.T) {
 	assert.Equal(t, "67890", received["partnerServiceId"])
 	assert.Equal(t, "123", received["customerNo"])
 }
+
+// BCA's header tables are closed sets. These pin that the service neither
+// requires nor depends on anything outside them — in particular not
+// Idempotency-Key, which appears in no BCA document, and not X-CLIENT-KEY,
+// which belongs to the access-token endpoint alone.
+func TestIsDocumentedTransferVAHeader(t *testing.T) {
+	for _, header := range []string{
+		"Content-Type", "Authorization", "X-TIMESTAMP", "X-SIGNATURE",
+		"ORIGIN", "CHANNEL-ID", "X-PARTNER-ID", "X-EXTERNAL-ID",
+	} {
+		assert.True(t, isDocumentedTransferVAHeader(header), "%s is published for transfer-va", header)
+	}
+
+	for _, header := range []string{
+		"Idempotency-Key", "X-CLIENT-KEY", "X-CLIENT-SECRET", "X-IP-ADDRESS",
+		"X-DEVICE-ID", "X-LATITUDE", "X-LONGITUDE",
+	} {
+		assert.False(t, isDocumentedTransferVAHeader(header), "%s is not a transfer-va header", header)
+	}
+
+	// HTTP header names are case-insensitive.
+	assert.True(t, isDocumentedTransferVAHeader("x-external-id"))
+	assert.True(t, isDocumentedTransferVAHeader("  Channel-Id  "))
+}
+
+func TestMultiVendorSNAPAuth_ConfigCannotRequireAnUndocumentedHeader(t *testing.T) {
+	// A vendor config listing X-CLIENT-KEY (a real deployment did) would
+	// otherwise reject every conformant BCA request with a mandatory-field
+	// error about a header BCA has no way to send.
+	cfg := vendorConfigFor("bca", "bca-secret", "12345", "95231", crypto.BodyHashHex, true)
+	cfg.RequiredHeaders = []string{
+		headerTimestamp, headerSignature, "X-CLIENT-KEY", "Idempotency-Key",
+	}
+
+	e := echo.New()
+	timestamp := time.Now().Format(time.RFC3339)
+	req := signedVendorRequest("/openapi/v1.0/transfer-va/inquiry", `{}`,
+		"bca-secret", crypto.BodyHashHex, "12345", "95231", timestamp)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	called := false
+	handler := MultiVendorSNAPAuth([]*config.VendorConfig{cfg}, nil, false)(func(c echo.Context) error {
+		called = true
+		return c.NoContent(http.StatusOK)
+	})
+
+	require.NoError(t, handler(c))
+	assert.True(t, called, "the undocumented entries must be ignored, not enforced")
+	assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}

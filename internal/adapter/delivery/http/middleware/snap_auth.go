@@ -18,6 +18,32 @@ import (
 // for every transfer-va service.
 const maxExternalIDLength = 36
 
+// documentedTransferVAHeaders is the closed set BCA publishes for the
+// transfer-va services: the common table in BCA OpenAPI OAuth & Signature
+// v1.1 plus the per-service "Additional Headers" tables in
+// VA-BillPresentment v2.4, VA-Payment-Flag v2.3 and VA-Payment-Status V2 v1.0.
+//
+// X-CLIENT-KEY is deliberately absent — it belongs to the access-token
+// endpoint alone. So is Idempotency-Key, which appears in no BCA document at
+// all; idempotency here is keyed on X-EXTERNAL-ID.
+var documentedTransferVAHeaders = map[string]bool{
+	"CONTENT-TYPE":                    true,
+	"AUTHORIZATION":                   true,
+	strings.ToUpper(headerTimestamp):  true,
+	strings.ToUpper(headerSignature):  true,
+	"ORIGIN":                          true, // Mandatory: N
+	strings.ToUpper(headerChannelID):  true,
+	strings.ToUpper(headerPartnerID):  true,
+	strings.ToUpper(headerExternalID): true,
+}
+
+// isDocumentedTransferVAHeader reports whether BCA publishes header for the
+// transfer-va services. HTTP header names are case-insensitive, so the
+// comparison is too.
+func isDocumentedTransferVAHeader(header string) bool {
+	return documentedTransferVAHeaders[strings.ToUpper(strings.TrimSpace(header))]
+}
+
 // SNAP header names.
 const (
 	headerTimestamp  = "X-TIMESTAMP"
@@ -179,8 +205,18 @@ func validateSNAPHeaders(c echo.Context, vendorConfig *config.VendorConfig, serv
 	}
 
 	for _, header := range requiredHeaders {
-		if c.Request().Header.Get(strings.TrimSpace(header)) == "" {
-			return snapMissingMandatory(service, strings.TrimSpace(header))
+		header = strings.TrimSpace(header)
+		// A vendor config cannot make this service demand a header BCA never
+		// sends. The transfer-va header tables are closed sets, so requiring
+		// anything outside them (X-CLIENT-KEY being the one that has actually
+		// been tried, and Idempotency-Key the one that used to be) would
+		// reject every conformant BCA request with a mandatory-field error
+		// about a header BCA has no way to supply.
+		if !isDocumentedTransferVAHeader(header) {
+			continue
+		}
+		if c.Request().Header.Get(header) == "" {
+			return snapMissingMandatory(service, header)
 		}
 	}
 

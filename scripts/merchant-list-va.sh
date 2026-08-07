@@ -114,7 +114,6 @@ echo >&2
 
 curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "Content-Type: application/json" \
-	-H "Idempotency-Key: $(uuidgen)" \
 	-H "X-EXTERNAL-ID: $(date +%Y%m%d%H%M%S)$RANDOM" \
 	-H "Authorization: Bearer ${ACCESS_TOKEN}" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \

@@ -39,11 +39,17 @@ func (m *MockVAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest)
 
 func TestVAHandler_Inquiry_Success(t *testing.T) {
 	e := echo.New()
+	// Fixed rather than time.Now(): the monotonic reading time.Now() carries
+	// does not survive the JSON round-trip, so the mock's argument comparison
+	// would fail on a value that is otherwise identical.
+	trxDateInit := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 	req := domain.VAInquiryRequest{
 		PartnerServiceID: " 12345",
 		CustomerNo:       "123456789012345678",
 		VirtualAccountNo: " 12345123456789012345678",
 		InquiryRequestID: "202607221000001234500001",
+		TrxDateInit:      &trxDateInit,
+		ChannelCode:      6011,
 	}
 
 	body, _ := json.Marshal(req)
@@ -75,11 +81,14 @@ func TestVAHandler_Inquiry_Success(t *testing.T) {
 // inquiryStatus/inquiryReason.
 func TestVAHandler_Inquiry_PaidBill_ReturnsFullVAData(t *testing.T) {
 	e := echo.New()
+	trxDateInit := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 	req := domain.VAInquiryRequest{
 		PartnerServiceID: "   15974",
 		CustomerNo:       "77121730326",
 		VirtualAccountNo: "   1597477121730326",
 		InquiryRequestID: "202607021545081597400051562507",
+		TrxDateInit:      &trxDateInit,
+		ChannelCode:      6011,
 	}
 
 	body, _ := json.Marshal(req)

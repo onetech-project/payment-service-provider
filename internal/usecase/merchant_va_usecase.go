@@ -76,6 +76,18 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	if req.VirtualAccountName == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [virtualAccountName]", nil)
 	}
+	// Refused here, not truncated. virtualAccountName is String(30) Max on the
+	// inquiry RESPONSE (Tech. Doc. OpenAPI VA-BillPresentment v2.4), and its
+	// Notes are absolute: "The length of the characters sent must not exceed
+	// the number stated in the technical documentation". A longer name stored
+	// now is echoed on every inquiry for this VA, so BCA fails the inquiry at
+	// the channel — in front of the customer, with nothing pointing back at
+	// create-va. Truncating instead would silently show a different holder
+	// name than the merchant registered, which is worse than a clear rejection
+	// at the point the merchant can still fix it.
+	if len(req.VirtualAccountName) > domain.MaxVirtualAccountName {
+		return nil, domain.NewDomainError("4002702", "Invalid Field Format [virtualAccountName]", nil)
+	}
 	if req.TrxID == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [trxId]", nil)
 	}
@@ -92,6 +104,14 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	}
 	if len(req.FreeTexts) > domain.MaxInquiryFreeTexts {
 		return nil, domain.NewDomainError("4002700", "Invalid Field Format [freeTexts]", nil)
+	}
+	// Same reasoning as the count above, applied to each entry: freeTexts are
+	// echoed verbatim into the inquiry response, and BCA caps each language
+	// string at 32 characters. Caught here, the merchant can still shorten it.
+	for _, t := range req.FreeTexts {
+		if len(t.English) > domain.MaxFreeTextLength || len(t.Indonesia) > domain.MaxFreeTextLength {
+			return nil, domain.NewDomainError("4002700", "Invalid Field Format [freeTexts]", nil)
+		}
 	}
 
 	var vaTypeRule domain.VATypeRule
