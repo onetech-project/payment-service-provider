@@ -18,7 +18,7 @@
 #
 # Usage:
 #   ./scripts/vendor-inquiry-va.sh -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> \
-#       (-e <client-secret> | -f <env-file>) [-o <access-token>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]
+#       (-e <client-secret> | -f <env-file>) [-o <access-token>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-C <channelCode>] [-u <base-url>]
 #
 # -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
 # (same raw-secret convention the server itself uses, see vendor_config.go),
@@ -44,10 +44,13 @@ CLIENT_SECRET=""
 ENV_FILE=""
 CHANNEL_ID="95231"
 PARTNER_ID="111111"
+# channelCode is Mandatory on the inquiry payload; 6011 is BCA's ATM channel,
+# the same default vendor-payment-va.sh uses.
+CHANNEL_CODE="6011"
 ACCESS_TOKEN=""
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-a <amount>] [-i <channel-id>] [-p <partner-id>] [-C <channelCode>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -66,7 +69,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:v:a:e:f:o:i:p:u:h" opt; do
+while getopts "s:c:v:a:e:f:o:i:p:C:u:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -77,6 +80,7 @@ while getopts "s:c:v:a:e:f:o:i:p:u:h" opt; do
 	o) ACCESS_TOKEN="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
+	C) CHANNEL_CODE="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	h | *) usage ;;
 	esac
@@ -115,16 +119,21 @@ TIMESTAMP="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 # distinct call. $RANDOM avoids that regardless of timing.
 INQUIRY_REQUEST_ID="INQ-$(date +%s)$RANDOM"
 EXTERNAL_ID="$(date +%Y%m%d%H%M%S)$RANDOM"
-TXN_DATE_INIT="$(date +%Y-%m-%dT%H:%M:%S%:z)"
+TRX_DATE_INIT="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 
-# amount is mandatory per ASPI spec (InquiryRequest.required); txnDateInit is
-# the spec-correct field name (previously mis-sent as trxDateInit).
+# The field is trxDateInit, not txnDateInit: BCA's VA-BillPresentment revision
+# history records "Update field txnDateInit to trxDateInit" at v1.6 (April 27,
+# 2022), and v2.4's payload table and sample both use trxDateInit. It and
+# channelCode are Mandatory (Y) there, so a vendor configured with
+# VENDOR_STRICT_MANDATORY_FIELDS answers 4002402 without them. amount stays
+# optional and is sent because bill-presentment channels do send it.
 BODY=$(cat <<JSON
 {
   "partnerServiceId": "${PARTNER_SERVICE_ID}",
   "customerNo": "${CUSTOMER_NO}",
   "virtualAccountNo": "${VA_NO}",
-  "txnDateInit": "${TXN_DATE_INIT}",
+  "trxDateInit": "${TRX_DATE_INIT}",
+  "channelCode": ${CHANNEL_CODE},
   "amount": {"value": "${AMOUNT}", "currency": "IDR"},
   "inquiryRequestId": "${INQUIRY_REQUEST_ID}"
 }

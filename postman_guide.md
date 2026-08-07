@@ -140,7 +140,8 @@ if (resp.accessToken) {
   "partnerServiceId": "   12345",
   "customerNo": "66666666",
   "virtualAccountNo": "1597366666666",
-  "txnDateInit": "{{timestamp}}",
+  "trxDateInit": "{{timestamp}}",
+  "channelCode": 6011,
   "amount": {
     "value": "150000.00",
     "currency": "IDR"
@@ -165,7 +166,8 @@ const body = JSON.stringify({
     partnerServiceId: "   12345",
     customerNo: "66666666",
     virtualAccountNo: "1597366666666",
-    txnDateInit: timestamp,
+    trxDateInit: timestamp,
+    channelCode: 6011,
     amount: { value: "150000.00", currency: "IDR" },
     inquiryRequestId: inquiryRequestId
 });

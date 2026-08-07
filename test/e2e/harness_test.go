@@ -507,6 +507,7 @@ func (s *server) call(t *testing.T, path string, payload any, opts ...func(*requ
 
 	rec := httptest.NewRecorder()
 	s.echo.ServeHTTP(rec, req)
+	transcript.record(t, req, body, rec)
 
 	out := response{status: rec.Code, raw: rec.Body.String()}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out.body); err != nil {
