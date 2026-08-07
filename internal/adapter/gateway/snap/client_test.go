@@ -25,7 +25,7 @@ func TestNewClient(t *testing.T) {
 		PartnerID:          "partner1",
 	}
 
-	client := NewClient(cfg)
+	client := NewClient(cfg, nil)
 
 	assert.NotNil(t, client)
 	assert.NotNil(t, client.hmacSigner)
@@ -68,7 +68,7 @@ func TestClient_Inquiry_Success(t *testing.T) {
 		APIEndpoints:       map[string]string{"INQUIRY": "/transfer-va/inquiry"},
 	}
 
-	client := NewClient(cfg)
+	client := NewClient(cfg, nil)
 
 	req := &domain.VAInquiryRequest{
 		PartnerServiceID: " 12345",
@@ -84,36 +84,62 @@ func TestClient_Inquiry_Success(t *testing.T) {
 	assert.NotNil(t, resp.VirtualAccountData)
 }
 
-func TestClient_Inquiry_Error(t *testing.T) {
+// A 4xx from a SNAP service is an ANSWER, not a transport failure: 4042601
+// "Transaction Not Found" is precisely what a status inquiry for an unpaid VA
+// returns, and 4012600 tells operations their credentials are wrong. Both
+// carry a responseCode the caller must act on, so the body is handed back
+// rather than collapsed into an error string.
+func TestClient_Inquiry_4xx_ReturnsTheSNAPBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": "bad request"}`))
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"responseCode":"4042412","responseMessage":"Invalid Bill/Virtual Account"}`))
 	}))
 	defer server.Close()
 
-	cfg := &config.VendorConfig{
-		ClientSecret:       "test-secret",
-		SignatureAlgorithm: "HMAC-SHA256",
-		RequestTimeout:     30,
-		BaseURL:            server.URL,
-		ChannelID:          "12345",
-		PartnerID:          "partner1",
-		APIEndpoints:       map[string]string{"INQUIRY": "/transfer-va/inquiry"},
-	}
+	client := NewClient(errorTestConfig(server.URL), nil)
 
-	client := NewClient(cfg)
-
-	req := &domain.VAInquiryRequest{
+	resp, err := client.Inquiry(context.Background(), &domain.VAInquiryRequest{
 		PartnerServiceID: " 12345",
 		CustomerNo:       "123456789012345678",
 		VirtualAccountNo: " 12345123456789012345678",
 		InquiryRequestID: "202607221000001234500001",
-	}
+	})
 
-	resp, err := client.Inquiry(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Equal(t, "4042412", resp.ResponseCode)
+}
+
+// A 5xx is the vendor failing to answer at all, and stays an error.
+func TestClient_Inquiry_5xx_IsAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"responseCode":"5002400"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(errorTestConfig(server.URL), nil)
+
+	resp, err := client.Inquiry(context.Background(), &domain.VAInquiryRequest{
+		PartnerServiceID: " 12345",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: " 12345123456789012345678",
+		InquiryRequestID: "202607221000001234500001",
+	})
 
 	assert.Error(t, err)
 	assert.Nil(t, resp)
+}
+
+func errorTestConfig(baseURL string) *config.VendorConfig {
+	return &config.VendorConfig{
+		ClientSecret:       "test-secret",
+		SignatureAlgorithm: "HMAC-SHA256",
+		RequestTimeout:     30,
+		BaseURL:            baseURL,
+		ChannelID:          "12345",
+		PartnerID:          "partner1",
+		APIEndpoints:       map[string]string{"INQUIRY": "/transfer-va/inquiry"},
+	}
 }
 
 func TestClient_PaymentStatus_Success(t *testing.T) {
@@ -140,7 +166,7 @@ func TestClient_PaymentStatus_Success(t *testing.T) {
 		APIEndpoints:       map[string]string{"STATUS": "/transfer-va/status"},
 	}
 
-	client := NewClient(cfg)
+	client := NewClient(cfg, nil)
 
 	req := &domain.VAStatusRequest{
 		PartnerServiceID: " 12345",

@@ -337,6 +337,57 @@ There is also no `transactionDate` on this endpoint — only `trxDateTime`.
 | `inquiryRequestId` | M |
 | `paymentRequestId` | M |
 
+> **Direction differs between BCA and the ASPI-generic model.** ASPI puts
+> service 26 on the PJP, so we expose this endpoint and you may call it. BCA
+> puts it on its own side: its *Virtual Account untuk Biller* documentation
+> targets the status sample at BCA's host while inquiry and payment target the
+> co-partner's, and the `paymentFlagStatus` description says *"03 = Pending
+> between BCA and the partner. If the payment flag process is not yet completed
+> and **the partner performs an inquiry** within that time frame, the
+> transaction with status 03 will be delivered to the partner."*
+>
+> Both work: this endpoint stays available for vendors following the generic
+> model, and we call *yours* for reconciliation — see below.
+
+## Payment reconciliation (we call you)
+
+If a `/payment` call never reaches us — the network drops it, we crash
+mid-write, or you exhaust your advice retries — we hold no evidence the
+payment happened. The customer has paid, the merchant is never told, and
+nothing on our side knows to look. Your `/payment` retries with
+`flagAdvise: "Y"` cover the case where our *response* was lost; they cannot
+cover the case where the *request* never arrived.
+
+So we periodically call **your** SNAP Inquiry Status service (code 26) for
+transactions we still record as pending, and act on what you report:
+
+| Your `paymentFlagStatus` | What we do |
+|---|---|
+| `00` | Record the payment and fire the merchant callback that never went out |
+| `03` | Nothing — still in flight; we ask again next cycle |
+| `01` | Nothing — correctly still unpaid |
+| `02` | Nothing automatic. Whether a timeout settles depends on the company's reconciliation type registered at your end, which we cannot see, so it is escalated to an operator rather than guessed |
+| `4042601` | Nothing — you have no such transaction, so it was never paid |
+
+What this means for you:
+
+- **Expect low-volume, read-only traffic** on your status endpoint —
+  transactions pending past a threshold (default 15 minutes), batched
+  (default 100 per sweep, every 5 minutes). It never retries a settled
+  transaction.
+- **We authenticate as a normal SNAP client**: `Authorization: Bearer` from
+  your `/access-token/b2b`, RSA-signed with the private key whose public half
+  you registered for us, plus the same `X-SIGNATURE`/`X-TIMESTAMP`/
+  `CHANNEL-ID`/`X-PARTNER-ID`/`X-EXTERNAL-ID` header set described above.
+- **We need outbound credentials from you** to do this at all: your base URL,
+  a `clientId` we can obtain tokens under, and your registration of our public
+  key. Without them reconciliation stays disabled and this traffic never
+  appears.
+
+Every attempt is recorded — including the ones that concluded "nothing to do"
+— because a reconciler that has silently stopped working is otherwise
+indistinguishable from one with nothing to reconcile.
+
 ## Response codes
 
 We follow the ASPI `AAABBCC` format — `AAA` = HTTP status, `BB` = service

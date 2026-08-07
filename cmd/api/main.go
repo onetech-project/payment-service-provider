@@ -304,6 +304,30 @@ func main() {
 	asynqMux := asynq.NewServeMux()
 	worker.RegisterWorker(asynqMux, paymentWorker)
 
+	// Load vendor configurations.
+	//
+	// This has to happen before the Asynq worker starts, because the
+	// reconciliation sweep needs an outbound client built from one of these
+	// configs and its handler must be registered on asynqMux first.
+	configDir := getEnvOrDefault("CONFIG_DIR", ".")
+	configLoader := config.NewVendorConfigLoader(configDir)
+	vendorConfigs, err := configLoader.LoadAll()
+	if err != nil {
+		log.Printf("Warning: Failed to load vendor configs: %v", err)
+	}
+
+	// Vendor status reconciliation (feature 014-vendor-status-reconciliation).
+	//
+	// Off by default: it makes OUTBOUND calls to a vendor, so it must not
+	// start running the moment someone deploys this build. Operations enables
+	// it once the vendor's outbound credentials are provisioned.
+	reconciler := buildReconciler(vaRepo, notifier, vendorConfigs)
+	adminReconcileHandler := handler.NewAdminReconcileHandler(reconciler)
+	if reconciler != nil {
+		worker.RegisterReconcileWorker(asynqMux, worker.NewReconcileWorker(reconciler))
+		startReconcileScheduler(redisAddr, redisPassword)
+	}
+
 	// Start Asynq worker in background
 	go func() {
 		srv := queue.NewServer(redisAddr, redisPassword, 0)
@@ -311,14 +335,6 @@ func main() {
 			log.Printf("Asynq worker error: %v", err)
 		}
 	}()
-
-	// Load vendor configurations
-	configDir := getEnvOrDefault("CONFIG_DIR", ".")
-	configLoader := config.NewVendorConfigLoader(configDir)
-	vendorConfigs, err := configLoader.LoadAll()
-	if err != nil {
-		log.Printf("Warning: Failed to load vendor configs: %v", err)
-	}
 
 	// 6. Echo Server Setup
 	e := echo.New()
@@ -407,6 +423,9 @@ func main() {
 	adminGroup.POST("/clients/:clientId/secret", clientHandler.AddClientSecret)
 	adminGroup.DELETE("/clients/:clientId/secret/:secretId", clientHandler.RevokeClientSecret)
 	adminGroup.POST("/transactions/:virtualAccountNo/resend-callback", adminResendHandler.Resend)
+	// On-demand counterpart of the periodic reconciliation sweep: asks the
+	// vendor what really happened to a transaction still recorded as pending.
+	adminGroup.POST("/transactions/:virtualAccountNo/reconcile", adminReconcileHandler.Reconcile)
 	if adminAPIKey == "" {
 		log.Println("Warning: ADMIN_API_KEY not set — /admin/* endpoints are disabled")
 	}

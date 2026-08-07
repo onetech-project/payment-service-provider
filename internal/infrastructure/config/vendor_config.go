@@ -18,6 +18,16 @@ type VendorConfig struct {
 	// Authentication
 	ClientID     string
 	ClientSecret string
+	// OutboundPrivateKeyPath points at the RSA private key used to obtain an
+	// accessToken *from* this vendor, for calls this service originates
+	// (currently the status reconciliation of feature
+	// 014-vendor-status-reconciliation).
+	//
+	// It is not the inbound direction's credential and must not be confused
+	// with it: ClientSecret verifies what the vendor sends US, this key proves
+	// who WE are when we call THEM. Empty means no outbound calls are possible
+	// for this vendor, which is the default.
+	OutboundPrivateKeyPath string
 
 	// Endpoints
 	BaseURL       string
@@ -150,6 +160,9 @@ func (l *VendorConfigLoader) applyEnvVars(config *VendorConfig, envVars map[stri
 	}
 	if v, ok := envVars["VENDOR_TOKEN_ENDPOINT"]; ok {
 		config.TokenEndpoint = v
+	}
+	if v, ok := envVars["VENDOR_PRIVATE_KEY_PATH"]; ok {
+		config.OutboundPrivateKeyPath = v
 	}
 	if v, ok := envVars["VENDOR_CHANNEL_ID"]; ok {
 		config.ChannelID = v

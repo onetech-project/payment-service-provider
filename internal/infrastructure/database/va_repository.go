@@ -1426,3 +1426,162 @@ func parseAmount(s string) (float64, error) {
 var _ domain.VARepository = (*VARepository)(nil)
 var _ domain.VANotificationDeliveryRepository = (*VARepository)(nil)
 
+// Vendor status reconciliation persistence
+// (feature 014-vendor-status-reconciliation).
+
+// ListStalePendingTransactions implements domain.StaleTransactionFinder.
+//
+// "Stale" is created_at < olderThan, not updated_at: updated_at moves on every
+// upsert touch, so a VA that is repeatedly inquired would keep resetting its
+// own clock and never become eligible — the exact transaction most likely to
+// be stuck would be the one the sweep never looked at.
+//
+// Oldest first, so a backlog drains in the order the money went missing rather
+// than the order Postgres happens to return.
+func (r *VARepository) ListStalePendingTransactions(ctx context.Context, olderThan time.Time, limit int) ([]*domain.VAInquiryRecord, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	query := `
+		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
+			inquiry_request_id, trx_id, notification_url, status, total_amount, currency,
+			COALESCE(va_type, ''), COALESCE(sub_company, ''), free_texts, expired_date, created_at, updated_at
+		FROM va_transactions
+		WHERE status = '03'
+		  AND created_at < $1
+		  -- An expired VA is not stuck, it is closed: the customer can no
+		  -- longer pay it, so there is nothing at the vendor to reconcile.
+		  AND (expired_date IS NULL OR expired_date > NOW())
+		ORDER BY created_at ASC
+		LIMIT $2`
+
+	rows, err := r.pool.Query(ctx, query, olderThan, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []*domain.VAInquiryRecord
+	for rows.Next() {
+		record := &domain.VAInquiryRecord{}
+		var freeTexts []byte
+		if err := rows.Scan(
+			&record.ID,
+			&record.PartnerServiceID,
+			&record.CustomerNo,
+			&record.CustomerName,
+			&record.VirtualAccountNo,
+			&record.InquiryRequestID,
+			&record.TrxID,
+			&record.NotificationURL,
+			&record.Status,
+			&record.TotalAmount,
+			&record.Currency,
+			&record.VAType,
+			&record.SubCompany,
+			&freeTexts,
+			&record.ExpiredDate,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if len(freeTexts) > 0 {
+			_ = json.Unmarshal(freeTexts, &record.FreeTexts)
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+// CreateStatusInquiryAttempt implements domain.VAStatusInquiryRepository.
+func (r *VARepository) CreateStatusInquiryAttempt(ctx context.Context, attempt *domain.VAStatusInquiryAttempt) error {
+	if attempt.ID == "" {
+		attempt.ID = uuid.New().String()
+	}
+	if attempt.AttemptedAt.IsZero() {
+		attempt.AttemptedAt = time.Now()
+	}
+
+	// The nullable columns take NULL rather than "" so a query for "attempts
+	// where the vendor answered" is a plain IS NOT NULL.
+	query := `
+		INSERT INTO va_status_inquiry_attempts (id, virtual_account_no, client_id, payment_request_id,
+			outcome, bca_response_code, bca_payment_flag_status, duration_ms, error_detail, attempted_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+
+	_, err := r.pool.Exec(ctx, query,
+		attempt.ID,
+		attempt.VirtualAccountNo,
+		attempt.ClientID,
+		nullIfEmpty(attempt.PaymentRequestID),
+		attempt.Outcome,
+		nullIfEmpty(attempt.VendorResponseCode),
+		nullIfEmpty(attempt.VendorPaymentFlagStatus),
+		attempt.DurationMs,
+		nullIfEmpty(attempt.ErrorDetail),
+		attempt.AttemptedAt,
+	)
+	return err
+}
+
+// nullIfEmpty maps "" to a SQL NULL.
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// Ensure VARepository also satisfies the reconciliation interfaces.
+var _ domain.StaleTransactionFinder = (*VARepository)(nil)
+var _ domain.VAStatusInquiryRepository = (*VARepository)(nil)
+
+// SettlePendingFromVendor records a payment the vendor confirmed for a
+// transaction this service still had pending, and reports whether THIS call is
+// the one that applied it.
+//
+// The WHERE status = '03' guard is what makes reconciliation safe to run
+// concurrently with a real /payment: the transition is a single atomic
+// conditional write, so exactly one caller can win. A loser gets settled=false
+// and must not send a second merchant callback — the money is recorded once,
+// and the merchant is told once.
+//
+// Deliberately narrower than SavePayment's upsert: only the fields the vendor
+// actually reported on a status inquiry are written. A status response carries
+// no channelCode, journalNum or holder details, and blanking those over a real
+// payment's values would lose information rather than add it.
+func (r *VARepository) SettlePendingFromVendor(
+	ctx context.Context,
+	virtualAccountNo string,
+	settlement domain.VendorSettlement,
+) (bool, error) {
+	query := `
+		UPDATE va_transactions SET
+			status = '00',
+			paid_amount = $2,
+			total_amount = COALESCE(total_amount, $2),
+			currency = COALESCE(NULLIF(currency, ''), $3),
+			payment_request_id = COALESCE(NULLIF($4, ''), payment_request_id),
+			reference_no = COALESCE(NULLIF($5, ''), reference_no),
+			transaction_date = $6,
+			updated_at = NOW()
+		WHERE virtual_account_no = $1 AND status = '03'`
+
+	tag, err := r.pool.Exec(ctx, query,
+		virtualAccountNo,
+		settlement.PaidAmount,
+		settlement.Currency,
+		settlement.PaymentRequestID,
+		settlement.ReferenceNo,
+		settlement.TransactionDate,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// Ensure VARepository satisfies the reconciler's persistence needs.
+var _ domain.ReconciliationRepository = (*VARepository)(nil)
