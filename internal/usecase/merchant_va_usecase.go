@@ -80,6 +80,20 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [trxId]", nil)
 	}
 
+	// Reject a bill that could never be presented. These lists are echoed
+	// verbatim in the SNAP inquiry response, and BCA's Notes cap both at 5
+	// ("billDetails should not be greater than 5", "The occurences for
+	// freeTexts field in inquiry bill should not be greater than 5"). Accepting
+	// six here and discovering it at inquiry time means the merchant's VA fails
+	// at the channel, in front of the customer, with no indication of why —
+	// so it is refused at the point the merchant can still fix it.
+	if len(req.BillDetails) > domain.MaxInquiryBillDetails {
+		return nil, domain.NewDomainError("4002700", "Invalid Field Format [billDetails]", nil)
+	}
+	if len(req.FreeTexts) > domain.MaxInquiryFreeTexts {
+		return nil, domain.NewDomainError("4002700", "Invalid Field Format [freeTexts]", nil)
+	}
+
 	var vaTypeRule domain.VATypeRule
 	if managed {
 		if u.vaTypeRules == nil {
@@ -120,12 +134,20 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		}
 	}
 
-	// Use the client-supplied virtualAccountNo per ASPI VAIdentity (maxLength
-	// 28). For a dynamic managed request it may be empty at this point (it is
-	// resolved below, once customerNo is known/generated).
+	// Use the client-supplied virtualAccountNo. The cap is BCA's payment/status
+	// limit (26), not ASPI's nominal 28: a longer VA number passes inquiry and
+	// is then rejected at payment, so it is refused at issue time instead —
+	// see domain.MaxIssuedVirtualAccountNo. For a dynamic managed request it
+	// may be empty at this point (resolved below, once customerNo is known).
 	vaNo := req.VirtualAccountNo
-	if vaNo != "" && len(vaNo) > 28 {
+	if vaNo != "" && len(vaNo) > domain.MaxIssuedVirtualAccountNo {
 		return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
+	}
+	// Same reasoning for the merchant-supplied static customerNo. The dynamic
+	// path generates its own at 18 digits (NextCustomerNoSequence) and is
+	// checked by the virtualAccountNo cap below.
+	if len(req.CustomerNo) > domain.MaxIssuedCustomerNo {
+		return nil, domain.NewDomainError("4002700", "Invalid Field Format [customerNo too long]", nil)
 	}
 
 	// A no-bill VA (vaType 01/04) is an address, not a transaction: /create-va
@@ -153,7 +175,7 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		// (partnerServiceId + customerNo).
 		if vaNo == "" {
 			vaNo = req.PartnerServiceID + customerNo
-			if len(vaNo) > 28 {
+			if len(vaNo) > domain.MaxIssuedVirtualAccountNo {
 				return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
 			}
 		}
@@ -250,6 +272,7 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		Currency:         "IDR",
 		VAType:           vaType,
 		SubCompany:       subCompanyFromAdditionalInfo(req.AdditionalInfo),
+		FreeTexts:        req.FreeTexts,
 		ExpiredDate:      req.ExpiredDate,
 		CreatedAt:        now,
 		UpdatedAt:        now,

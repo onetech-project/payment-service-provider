@@ -160,6 +160,14 @@ func main() {
 	// doesn't get rejected. Never skipped in prod.
 	skipTimestampSkewCheck := appEnv == "dev" || appEnv == "uat"
 
+	// Merchant signatures now hash the MINIFIED body, matching the vendor side
+	// and SNAP. Defaults to also accepting the previous raw-body digest so the
+	// change cannot break a merchant at deploy time; set
+	// MERCHANT_LEGACY_BODY_HASH=false once every merchant has migrated. Only
+	// merchants sending whitespace-bearing JSON are affected at all — for a
+	// compact body the two digests are identical.
+	acceptLegacyMerchantBodyHash := getEnvOrDefault("MERCHANT_LEGACY_BODY_HASH", "true") != "false"
+
 	// 1. Initialize Telemetry
 	otelEndpoint := getEnvOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	shutdownTracer, err := telemetry.InitTracer(ctx, "payment-integration-gateway", otelEndpoint)
@@ -453,7 +461,7 @@ func main() {
 		// its own sub-group so MerchantAuthMiddleware never applies to the
 		// vendor routes above (and SNAPAuthMiddleware never applies here).
 		merchantGroup := transferVAGroup.Group("")
-		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo, skipTimestampSkewCheck))
+		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo, skipTimestampSkewCheck, acceptLegacyMerchantBodyHash))
 		merchantGroup.POST("/create-va", merchantVAHandler.CreateVA)
 		merchantGroup.POST("/list", merchantVAHandler.ListVA)
 		merchantGroup.POST("/list-transactions", merchantVAHandler.ListTransactions)

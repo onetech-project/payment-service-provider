@@ -31,14 +31,17 @@ const (
 	// Payment (service 25) and status (service 26).
 	//
 	// BCA's payment/status tables say customerNo(18)/virtualAccountNo(26)
-	// while its inquiry table says (20)/(28) for the same two fields. We take
-	// the wider pair for all three services deliberately: this gateway issues
-	// 20-digit customerNo values of its own (the dynamic sequences of feature
-	// 006-static-dynamic-va), so enforcing 18 here would reject a payment for
-	// a VA number this very system handed the customer. Being stricter than
-	// the issuer on our own identifiers breaks real transactions; being one
-	// digit more permissive than BCA's payment table cannot, since BCA never
-	// sends more than it generated.
+	// while its inquiry table says (20)/(28) for the same two fields. INBOUND
+	// we accept the wider pair, purely for backward compatibility: the dynamic
+	// sequence used to emit 20-digit customerNo values, and VA numbers already
+	// in customers' hands from that era must stay payable. Rejecting them here
+	// would break VAs this very system issued.
+	//
+	// This is a receive-side allowance only. Issuance is now 18/26 — see
+	// NextCustomerNoSequence — so every NEW VA number fits BCA's narrower
+	// payment/status limit. Being more permissive than BCA on receive is safe
+	// (BCA never sends more than it generated); being more permissive on issue
+	// was not, and that is the half that was fixed.
 	maxPaymentCustomerNo       = 20
 	maxPaymentVirtualAccountNo = 28
 	maxPaymentRequestID        = 30
@@ -56,7 +59,28 @@ const (
 	maxSubCompany              = 5
 	maxPaymentBillDetails      = 5
 	maxFreeTexts               = 9
-	maxChannelCode             = 9999
+
+	// MaxInquiryBillDetails and MaxInquiryFreeTexts bound what the INQUIRY
+	// response may carry. BCA's inquiry field table nominally allows 24
+	// billDetails and 9 freeTexts, but its Notes override both downward:
+	// "billDetails should not be greater than 5" and "The occurences for
+	// freeTexts field in inquiry bill should not be greater than 5". Exceeding
+	// either makes BCA treat the inquiry as failed, so these are enforced when
+	// a merchant creates the VA and again when the response is built.
+	MaxInquiryBillDetails = 5
+	MaxInquiryFreeTexts   = 5
+
+	// MaxIssuedCustomerNo and MaxIssuedVirtualAccountNo bound what this
+	// gateway may ISSUE, as opposed to what it will accept inbound.
+	//
+	// They are BCA's payment/status limits (18/26), deliberately the narrower
+	// of the two sets it publishes — its inquiry table allows 20/28. A VA
+	// number issued at the wider limit is inquirable and then unpayable: the
+	// channel accepts it right up to the moment the customer tries to pay.
+	// Issuing at the narrower limit satisfies all three services at once, so
+	// there is no reason to ever hand out the wider form.
+	MaxIssuedCustomerNo       = 18
+	MaxIssuedVirtualAccountNo = 26
 	// Amounts are String(13.2): at most 13 digits before the decimal point and
 	// two after. BCA states an over-long amount is treated as a failed
 	// transaction.
@@ -71,6 +95,30 @@ var amountPattern = regexp.MustCompile(`^\d+(\.\d{1,2})?$`)
 // allowedCurrencies is BCA's documented set for Virtual Account ("currency
 // field may vary with these values: IDR, SGD, USD").
 var allowedCurrencies = map[string]bool{"IDR": true, "USD": true, "SGD": true}
+
+// allowedPaymentChannelCodes is BCA's enumerated channelCode set on the
+// payment service (ISO 18245). The inquiry service documents only the 6010 /
+// 6011 subset, but the two are checked against the same table on purpose: a
+// code outside this set is one BCA does not generate, and accepting it would
+// persist an unmappable channel onto the transaction.
+//
+// Zero is not in the table and is not accepted here either — it is the Go
+// zero value, i.e. "field absent", which the mandatory check reports as a
+// missing field rather than a malformed one.
+var allowedPaymentChannelCodes = map[int]bool{
+	6000: true, // Others
+	6010: true, // Teller
+	6011: true, // ATM (eBanking on the inquiry table)
+	6012: true, // EDC
+	6013: true, // Autodebet
+	6014: true, // Internet Banking
+	6015: true, // Oneklik
+	6016: true, // myBCA
+	6017: true, // Mobile Banking
+	6018: true, // Other Bank
+	6019: true, // Cardless
+	6020: true, // Shared Biller
+}
 
 // ViolationKind distinguishes the two 400-class outcomes BCA separates:
 // a field that is absent (Invalid Mandatory Field, case code 02) from one that
@@ -112,7 +160,9 @@ func ValidateInquiryRequest(req *VAInquiryRequest) *FieldViolation {
 	if len(req.InquiryRequestID) > maxInquiryRequestID {
 		return badFormat("inquiryRequestId")
 	}
-	if req.ChannelCode < 0 || req.ChannelCode > maxChannelCode {
+	// channelCode is Optional (N) on inquiry, so 0/absent is fine; a value that
+	// IS sent must still be one BCA generates.
+	if req.ChannelCode != 0 && !allowedPaymentChannelCodes[req.ChannelCode] {
 		return badFormat("channelCode")
 	}
 	// amount is not part of BCA's inquiry payload, but a vendor that sends it
@@ -218,7 +268,10 @@ func validatePaymentOptionalLengths(req *VAPaymentRequest) *FieldViolation {
 	if req.FlagAdvise != "" && !strings.EqualFold(req.FlagAdvise, "N") && !strings.EqualFold(req.FlagAdvise, "Y") {
 		return badFormat("flagAdvise")
 	}
-	if req.ChannelCode < 0 || req.ChannelCode > maxChannelCode {
+	// channelCode is Mandatory on payment and enumerated, not free-form: only
+	// 0 (absent, reported as a missing field by the strict check) skips the
+	// membership test.
+	if req.ChannelCode != 0 && !allowedPaymentChannelCodes[req.ChannelCode] {
 		return badFormat("channelCode")
 	}
 	return nil
@@ -298,11 +351,20 @@ func requireVAIdentity(partnerServiceID, customerNo, virtualAccountNo string, ma
 	if len(virtualAccountNo) > maxVANo {
 		return badFormat("virtualAccountNo")
 	}
-	// virtualAccountNo is documented as partnerServiceId + customerNo, so a
-	// customerNo that is not its suffix means the two disagree about which VA
-	// this is. Compared trimmed because partnerServiceId carries space padding
-	// that the concatenated VA number keeps.
-	if !strings.HasSuffix(strings.TrimSpace(virtualAccountNo), strings.TrimSpace(customerNo)) {
+	// virtualAccountNo is documented as partnerServiceId + customerNo, so it
+	// must agree with BOTH halves: a customerNo that is not its suffix, or a
+	// partnerServiceId that is not its prefix, means the request disagrees with
+	// itself about which VA this is. Checking only the suffix let a payment
+	// name one biller in partnerServiceId and a different one inside the VA
+	// number.
+	//
+	// Compared trimmed throughout because partnerServiceId carries the 8-char
+	// left space padding that the concatenated VA number keeps.
+	trimmedVANo := strings.TrimSpace(virtualAccountNo)
+	if !strings.HasSuffix(trimmedVANo, strings.TrimSpace(customerNo)) {
+		return badFormat("virtualAccountNo")
+	}
+	if !strings.HasPrefix(trimmedVANo, strings.TrimSpace(partnerServiceID)) {
 		return badFormat("virtualAccountNo")
 	}
 	return nil

@@ -24,6 +24,27 @@ const errInvalidBill = "Invalid Bill/Virtual Account"
 // an accidental double-flag.
 const flagAdviseRetry = "Y"
 
+// defaultCurrency is the currency assumed when a stored record carries none.
+// BCA's VA services accept IDR, SGD and USD; IDR is the only one a domestic
+// biller transaction realistically settles in.
+const defaultCurrency = "IDR"
+
+// zeroAmount is the String(13.2) rendering of nothing-paid-yet. BCA documents
+// amounts as carrying two decimals, so "0" is not the same wire value as
+// "0.00".
+const zeroAmount = "0.00"
+
+// defaultSubCompany is BCA's documented default sub-company code, used when
+// the biller has registered no product-specific code of its own: "Product Name
+// and Admin Fee from subCompany 00000 would be used and shown in channel".
+const defaultSubCompany = "00000"
+
+// statusSuccessMessage is the responseMessage BCA's Appendix A pairs with
+// 2002600 on the inquiry-status service. It is "Success" there, where the
+// inquiry and payment services' own samples use "Successful" — the doc is not
+// self-consistent across services, so each is spelled as its own table has it.
+const statusSuccessMessage = "Success"
+
 // amountEpsilon bounds float comparison of money strings. Amounts are capped
 // at 13 integer digits with 2 decimals, well inside float64's exact-integer
 // range, so a half-cent tolerance only absorbs representation noise — it can
@@ -266,11 +287,11 @@ func inquiryResponseFromRecord(record *domain.VAInquiryRecord, inquiryRequestID 
 func inquiryAccountDataFromRecord(record *domain.VAInquiryRecord, inquiryRequestID string, bills []domain.BillDetail) *domain.VAAccountData {
 	currency := record.Currency
 	if currency == "" {
-		currency = "IDR"
+		currency = defaultCurrency
 	}
 	totalAmount := record.TotalAmount
 	if totalAmount == "" {
-		totalAmount = "0.00"
+		totalAmount = zeroAmount
 	}
 
 	return &domain.VAAccountData{
@@ -281,20 +302,45 @@ func inquiryAccountDataFromRecord(record *domain.VAInquiryRecord, inquiryRequest
 		InquiryRequestID:   inquiryRequestID,
 		TotalAmount:        &domain.Amount{Value: totalAmount, Currency: currency},
 		SubCompany:         subCompanyForVA(record, bills),
-		BillDetails:        bills,
+		BillDetails:        capBillDetails(bills),
+		FreeTexts:          capFreeTexts(record.FreeTexts),
 	}
 }
 
-// defaultSubCompany is what an inquiry reports when the biller has no
-// sub-company code of its own. BCA expects the field to always be present and
-// numeric, and "00000" is its "no sub-company" value.
-const defaultSubCompany = "00000"
+// capBillDetails and capFreeTexts trim the inquiry response to the maxima
+// BCA's Notes impose (5 of each). Create-va rejects an over-long list up
+// front, so these only matter for VAs stored before that validation existed —
+// but the cap has to live here too: BCA fails the whole inquiry on an
+// over-long array, and silently showing the customer the first five bills
+// beats showing them an error.
+func capBillDetails(bills []domain.BillDetail) []domain.BillDetail {
+	if len(bills) > domain.MaxInquiryBillDetails {
+		return bills[:domain.MaxInquiryBillDetails]
+	}
+	return bills
+}
+
+func capFreeTexts(texts []domain.BilingualText) []domain.BilingualText {
+	if len(texts) > domain.MaxInquiryFreeTexts {
+		return texts[:domain.MaxInquiryFreeTexts]
+	}
+	return texts
+}
 
 // subCompanyForVA resolves the biller sub-company code to report on inquiry.
 // The transaction's own sub_company wins; failing that, the bills' shared
 // billSubCompany stands in (ASPI makes billSubCompany mandatory whenever a
 // subCompany is in play, so for a merchant-created VA the bill rows are where
-// the code actually lives); failing both, defaultSubCompany.
+// the code actually lives).
+//
+// When neither supplies one the answer is BCA's default code "00000", not an
+// empty string. BCA's InquiryResponse table marks subCompany "Mandatory in
+// BCA ... Mandatory for non-multibills transaction", so omitting it — which is
+// what an empty string did, via omitempty — made every single-settlement
+// inquiry from a merchant that never set additionalInfo.subCompany into a
+// response BCA rejects. "00000" is the code BCA itself documents as the
+// fallback whose product name and admin fee the channel displays, and it is
+// already what the no-bill path (inquiryNoBill) reports.
 func subCompanyForVA(record *domain.VAInquiryRecord, bills []domain.BillDetail) string {
 	if record.SubCompany != "" {
 		return record.SubCompany
@@ -331,7 +377,7 @@ func (u *VAUsecase) inquiryNoBill(ctx context.Context, req *domain.VAInquiryRequ
 	//
 	// Only the value is fixed; the currency still follows the request, since
 	// reporting a currency the caller never mentioned would be its own claim.
-	totalAmount := &domain.Amount{Value: "0.00", Currency: "IDR"}
+	totalAmount := &domain.Amount{Value: zeroAmount, Currency: defaultCurrency}
 	if req.Amount != nil && req.Amount.Currency != "" {
 		totalAmount.Currency = req.Amount.Currency
 	}
@@ -348,7 +394,7 @@ func (u *VAUsecase) inquiryNoBill(ctx context.Context, req *domain.VAInquiryRequ
 			VirtualAccountName: account.CustomerName,
 			InquiryRequestID:   req.InquiryRequestID,
 			TotalAmount:        totalAmount,
-			SubCompany:         "00000",
+			SubCompany:         defaultSubCompany,
 		},
 	}, nil
 }
@@ -446,7 +492,16 @@ func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequ
 		// record — instead of failing or double-recording, and notably without
 		// sending a second callback, since we are not the writer.
 		if errors.Is(err, domain.ErrVAPaymentDuplicate) {
-			if existing, getErr := u.repo.GetPayment(ctx, req.PaymentRequestID); getErr == nil && existing != nil {
+			// Strict lookup for the same reason as the check at the top of
+			// Payment: a no-bill row carries paymentRequestId in both columns,
+			// so the OR form could match a sibling payment of the same VA.
+			if existing, getErr := u.repo.GetPaymentByPaymentRequestID(ctx, req.PaymentRequestID); getErr == nil && existing != nil {
+				// Same advice-vs-double-flag split the short-circuit applies:
+				// an advice request is asking "did this land?", anything else
+				// is BCA's double flag.
+				if strings.EqualFold(req.FlagAdvise, flagAdviseRetry) {
+					return paymentResponseFromRecord(existing), nil
+				}
 				return nil, duplicatePaymentError(existing)
 			}
 		}
@@ -489,12 +544,13 @@ func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequ
 // already-persisted payment, used for idempotent replays.
 func paymentResponseFromRecord(existing *domain.VAPaymentRecord) *domain.VAPaymentResponse {
 	txDate := existing.TransactionDate
-	// totalAmount is optional on the ASPI PaymentResponse and not every stored
-	// payment has one (the no-bill path sets it, older billed rows may not), so
-	// it is echoed only when the record actually carries a value.
-	var totalAmount *domain.Amount
-	if existing.TotalAmount != "" {
-		totalAmount = &domain.Amount{Value: existing.TotalAmount, Currency: existing.Currency}
+	// totalAmount is Mandatory on BCA's PaymentResponse and this builder set it
+	// nowhere at all, so every replay — including the 4042518 double-flag
+	// answer, the one case BCA reads most carefully — omitted it. Falls back to
+	// the paid amount, which for a settled single payment is the same figure.
+	totalAmount := existing.TotalAmount
+	if totalAmount == "" {
+		totalAmount = existing.PaidAmount
 	}
 	return &domain.VAPaymentResponse{
 		ResponseCode:    domain.CodePaymentSuccess,
@@ -510,7 +566,7 @@ func paymentResponseFromRecord(existing *domain.VAPaymentRecord) *domain.VAPayme
 			PaymentRequestID:    existing.PaymentRequestID,
 			PaidAmount:          &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
 			PaidBills:           existing.PaidBills,
-			TotalAmount:         totalAmount,
+			TotalAmount:         &domain.Amount{Value: totalAmount, Currency: existing.Currency},
 			TrxDateTime:         &txDate,
 			ReferenceNo:         existing.ReferenceNo,
 			JournalNum:          existing.JournalNum,
@@ -631,7 +687,12 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	//   - double-flag   → 4042518 "Inconsistent Request", carrying the
 	//                     paymentFlagStatus/Reason "according to the results
 	//                     of the first request"
-	existing, err := u.repo.GetPayment(ctx, req.PaymentRequestID)
+	//
+	// Resolved by paymentRequestId ONLY. GetPayment's "or inquiryRequestId"
+	// form would match the unpaid transaction the inquiry just claimed —
+	// BCA sets paymentRequestId equal to inquiryRequestId on a payment that
+	// follows an inquiry — and answer the customer's first payment 4042518.
+	existing, err := u.repo.GetPaymentByPaymentRequestID(ctx, req.PaymentRequestID)
 	if err != nil && !isNotFound(err) {
 		return nil, domain.NewDomainError(domain.CodeInternalError(domain.ServiceCodePayment), errInternalServerError, err)
 	}
@@ -808,7 +869,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 				PaymentRequestID:    req.PaymentRequestID,
 				PaidAmount:          &domain.Amount{Value: paidAmount, Currency: req.PaidAmount.Currency},
 				PaidBills:           req.PaidBills,
-				TotalAmount:         req.TotalAmount,
+				TotalAmount:         paymentTotalAmount(req),
 				TrxDateTime:         &transactionDate,
 				ReferenceNo:         req.ReferenceNo,
 				JournalNum:          req.JournalNum,
@@ -925,16 +986,19 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 			PaymentRequestID:    req.PaymentRequestID,
 			PaidAmount:          req.PaidAmount,
 			PaidBills:           req.PaidBills,
-			TotalAmount:         req.TotalAmount,
-			TrxDateTime:         req.TrxDateTime,
-			ReferenceNo:         req.ReferenceNo,
-			JournalNum:          req.JournalNum,
-			PaymentType:         req.PaymentType,
-			FlagAdvise:          req.FlagAdvise,
-			PaymentFlagStatus:   "00",
-			PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
-			BillDetails:         echoPaymentBillDetails(req.BillDetails),
-			FreeTexts:           req.FreeTexts,
+			// totalAmount and trxDateTime are Mandatory on BCA's
+			// PaymentResponse; echoing the request's nil pointer straight
+			// through dropped them from the wire entirely via omitempty.
+			TotalAmount:       paymentTotalAmount(req),
+			TrxDateTime:       &transactionDate,
+			ReferenceNo:       req.ReferenceNo,
+			JournalNum:        req.JournalNum,
+			PaymentType:       req.PaymentType,
+			FlagAdvise:        req.FlagAdvise,
+			PaymentFlagStatus: "00",
+			PaymentFlagReason: &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+			BillDetails:       echoPaymentBillDetails(req.BillDetails),
+			FreeTexts:         req.FreeTexts,
 		},
 	}, nil
 }
@@ -991,7 +1055,7 @@ func (u *VAUsecase) replayVariableInstalment(
 			PaymentRequestID:    req.PaymentRequestID,
 			PaidAmount:          &domain.Amount{Value: cumulativePaid, Currency: req.PaidAmount.Currency},
 			PaidBills:           req.PaidBills,
-			TotalAmount:         req.TotalAmount,
+			TotalAmount:         paymentTotalAmount(req),
 			TrxDateTime:         &transactionDate,
 			ReferenceNo:         req.ReferenceNo,
 			JournalNum:          req.JournalNum,
@@ -1074,6 +1138,19 @@ func paymentTotalAmountValue(req *domain.VAPaymentRequest) string {
 	return req.PaidAmount.Value
 }
 
+// paymentTotalAmount is the response-side counterpart: totalAmount is
+// Mandatory on BCA's PaymentResponse, so it must never be nil (which
+// omitempty would render as an absent field). It is only ever nil in the
+// request when the vendor is configured non-strict, and BCA's own note —
+// "the totalAmount and paidAmount field value contain the total amount paid by
+// customer through BCA" — says what the fallback is.
+func paymentTotalAmount(req *domain.VAPaymentRequest) *domain.Amount {
+	if req.TotalAmount != nil {
+		return req.TotalAmount
+	}
+	return &domain.Amount{Value: req.PaidAmount.Value, Currency: req.PaidAmount.Currency}
+}
+
 // paymentBillDetailsToBillDetail maps the inbound SNAP payment bill-detail
 // shape to the shared BillDetail persistence type used by SaveBillDetails.
 func paymentBillDetailsToBillDetail(bills []domain.VAPaymentBillDetail) []domain.BillDetail {
@@ -1106,9 +1183,19 @@ func echoPaymentBillDetails(bills []domain.VAPaymentBillDetail) []domain.VAPayme
 	}
 	out := make([]domain.VAPaymentBillDetail, 0, len(bills))
 	for _, b := range bills {
+		// BCA's PaymentResponse table is explicit about what this field must
+		// carry: "billerReferenceId ... From Payment Request. This field value
+		// must be the same with billReferenceNo from payment request." The
+		// REQUEST spells the field billReferenceNo (auth code generated by
+		// BCA); billerReferenceId is response-side only, so the inbound
+		// billerReferenceId is always empty and this fallback always fires.
+		// It previously fell back to billNo — the partner's own bill number,
+		// which is a different identifier entirely — so every multi-settlement
+		// payment response echoed a reference BCA could not reconcile against
+		// the auth code it issued.
 		billerReferenceID := b.BillerReferenceID
 		if billerReferenceID == "" {
-			billerReferenceID = b.BillNo
+			billerReferenceID = b.BillReferenceNo
 		}
 		status := b.Status
 		if status == "" {
@@ -1387,18 +1474,44 @@ func (u *VAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest) (*d
 		// Best-effort: bill details persisted at create-VA/inquiry time, if any.
 		bills, _ := u.repo.GetVABillDetails(ctx, inquiry.ID)
 
-		// Return inquiry status (pending)
+		// Return inquiry status (pending).
+		//
+		// Every field BCA marks Mandatory is populated even though no payment
+		// has happened yet. Leaving paidAmount/transactionDate as nil pointers
+		// rendered them as JSON null and paymentRequestId as "", and BCA reads
+		// a mandatory field it cannot parse as a Response Parsing Error
+		// (4002600) rather than as "pending":
+		//   - paidAmount  → zero in the bill's own currency; nothing is paid yet.
+		//   - paymentRequestId → the inquiryRequestId, which is exactly what the
+		//     spec says this field carries ("This value must be same with
+		//     inquiryRequestId").
+		//   - transactionDate → the transaction's creation time. There is no
+		//     payment datetime to report, and a real ISO-8601 timestamp
+		//     identifying the transaction is what BCA can parse; null is not.
+		currency := inquiry.Currency
+		if currency == "" {
+			currency = defaultCurrency
+		}
+		totalAmount := inquiry.TotalAmount
+		if totalAmount == "" {
+			totalAmount = zeroAmount
+		}
+		createdAt := inquiry.CreatedAt
+
 		return &domain.VAStatusResponse{
 			ResponseCode:    domain.CodeStatusSuccess,
-			ResponseMessage: "Successful",
+			ResponseMessage: statusSuccessMessage,
 			VirtualAccountData: &domain.VAStatusData{
-				PaymentFlagStatus: "03",
+				PaymentFlagStatus: domain.PaymentFlagPending,
 				PaymentFlagReason: &domain.BilingualText{English: "Pending", Indonesia: "Tertunda"},
 				PartnerServiceID:  inquiry.PartnerServiceID,
 				CustomerNo:        inquiry.CustomerNo,
 				VirtualAccountNo:  inquiry.VirtualAccountNo,
 				InquiryRequestID:  inquiry.InquiryRequestID,
-				TotalAmount:       &domain.Amount{Value: inquiry.TotalAmount, Currency: inquiry.Currency},
+				PaymentRequestID:  inquiry.InquiryRequestID,
+				PaidAmount:        &domain.Amount{Value: zeroAmount, Currency: currency},
+				TotalAmount:       &domain.Amount{Value: totalAmount, Currency: currency},
+				TransactionDate:   &createdAt,
 				BillDetails:       billDetailsToStatusBillDetail(bills),
 			},
 		}, nil
@@ -1415,7 +1528,7 @@ func (u *VAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest) (*d
 	// Build status response
 	return &domain.VAStatusResponse{
 		ResponseCode:    domain.CodeStatusSuccess,
-		ResponseMessage: "Successful",
+		ResponseMessage: statusSuccessMessage,
 		VirtualAccountData: &domain.VAStatusData{
 			PaymentFlagStatus: payment.Status,
 			PaymentFlagReason: getPaymentFlagReason(payment.Status),

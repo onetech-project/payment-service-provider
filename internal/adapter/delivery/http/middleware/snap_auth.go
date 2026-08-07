@@ -199,9 +199,29 @@ func validateSNAPHeaders(c echo.Context, vendorConfig *config.VendorConfig, serv
 		if len(externalID) > maxExternalIDLength {
 			return snapInvalidField(service, headerExternalID)
 		}
+		// BCA documents X-EXTERNAL-ID as a "Numeric String" on all three
+		// transfer-va services, but the wider ASPI standard types it as a
+		// plain string (aspi-open-api-va.yaml:57-60). This gateway fronts
+		// several vendors, so the narrower rule is applied only to vendors
+		// configured for BCA's field tables — the same reason
+		// StrictMandatoryFields exists. Enforcing it for everyone would reject
+		// legitimate alphanumeric ids from non-BCA vendors.
+		if vendorConfig.StrictMandatoryFields && !isNumericString(externalID) {
+			return snapInvalidField(service, headerExternalID)
+		}
 	}
 
 	return nil
+}
+
+// isNumericString reports whether s consists solely of ASCII digits.
+func isNumericString(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // validatePinnedHeader enforces a header whose accepted value(s) the vendor

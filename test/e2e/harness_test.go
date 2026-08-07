@@ -122,7 +122,47 @@ func (r *memRepo) ClaimInquiryRequestID(_ context.Context, id, inquiryRequestID 
 	return nil
 }
 
+// GetPayment models the real repository's lookup, which is a single query over
+// va_transactions matching "payment_request_id = $1 OR inquiry_request_id =
+// $1" — one table holding both the inquiry and the payment.
+//
+// Modelling the OR faithfully is the point. This fake used to key on
+// paymentRequestId alone, which quietly made the fake stricter than the
+// database and hid a real defect: because BCA sets paymentRequestId equal to
+// inquiryRequestId when a payment follows an inquiry, the production query
+// matched the still-unpaid transaction and answered the customer's first
+// payment 4042518 "Inconsistent Request". A fake that cannot express the
+// production query cannot fail on the production bug.
 func (r *memRepo) GetPayment(_ context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.payments[paymentRequestID]; ok {
+		return p, nil
+	}
+	// The inquiry_request_id half of the OR: a transaction that has been
+	// inquired but not yet paid still matches.
+	for _, txn := range r.transactions {
+		if txn.InquiryRequestID != "" && txn.InquiryRequestID == paymentRequestID {
+			return &domain.VAPaymentRecord{
+				ID:               txn.ID,
+				PartnerServiceID: txn.PartnerServiceID,
+				CustomerNo:       txn.CustomerNo,
+				CustomerName:     txn.CustomerName,
+				VirtualAccountNo: txn.VirtualAccountNo,
+				InquiryRequestID: txn.InquiryRequestID,
+				TrxID:            txn.TrxID,
+				TotalAmount:      txn.TotalAmount,
+				Currency:         txn.Currency,
+				Status:           txn.Status,
+			}, nil
+		}
+	}
+	return nil, domain.ErrVAInvalidBill
+}
+
+// GetPaymentByPaymentRequestID is the strict counterpart used by the payment
+// endpoint's already-recorded check: paymentRequestId only, no OR.
+func (r *memRepo) GetPaymentByPaymentRequestID(_ context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if p, ok := r.payments[paymentRequestID]; ok {

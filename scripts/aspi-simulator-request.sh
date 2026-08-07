@@ -197,7 +197,11 @@ delete-va)
 esac
 
 # SNAP symmetric signature over the exact minified body emitted below.
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
+# `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
+# minified body, so hashing $BODY raw (it is pretty-printed here) yields a
+# different digest and every request comes back 401. -j (not just -c)
+# suppresses jq's trailing newline, which would otherwise be hashed too.
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
 STRING_TO_SIGN="${METHOD}:${EP}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 

@@ -303,10 +303,10 @@ func TestE2E_SameExternalIDSamePayload_ReplaysCachedResponse(t *testing.T) {
 	seedNoBillAccount(s, testPartnerID, "678901234567890160")
 
 	payload := paymentPayload(testPartnerID, "678901234567890160", "PAY-IDEM-1", "12000.00")
-	first := s.call(t, paymentPath, payload, withExternalID("EXT-IDEM-1"))
+	first := s.call(t, paymentPath, payload, withExternalID("900000000000002"))
 	require.Equal(t, http.StatusOK, first.status, first.raw)
 
-	second := s.call(t, paymentPath, payload, withExternalID("EXT-IDEM-1"))
+	second := s.call(t, paymentPath, payload, withExternalID("900000000000002"))
 
 	assert.Equal(t, first.status, second.status)
 	assert.Equal(t, first.code(), second.code())

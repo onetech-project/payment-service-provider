@@ -198,12 +198,12 @@ func TestE2E_Negative_ExternalID(t *testing.T) {
 
 		first := s.call(t, paymentPath,
 			paymentPayload(testPartnerID, "678901234567890212", "PAY-EXT-A", "1000.00"),
-			withExternalID("EXT-REUSED"))
+			withExternalID("900000000000001"))
 		require.Equal(t, http.StatusOK, first.status, first.raw)
 
 		second := s.call(t, paymentPath,
 			paymentPayload(testPartnerID, "678901234567890212", "PAY-EXT-B", "2000.00"),
-			withExternalID("EXT-REUSED"))
+			withExternalID("900000000000001"))
 
 		// SNAP has no 422; BCA documents this as 4092500 Conflict.
 		assert.Equal(t, http.StatusConflict, second.status, second.raw)
@@ -423,7 +423,7 @@ func TestE2E_EveryRejectionCarriesStatusAndReason(t *testing.T) {
 			"paymentFlagStatus", "paymentFlagReason", nil},
 		{"conflict", paymentPath,
 			paymentPayload(testPartnerID, "678901234567890240", "PAY-ENV-2", "1000.00"),
-			"paymentFlagStatus", "paymentFlagReason", []func(*requestOptions){withExternalID("EXT-ENV-DUP")}},
+			"paymentFlagStatus", "paymentFlagReason", []func(*requestOptions){withExternalID("900000000000003")}},
 	}
 
 	for _, tc := range cases {

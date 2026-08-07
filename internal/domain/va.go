@@ -303,7 +303,17 @@ type VARepository interface {
 	// in, letting later Status/Payment calls reach the same row by that id.
 	ClaimInquiryRequestID(ctx context.Context, id string, inquiryRequestID string) error
 	SavePayment(ctx context.Context, payment *VAPaymentRecord) error
+	// GetPayment resolves a transaction by paymentRequestId OR
+	// inquiryRequestId. Used by the status service, which may be handed
+	// either.
 	GetPayment(ctx context.Context, paymentRequestID string) (*VAPaymentRecord, error)
+	// GetPaymentByPaymentRequestID resolves a transaction by paymentRequestId
+	// only, and is what the payment endpoint's already-recorded check must
+	// use. BCA sets paymentRequestId equal to inquiryRequestId when a payment
+	// follows an inquiry, so GetPayment's OR matches the still-unpaid
+	// transaction the inquiry claimed and misreports the first payment as a
+	// double-flag.
+	GetPaymentByPaymentRequestID(ctx context.Context, paymentRequestID string) (*VAPaymentRecord, error)
 	UpdatePaymentStatus(ctx context.Context, paymentRequestID string, status string) error
 	// Merchant dashboard methods
 	GetVABillDetails(ctx context.Context, transactionID string) ([]BillDetail, error)
@@ -486,7 +496,13 @@ type VAInquiryRecord struct {
 	// (va_transactions.paid_amount, kept current by SaveVAPayment). "0" when
 	// nothing has been paid. Needed to tell a variable-bill VA that is
 	// genuinely lunas from one whose stored status merely says so.
-	PaidAmount  string
+	PaidAmount string
+	// FreeTexts is the biller's two-language free text, shown on BCA's channel
+	// screen (InquiryResponse.freeTexts). Persisted in va_transactions.free_texts
+	// at create-va time and echoed on inquiry — before this it was only echoed
+	// back in the create-va response and then dropped, so a merchant that set it
+	// never saw it reach the channel.
+	FreeTexts   []BilingualText
 	ExpiredDate *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

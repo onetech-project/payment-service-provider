@@ -4,8 +4,8 @@
 # 006-static-dynamic-va): dynamic no bill (vaType 04), dynamic fixed bill
 # (vaType 06), and dynamic variable bill (vaType 05). For all three,
 # customerNo is left empty in the create-va request and the server assigns a
-# system-generated, sequential 20-digit customerNo (2-digit vaType +
-# 18-digit sequence) — this script verifies that value comes back and then
+# system-generated, sequential 18-digit customerNo (2-digit vaType +
+# 16-digit sequence) — this script verifies that value comes back and then
 # exercises the type-specific payment behavior:
 #
 #   - No bill (04):      any payment amount is accepted at payment time.
@@ -91,7 +91,7 @@ RESP_CODE_1="$(echo "$CREATE_RESP_1" | jq -r '.responseCode // empty')"
 CUSTOMER_NO_1="$(echo "$CREATE_RESP_1" | jq -r '.virtualAccountData.customerNo // empty')"
 VA_NO_1="$(echo "$CREATE_RESP_1" | jq -r '.virtualAccountData.virtualAccountNo // empty')"
 check "create-va succeeded (responseCode 2xx)" "$([[ "$RESP_CODE_1" == 2* ]] && echo true || echo false)"
-check "server-generated customerNo is 20 digits starting with 04" "$([[ "$CUSTOMER_NO_1" =~ ^04[0-9]{18}$ ]] && echo true || echo false)"
+check "server-generated customerNo is 18 digits starting with 04" "$([[ "$CUSTOMER_NO_1" =~ ^04[0-9]{16}$ ]] && echo true || echo false)"
 check "server-derived virtualAccountNo equals partnerServiceId+customerNo" "$([[ "$VA_NO_1" == "15973${CUSTOMER_NO_1}" ]] && echo true || echo false)"
 echo "==> generated customerNo: ${CUSTOMER_NO_1}"
 echo "==> derived virtualAccountNo: ${VA_NO_1}"
@@ -123,7 +123,7 @@ RESP_CODE_2="$(echo "$CREATE_RESP_2" | jq -r '.responseCode // empty')"
 CUSTOMER_NO_2="$(echo "$CREATE_RESP_2" | jq -r '.virtualAccountData.customerNo // empty')"
 VA_NO_2="$(echo "$CREATE_RESP_2" | jq -r '.virtualAccountData.virtualAccountNo // empty')"
 check "create-va succeeded (responseCode 2xx)" "$([[ "$RESP_CODE_2" == 2* ]] && echo true || echo false)"
-check "server-generated customerNo is 20 digits starting with 06" "$([[ "$CUSTOMER_NO_2" =~ ^06[0-9]{18}$ ]] && echo true || echo false)"
+check "server-generated customerNo is 18 digits starting with 06" "$([[ "$CUSTOMER_NO_2" =~ ^06[0-9]{16}$ ]] && echo true || echo false)"
 check "customerNo differs from Test 1's (per-vaType sequence, not shared)" "$([[ "$CUSTOMER_NO_2" != "$CUSTOMER_NO_1" ]] && echo true || echo false)"
 check "server-derived virtualAccountNo equals partnerServiceId+customerNo" "$([[ "$VA_NO_2" == "15975${CUSTOMER_NO_2}" ]] && echo true || echo false)"
 echo "==> generated customerNo: ${CUSTOMER_NO_2}"
@@ -158,7 +158,7 @@ RESP_CODE_3="$(echo "$CREATE_RESP_3" | jq -r '.responseCode // empty')"
 CUSTOMER_NO_3="$(echo "$CREATE_RESP_3" | jq -r '.virtualAccountData.customerNo // empty')"
 VA_NO_3="$(echo "$CREATE_RESP_3" | jq -r '.virtualAccountData.virtualAccountNo // empty')"
 check "create-va succeeded (responseCode 2xx)" "$([[ "$RESP_CODE_3" == 2* ]] && echo true || echo false)"
-check "server-generated customerNo is 20 digits starting with 05" "$([[ "$CUSTOMER_NO_3" =~ ^05[0-9]{18}$ ]] && echo true || echo false)"
+check "server-generated customerNo is 18 digits starting with 05" "$([[ "$CUSTOMER_NO_3" =~ ^05[0-9]{16}$ ]] && echo true || echo false)"
 check "server-derived virtualAccountNo equals partnerServiceId+customerNo" "$([[ "$VA_NO_3" == "15974${CUSTOMER_NO_3}" ]] && echo true || echo false)"
 echo "==> generated customerNo: ${CUSTOMER_NO_3}"
 echo "==> derived virtualAccountNo: ${VA_NO_3}"
@@ -176,7 +176,13 @@ PAY_CODE_3A="$(echo "$PAYMENT_RESP_3A" | jq -r '.responseCode // empty')"
 PAY_STATUS_3A="$(echo "$PAYMENT_RESP_3A" | jq -r '.virtualAccountData.paymentFlagStatus // empty')"
 PAID_3A="$(echo "$PAYMENT_RESP_3A" | jq -r '.virtualAccountData.paidAmount.value // empty')"
 check "partial payment succeeded (responseCode 2xx)" "$([[ "$PAY_CODE_3A" == 2* ]] && echo true || echo false)"
-check "paymentFlagStatus stays 03 (pending) after partial payment" "$([[ "$PAY_STATUS_3A" == "03" ]] && echo true || echo false)"
+# 00, not 03. BCA's payment service (25) enumerates only 00/01/02 and states
+# "Payment flag status other than 00,01,02 will be considered as 01" — so
+# reporting an accepted instalment as 03 told the channel the payment was
+# REJECTED while the money had in fact been recorded. 03 = Pending is valid
+# only on the inquiry-status service (26); the bill's own pending-ness is
+# carried by the transaction, not by this flag.
+check "partial payment is flagged accepted (00) — 03 is not a payment-service value" "$([[ "$PAY_STATUS_3A" == "00" ]] && echo true || echo false)"
 check "cumulative paidAmount reflects the first payment (60000.00)" "$([[ "$PAID_3A" == "60000.00" ]] && echo true || echo false)"
 echo
 

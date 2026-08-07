@@ -50,6 +50,20 @@ func (m *MockVARepository) GetPayment(ctx context.Context, paymentRequestID stri
 	return args.Get(0).(*domain.VAPaymentRecord), args.Error(1)
 }
 
+// GetPaymentByPaymentRequestID falls back to the "GetPayment" expectation when
+// a test hasn't stubbed it explicitly — most tests predate the strict/lenient
+// split and only care that a payment is or isn't already on file.
+func (m *MockVARepository) GetPaymentByPaymentRequestID(ctx context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
+	if !m.hasExpectation("GetPaymentByPaymentRequestID") {
+		return m.GetPayment(ctx, paymentRequestID)
+	}
+	args := m.Called(ctx, paymentRequestID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.VAPaymentRecord), args.Error(1)
+}
+
 func (m *MockVARepository) UpdatePaymentStatus(ctx context.Context, paymentRequestID string, status string) error {
 	args := m.Called(ctx, paymentRequestID, status)
 	return args.Error(0)

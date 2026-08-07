@@ -22,7 +22,11 @@
 #   6. merchant-delete-va.sh  DELETE /openapi/v1.0/transfer-va/delete-va (try cancelling VA #2 -> expect
 #      REJECTION 4053101: a paid transaction cannot be cancelled)
 #   7. vendor-payment-va.sh   (try paying VA #2 again with a NEW paymentRequestId -> expect
-#      REJECTION 4092500: a paid transaction cannot be overwritten by a second payment)
+#      REJECTION 4042514 "Paid Bill": a paid transaction cannot be overwritten by a
+#      second payment. Note this is NOT 4092500 Conflict — BCA's Appendix A gives
+#      "The inputted Virtual Account Number Has Been Paid" its own code, and
+#      answering Conflict told the channel the X-EXTERNAL-ID was duplicated when
+#      in fact the bill was simply already settled.)
 #
 # Usage:
 #   ./scripts/e2e-va-cancel-flow.sh -s <partnerServiceId> -c <customerNo> -n <virtualAccountName> \
@@ -33,8 +37,10 @@
 #
 # Two distinct virtualAccountNo values are derived from -c (suffixed 1/2) so
 # the "cancel while pending" and "cancel while paid" scenarios don't collide
-# with each other's state; -c should leave room for the suffix (customerNo
-# max length is 20 per ASPI VAIdentity).
+# with each other's state; -c should leave room for the suffix. Keep the
+# suffixed result at or below 18 characters: that is BCA's customerNo limit on
+# the payment and status services, and create-va now refuses anything wider
+# (a longer VA number passes inquiry and is then rejected at payment).
 #
 # Requires: curl, openssl, uuidgen, jq
 set -euo pipefail
@@ -143,7 +149,7 @@ echo "Step 7/7: Try paying VA #2 again with a NEW paymentRequestId -> expect REJ
 echo "=================================================================="
 PAYMENT2_RESPONSE="$("$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO_PAID" -v "$VA_NO_PAID" -a "999999.00" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$PAYMENT2_RESPONSE" | jq .
-expect_code "re-pay already-paid VA#2 (must be rejected)" "$PAYMENT2_RESPONSE" "409"
+expect_code "re-pay already-paid VA#2 (must be rejected as Paid Bill)" "$PAYMENT2_RESPONSE" "4042514"
 echo
 
 echo "=================================================================="

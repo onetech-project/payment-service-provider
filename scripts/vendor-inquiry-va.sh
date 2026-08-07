@@ -147,7 +147,11 @@ JSON
 # BODY_HASH_ENCODER="openssl base64 -A" for a vendor configured with
 # VENDOR_BODY_HASH_ENCODING=base64 (feature 012-base64-hash-encoding).
 # X-SIGNATURE itself is always base64.
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
+# `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
+# minified body, so hashing $BODY raw (it is pretty-printed here) yields a
+# different digest and every request comes back 401. -j (not just -c)
+# suppresses jq's trailing newline, which would otherwise be hashed too.
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
 STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 

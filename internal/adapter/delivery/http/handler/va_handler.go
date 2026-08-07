@@ -162,7 +162,13 @@ func (h *VAHandler) Payment(c echo.Context) error {
 		return h.paymentError(c, err, &req, echoData)
 	}
 
-	return c.JSON(http.StatusOK, resp)
+	// Not every non-error outcome is an HTTP 200. The double-flag replay
+	// answers 4042518 "Inconsistent Request", which BCA counts as a successful
+	// transaction — hence it travels as a response rather than an error — but
+	// its code is 404-class, and BCA pairs responseCode prefixes with the
+	// matching HTTP status throughout Appendix A. Hardcoding 200 here shipped
+	// a 404-class code over an HTTP 200.
+	return c.JSON(mapSNAPCodeToHTTP(resp.ResponseCode), resp)
 }
 
 // paymentError renders a usecase failure as a full SNAP PaymentResponse,

@@ -102,6 +102,17 @@ func (m *MockMerchantVARepository) GetPayment(ctx context.Context, paymentReques
 	return args.Get(0).(*domain.VAPaymentRecord), args.Error(1)
 }
 
+func (m *MockMerchantVARepository) GetPaymentByPaymentRequestID(ctx context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
+	if !m.hasExpectation("GetPaymentByPaymentRequestID") {
+		return m.GetPayment(ctx, paymentRequestID)
+	}
+	args := m.Called(ctx, paymentRequestID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.VAPaymentRecord), args.Error(1)
+}
+
 func (m *MockMerchantVARepository) UpdatePaymentStatus(ctx context.Context, paymentRequestID string, status string) error {
 	args := m.Called(ctx, paymentRequestID, status)
 	return args.Error(0)
@@ -227,8 +238,8 @@ func TestMerchantVAUsecase_CreateVA_Success(t *testing.T) {
 	amount := &domain.Amount{Value: "150000.00", Currency: "IDR"}
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:      "088899",
-		CustomerNo:            "12345678901234567890",
-		VirtualAccountNo:      "08889912345678901234567890",
+		CustomerNo:            "123456789012345678",
+		VirtualAccountNo:      "088899123456789012345678",
 		VirtualAccountName:    "Jokul Doe",
 		TrxID:                 "trx-001",
 		TotalAmount:           amount,
@@ -238,7 +249,7 @@ func TestMerchantVAUsecase_CreateVA_Success(t *testing.T) {
 		AdditionalInfo: map[string]interface{}{"dbUrlProcess": "https://example.com/webhook"},
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(nil, domain.ErrMerchantVANotFound)
 	mockRepo.On("SaveInquiry", mock.Anything, mock.MatchedBy(func(r *domain.VAInquiryRecord) bool {
 		return r.NotificationURL == "https://example.com/webhook"
 	})).Return(nil)
@@ -249,7 +260,7 @@ func TestMerchantVAUsecase_CreateVA_Success(t *testing.T) {
 	assert.Equal(t, "2002700", resp.ResponseCode)
 	assert.Equal(t, "Success", resp.ResponseMessage)
 	assert.NotNil(t, resp.VirtualAccountData)
-	assert.Equal(t, "08889912345678901234567890", resp.VirtualAccountData.VirtualAccountNo)
+	assert.Equal(t, "088899123456789012345678", resp.VirtualAccountData.VirtualAccountNo)
 	assert.Equal(t, "trx-001", resp.VirtualAccountData.TrxID)
 	assert.Equal(t, "C", resp.VirtualAccountData.VirtualAccountTrxType)
 	mockRepo.AssertExpectations(t)
@@ -261,8 +272,8 @@ func TestMerchantVAUsecase_CreateVA_MissingTrxId(t *testing.T) {
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "08889912345678901234567890",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
 		VirtualAccountName: "Jokul Doe",
 		// TrxID missing
 	}
@@ -284,8 +295,8 @@ func TestMerchantVAUsecase_CreateVA_InvalidTrxType(t *testing.T) {
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:      "088899",
-		CustomerNo:            "12345678901234567890",
-		VirtualAccountNo:      "08889912345678901234567890",
+		CustomerNo:            "123456789012345678",
+		VirtualAccountNo:      "088899123456789012345678",
 		VirtualAccountName:    "Jokul Doe",
 		TrxID:                 "trx-002",
 		VirtualAccountTrxType: "Z", // Invalid
@@ -307,17 +318,17 @@ func TestMerchantVAUsecase_CreateVA_PendingTransaction_Conflicts(t *testing.T) {
 	existing := &domain.VAInquiryRecord{
 		ID:               "existing-id",
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 		Status:           "03", // Still pending / unpaid — an active transaction
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(existing, nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(existing, nil)
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "08889912345678901234567890",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-003",
 	}
@@ -338,18 +349,18 @@ func TestMerchantVAUsecase_CreateVA_ReusesVANumberAfterPaidTransaction(t *testin
 	existing := &domain.VAInquiryRecord{
 		ID:               "existing-id",
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 		Status:           "00", // Previous transaction already paid — number is free to reuse
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(existing, nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(existing, nil)
 	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "08889912345678901234567890",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-new-cycle",
 	}
@@ -368,8 +379,8 @@ func TestMerchantVAUsecase_CreateVA_NotificationURLOptional(t *testing.T) {
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "08889912345678901234567890",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-004",
 		// NotificationURL intentionally omitted: not part of ASPI VAUpsertRequest
@@ -377,7 +388,7 @@ func TestMerchantVAUsecase_CreateVA_NotificationURLOptional(t *testing.T) {
 		// without it must be accepted, not rejected.
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(nil, domain.ErrMerchantVANotFound)
 	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
 
 	resp, err := uc.CreateVA(context.Background(), req)
@@ -397,8 +408,8 @@ func TestMerchantVAUsecase_CreateVA_WithBillDetails(t *testing.T) {
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:      "088899",
-		CustomerNo:            "12345678901234567890",
-		VirtualAccountNo:      "08889912345678901234567890",
+		CustomerNo:            "123456789012345678",
+		VirtualAccountNo:      "088899123456789012345678",
 		VirtualAccountName:    "Jokul Doe",
 		TrxID:                 "trx-005",
 		TotalAmount:           amount,
@@ -414,7 +425,7 @@ func TestMerchantVAUsecase_CreateVA_WithBillDetails(t *testing.T) {
 		},
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(nil, domain.ErrMerchantVANotFound)
 	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
 	mockRepo.On("SaveBillDetails", mock.Anything, mock.Anything, req.BillDetails).Return(nil)
 
@@ -433,8 +444,8 @@ func TestMerchantVAUsecase_CreateVA_BillDetailsSaveFails(t *testing.T) {
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "08889912345678901234567890",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-006",
 		BillDetails: []domain.BillDetail{
@@ -442,7 +453,7 @@ func TestMerchantVAUsecase_CreateVA_BillDetailsSaveFails(t *testing.T) {
 		},
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(nil, domain.ErrMerchantVANotFound)
 	mockRepo.On("SaveInquiry", mock.Anything, mock.AnythingOfType("*domain.VAInquiryRecord")).Return(nil)
 	mockRepo.On("SaveBillDetails", mock.Anything, mock.Anything, req.BillDetails).Return(assert.AnError)
 
@@ -866,7 +877,7 @@ func TestMerchantVAUsecase_CreateVA_VATypeRuleProviderFailure_SystemUnavailable(
 	// provider is consulted only for IsReservedPartnerServiceID.
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "15973",
-		CustomerNo:         "12345678901234567890",
+		CustomerNo:         "123456789012345678",
 		VirtualAccountNo:   "15973000000000000099",
 		VirtualAccountName: "Provider Failure Test",
 		TrxID:              "trx-provider-fail",
@@ -942,7 +953,7 @@ func TestMerchantVAUsecase_CreateVA_UnmanagedLegacyVirtualAccountNoMismatch_Reje
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
+		CustomerNo:         "123456789012345678",
 		VirtualAccountNo:   "00000000000000000000000000", // deliberately not partnerServiceId+customerNo
 		VirtualAccountName: "Legacy Consistency Mismatch",
 		TrxID:              "trx-legacy-mismatch",
@@ -1059,8 +1070,8 @@ func TestMerchantVAUsecase_CreateVA_StaticVirtualAccountNoTooLong_Rejected(t *te
 
 	req := &domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "0888991234567890123456789012345", // > 28 chars
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "08889912345678901234567812345", // > 28 chars
 		VirtualAccountName: "Legacy Too Long",
 		TrxID:              "trx-legacy-too-long",
 	}
@@ -1160,8 +1171,8 @@ func TestMerchantVAUsecase_ListVA_Success(t *testing.T) {
 	// with a transaction count (FR-023).
 	items := []domain.VAAccountListItem{
 		{
-			VirtualAccountNo: "08889912345678901234567890",
-			CustomerNo:       "12345678901234567890",
+			VirtualAccountNo: "088899123456789012345678",
+			CustomerNo:       "123456789012345678",
 			CustomerName:     "Jokul Doe",
 			VAType:           "01",
 			Status:           domain.VAAccountStatusActive,
@@ -1235,17 +1246,17 @@ func TestMerchantVAUsecase_DeleteVA_Success(t *testing.T) {
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
 	existing := &domain.VAInquiryRecord{
-		VirtualAccountNo: "08889912345678901234567890",
+		VirtualAccountNo: "088899123456789012345678",
 		Status:           "03", // Pending
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(existing, nil)
-	mockRepo.On("UpdateVAStatus", mock.Anything, "08889912345678901234567890", "04").Return(nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(existing, nil)
+	mockRepo.On("UpdateVAStatus", mock.Anything, "088899123456789012345678", "04").Return(nil)
 
 	req := &domain.MerchantDeleteVARequest{
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 	}
 
 	resp, err := uc.DeleteVA(context.Background(), req)
@@ -1261,16 +1272,16 @@ func TestMerchantVAUsecase_DeleteVA_AlreadyPaid(t *testing.T) {
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
 	existing := &domain.VAInquiryRecord{
-		VirtualAccountNo: "08889912345678901234567890",
+		VirtualAccountNo: "088899123456789012345678",
 		Status:           "00", // Success/Paid
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(existing, nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(existing, nil)
 
 	req := &domain.MerchantDeleteVARequest{
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 	}
 
 	resp, err := uc.DeleteVA(context.Background(), req)
@@ -1287,16 +1298,16 @@ func TestMerchantVAUsecase_DeleteVA_AlreadyDeleted(t *testing.T) {
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
 	existing := &domain.VAInquiryRecord{
-		VirtualAccountNo: "08889912345678901234567890",
+		VirtualAccountNo: "088899123456789012345678",
 		Status:           "04", // Already deleted
 	}
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(existing, nil)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(existing, nil)
 
 	req := &domain.MerchantDeleteVARequest{
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 	}
 
 	resp, err := uc.DeleteVA(context.Background(), req)
@@ -1309,12 +1320,12 @@ func TestMerchantVAUsecase_DeleteVA_NotFound(t *testing.T) {
 	mockRepo := new(MockMerchantVARepository)
 	uc := NewMerchantVAUsecase(mockRepo, newTestVATypeRuleProvider())
 
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "08889912345678901234567890").Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, "088899123456789012345678").Return(nil, domain.ErrMerchantVANotFound)
 
 	req := &domain.MerchantDeleteVARequest{
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 	}
 
 	resp, err := uc.DeleteVA(context.Background(), req)

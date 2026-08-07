@@ -120,15 +120,31 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 	// one: a payment notification (SavePayment) may already have stored the
 	// vendor's subCompany on this row, and a later create-va/inquiry upsert that
 	// simply has nothing to say about it must not blank that value out.
+	// free_texts is written as JSONB, same as SavePayment does. NULL rather
+	// than an empty array when the biller set none, so COALESCE readers can
+	// tell "not provided" from "provided empty".
+	var freeTexts []byte
+	if len(inquiry.FreeTexts) > 0 {
+		var err error
+		freeTexts, err = json.Marshal(inquiry.FreeTexts)
+		if err != nil {
+			return err
+		}
+	}
+
 	query := `
 		INSERT INTO va_transactions (id, partner_service_id, customer_no, customer_name, virtual_account_no,
 			inquiry_request_id, trx_id, notification_url, status, total_amount, currency, va_type, sub_company,
-			expired_date, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			free_texts, expired_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (inquiry_request_id) DO UPDATE SET
 			status = EXCLUDED.status,
 			notification_url = EXCLUDED.notification_url,
 			sub_company = COALESCE(NULLIF(EXCLUDED.sub_company, ''), va_transactions.sub_company),
+			-- Same reasoning as sub_company: a payment notification may have
+			-- stored the vendor's freeTexts on this row, and a later upsert
+			-- that carries none must not blank them out.
+			free_texts = COALESCE(EXCLUDED.free_texts, va_transactions.free_texts),
 			expired_date = EXCLUDED.expired_date,
 			-- A VA number is reusable once its previous transaction reached a
 			-- terminal state, and the new cycle may carry a different bill.
@@ -161,6 +177,7 @@ func (r *VARepository) SaveInquiry(ctx context.Context, inquiry *domain.VAInquir
 		inquiry.Currency,
 		inquiry.VAType,
 		inquiry.SubCompany,
+		freeTexts,
 		inquiry.ExpiredDate,
 		inquiry.CreatedAt,
 		inquiry.UpdatedAt,
@@ -178,11 +195,12 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
 			COALESCE(inquiry_request_id, ''), trx_id, notification_url, status, total_amount, currency,
 			COALESCE(va_type, ''), COALESCE(sub_company, ''), COALESCE(paid_amount, 0)::text,
-			expired_date, created_at, updated_at
+			free_texts, expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE inquiry_request_id = $1`
 
 	record := &domain.VAInquiryRecord{}
+	var freeTexts []byte
 	err := r.pool.QueryRow(ctx, query, inquiryRequestID).Scan(
 		&record.ID,
 		&record.PartnerServiceID,
@@ -198,6 +216,7 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 		&record.VAType,
 		&record.SubCompany,
 		&record.PaidAmount,
+		&freeTexts,
 		&record.ExpiredDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,
@@ -207,6 +226,12 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Unmarshal errors are swallowed: freeTexts is optional display text, and a
+	// row with unreadable JSON in it must still answer the inquiry rather than
+	// fail it.
+	if len(freeTexts) > 0 {
+		_ = json.Unmarshal(freeTexts, &record.FreeTexts)
 	}
 	return record, nil
 }
@@ -342,26 +367,60 @@ func (r *VARepository) SavePayment(ctx context.Context, payment *domain.VAPaymen
 	return err
 }
 
-// GetPayment retrieves a VA payment by payment request ID
-func (r *VARepository) GetPayment(ctx context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
-	// payment_request_id, paid_amount and reference_no are NULL on a row that
-	// has not been through the single-settlement payment path — a
-	// variable-bill VA settles through va_payments instead, and its
-	// transaction row keeps them NULL. Scanning those into strings failed,
-	// turning a perfectly good status inquiry into a 500.
-	query := `
-		SELECT id, partner_service_id, customer_no, customer_name, COALESCE(customer_email, ''),
-			COALESCE(customer_phone, ''), virtual_account_no, inquiry_request_id, trx_id,
-			COALESCE(payment_request_id, ''),
-			COALESCE(total_amount, paid_amount, 0), COALESCE(paid_amount, 0), currency, status,
-			COALESCE(reference_no, ''),
-			COALESCE(channel_code, ''), COALESCE(hashed_source_account_no, ''), COALESCE(source_bank_code, ''),
-			COALESCE(journal_num, ''), COALESCE(payment_type, ''), COALESCE(flag_advise, ''),
-			COALESCE(paid_bills, ''), COALESCE(sub_company, ''), trx_date_time, free_texts,
-			COALESCE(transaction_date, updated_at), created_at, updated_at
-		FROM va_transactions
-		WHERE payment_request_id = $1 OR inquiry_request_id = $1`
+// paymentSelectColumns is shared by GetPayment and
+// GetPaymentByPaymentRequestID so the two differ only in their WHERE clause.
+//
+// payment_request_id, paid_amount and reference_no are NULL on a row that has
+// not been through the single-settlement payment path — a variable-bill VA
+// settles through va_payments instead, and its transaction row keeps them
+// NULL. Scanning those into strings failed, turning a perfectly good status
+// inquiry into a 500.
+const paymentSelectColumns = `
+	SELECT id, partner_service_id, customer_no, customer_name, COALESCE(customer_email, ''),
+		COALESCE(customer_phone, ''), virtual_account_no, inquiry_request_id, trx_id,
+		COALESCE(payment_request_id, ''),
+		COALESCE(total_amount, paid_amount, 0), COALESCE(paid_amount, 0), currency, status,
+		COALESCE(reference_no, ''),
+		COALESCE(channel_code, ''), COALESCE(hashed_source_account_no, ''), COALESCE(source_bank_code, ''),
+		COALESCE(journal_num, ''), COALESCE(payment_type, ''), COALESCE(flag_advise, ''),
+		COALESCE(paid_bills, ''), COALESCE(sub_company, ''), trx_date_time, free_texts,
+		COALESCE(transaction_date, updated_at), created_at, updated_at
+	FROM va_transactions`
 
+// GetPayment resolves a transaction by EITHER identifier — used by the status
+// service, which is handed an inquiryRequestId and must still find the payment
+// that settled it.
+//
+// Do NOT use this as a "has this payment already been recorded?" check: see
+// GetPaymentByPaymentRequestID for why the OR is actively wrong there.
+func (r *VARepository) GetPayment(ctx context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
+	return r.scanPayment(ctx,
+		paymentSelectColumns+`
+		WHERE payment_request_id = $1 OR inquiry_request_id = $1`,
+		paymentRequestID)
+}
+
+// GetPaymentByPaymentRequestID resolves a transaction by paymentRequestId
+// ONLY, and is the lookup the payment endpoint's duplicate check must use.
+//
+// The difference is not cosmetic. BCA specifies "paymentRequestId ... If
+// payment comes from the Inquiry process, this value must be the same with
+// inquiryRequestId" — so in the canonical inquiry-then-pay flow the two ids
+// are equal, and the inquiry has already stamped that id onto the
+// transaction's inquiry_request_id. Matching with GetPayment's OR therefore
+// finds the *unpaid* transaction the inquiry just claimed and reports the
+// customer's FIRST payment as a double-flag: BCA receives 4042518
+// "Inconsistent Request", no payment row is written, the transaction stays
+// pending and the merchant is never notified. The money is taken and never
+// recorded.
+func (r *VARepository) GetPaymentByPaymentRequestID(ctx context.Context, paymentRequestID string) (*domain.VAPaymentRecord, error) {
+	return r.scanPayment(ctx,
+		paymentSelectColumns+`
+		WHERE payment_request_id = $1`,
+		paymentRequestID)
+}
+
+func (r *VARepository) scanPayment(ctx context.Context, query, paymentRequestID string) (*domain.VAPaymentRecord, error) {
 	record := &domain.VAPaymentRecord{}
 	var channelCode string
 	var freeTexts []byte
@@ -640,7 +699,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
 			COALESCE(inquiry_request_id, ''), trx_id, notification_url, status, total_amount, currency,
 			COALESCE(va_type, ''), COALESCE(sub_company, ''), COALESCE(paid_amount, 0)::text,
-			expired_date, created_at, updated_at
+			free_texts, expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE virtual_account_no = $1
 		ORDER BY
@@ -655,6 +714,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		LIMIT 1`
 
 	record := &domain.VAInquiryRecord{}
+	var freeTexts []byte
 	err := r.pool.QueryRow(ctx, query, virtualAccountNo).Scan(
 		&record.ID,
 		&record.PartnerServiceID,
@@ -670,6 +730,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		&record.VAType,
 		&record.SubCompany,
 		&record.PaidAmount,
+		&freeTexts,
 		&record.ExpiredDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,
@@ -679,6 +740,9 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(freeTexts) > 0 {
+		_ = json.Unmarshal(freeTexts, &record.FreeTexts)
 	}
 	return record, nil
 }
@@ -770,9 +834,19 @@ func (r *VARepository) ExistsByVirtualAccountNoAndEventType(ctx context.Context,
 
 // NextCustomerNoSequence generates the next unique, sequential customerNo for
 // a dynamic VA type (feature 006-static-dynamic-va, FR-005/FR-005a). The
-// result is a 20-digit string: the 2-digit vaType followed by the 18-digit
+// result is an 18-digit string: the 2-digit vaType followed by the 16-digit
 // zero-padded sequence. Guarded by a Redis lock (if configured) plus a
 // row-level lock on the counter row for defense in depth under concurrency.
+//
+// The width is 18, not 20, because of BCA's own field tables: its Payment
+// (service 25) and Status (service 26) tables cap customerNo at String(18) and
+// virtualAccountNo at String(26), while only the Inquiry table allows (20)/(28).
+// A 20-digit customerNo yields a 28-character virtualAccountNo, which BCA's
+// channel accepts on inquiry and then REJECTS on payment — the VA is
+// inquirable but unpayable, which is the worst possible failure mode since the
+// customer only discovers it at the point of paying. 16 digits of sequence is
+// 10^16 VA numbers per type, so nothing is lost by fitting inside the narrower
+// of the two limits.
 func (r *VARepository) NextCustomerNoSequence(ctx context.Context, vaType string) (string, error) {
 	var customerNo string
 	err := r.withLock(ctx, fmt.Sprintf("va-seq-lock:%s", vaType), func() error {
@@ -792,7 +866,7 @@ func (r *VARepository) NextCustomerNoSequence(ctx context.Context, vaType string
 		}
 
 		seqStr := fmt.Sprintf("%d", nextSeq)
-		if len(seqStr) > 18 {
+		if len(seqStr) > 16 {
 			return fmt.Errorf("sequence generator unavailable: sequence range exhausted for vaType %s", vaType)
 		}
 
@@ -807,7 +881,7 @@ func (r *VARepository) NextCustomerNoSequence(ctx context.Context, vaType string
 			return fmt.Errorf("sequence generator unavailable: %w", err)
 		}
 
-		customerNo = vaType + fmt.Sprintf("%018d", nextSeq)
+		customerNo = vaType + fmt.Sprintf("%016d", nextSeq)
 		return nil
 	})
 	if err != nil {
@@ -1351,3 +1425,4 @@ func parseAmount(s string) (float64, error) {
 // domain.VANotificationDeliveryRepository.
 var _ domain.VARepository = (*VARepository)(nil)
 var _ domain.VANotificationDeliveryRepository = (*VARepository)(nil)
+

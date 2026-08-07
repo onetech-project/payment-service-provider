@@ -162,7 +162,22 @@ For every request to `inquiry`, `payment`, or `status`:
 1. **Build the request body** as a JSON object per the SNAP transfer-va spec.
 2. **Compute the timestamp**: current time in ISO 8601, e.g.
    `2026-07-30T10:15:00+07:00`.
-3. **Hash the body**: `bodyHash = base64(SHA256(body))`.
+3. **Hash the body**: `bodyHash = hex(SHA256(minify(body)))`.
+
+   **Minify first.** SNAP specifies
+   `Lowercase(HexEncode(SHA-256(MinifyJson(RequestBody))))` — `minify` is the
+   JSON with all insignificant whitespace removed. If you send a compact body
+   this changes nothing; if you pretty-print, hashing the raw bytes gives a
+   different digest than we compute and every request comes back
+   `[Invalid signature]`. In `jq` terms: `jq -cj .` — the `-j` matters,
+   because `jq -c` alone appends a newline that would be hashed too.
+
+   **Encoding is lowercase hex**, per the SNAP spec. Vendors onboarded under
+   feature `012-base64-hash-encoding` sign with base64 instead; that is a
+   per-vendor setting (`VENDOR_BODY_HASH_ENCODING`) so one vendor's
+   non-conformant encoding cannot push every other vendor off spec. Ask
+   operations which one is provisioned for your channel if you are unsure —
+   the merchant endpoints use base64 for the same historical reason.
 4. **Build `stringToSign`**:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
@@ -181,14 +196,14 @@ For every request to `inquiry`, `payment`, or `status`:
      ```
      Example for `POST /openapi/v1.0/transfer-va/inquiry`:
      ```
-     POST:/openapi/v1.0/transfer-va/inquiry::OjVWOu4+711dTdc7...:2026-07-30T10:15:00+07:00
+     POST:/openapi/v1.0/transfer-va/inquiry::ede1b7f180fdcb80bc6d71a3...:2026-07-30T10:15:00+07:00
      ```
    - **Migrated path**: the `{accessToken}` slot is the **real token from
      Step 1** (not empty) — you genuinely send it via `Authorization`, so
      both sides of the signature computation must agree on that same value.
      Example:
      ```
-     POST:/openapi/v1.0/transfer-va/inquiry:eyJhbGciOi...:OjVWOu4+711dTdc7...:2026-07-30T10:15:00+07:00
+     POST:/openapi/v1.0/transfer-va/inquiry:eyJhbGciOi...:ede1b7f180fdcb80bc6d71a3...:2026-07-30T10:15:00+07:00
      ```
 5. **Sign**: `signature = base64(HMAC-SHA512(yourSharedSecret, stringToSign))`.
 6. **Send these headers**:
@@ -207,6 +222,25 @@ For every request to `inquiry`, `payment`, or `status`:
    Per the ASPI *Standar Teknis dan Keamanan*, `CHANNEL-ID` is **Mandatory**
    on transaction requests (not optional), and `X-EXTERNAL-ID` must be a
    numeric string unique within the same calendar day.
+
+#### How this compares to the merchant side
+
+Both sides use the same `stringToSign` shape and the same minify-then-hash
+rule for the body. Only three things differ, and none of them is a difference
+in *algorithm*:
+
+| | Vendor (`inquiry`/`payment`/`status`) | Merchant (`create-va`/`list`/`delete-va`) |
+|---|---|---|
+| Body digest | `SHA-256(minify(body))` | `SHA-256(minify(body))` — same rule |
+| Digest encoding | lowercase **hex** (or base64 per `VENDOR_BODY_HASH_ENCODING`) | **base64** |
+| `{accessToken}` slot | empty on the legacy path, the real token once migrated | always the real token |
+| `CHANNEL-ID` / `X-PARTNER-ID` | required | not enforced |
+
+The body rule was **not** always the same: the merchant endpoints used to hash
+the raw, un-minified body. If you operate on both sides and wrote your
+merchant signing against that older behaviour, see
+[merchant-onboarding.md](./merchant-onboarding.md#step-2-sign-your-create-valistdelete-va-request)
+— there is a transitional fallback, but it will be turned off.
 
 #### About `X-CLIENT-KEY`
 
