@@ -15,6 +15,39 @@ import (
 // bill/VA-not-found response codes in this package.
 const errInvalidBill = "Invalid Bill/Virtual Account"
 
+// SNAP "Inconsistent Request" for the payment service, returned when a
+// paymentRequestId that has already been recorded is submitted again (the
+// vendor reused both X-EXTERNAL-ID and paymentRequestId). The response still
+// echoes the original payment's virtualAccountData — the caller needs to see
+// which payment it collided with — but the responseCode marks the request
+// itself as rejected rather than replaying it as a fresh success.
+const (
+	snapCodeInconsistentRequest = "4042518"
+	snapMsgInconsistentRequest  = "Inconsistent Request"
+)
+
+// SNAP "Invalid Bill/Virtual Account" for the payment service, returned when
+// the VA the payment names exists nowhere in this system — no registration and
+// no transaction. The 404 mirrors what Inquiry already answers (4042412) for
+// the same unknown VA.
+const (
+	snapCodeVANotFound = "4042512"
+	snapMsgVANotFound  = "Invalid Bill/Virtual Account [Not Found]"
+)
+
+// Bilingual paymentFlagReason texts for refused payments. Each names the
+// refusal specifically instead of reusing getPaymentFlagReason's generic
+// "Reject"/"Ditolak" for flag "01" — the vendor displays this text to the
+// customer, and "rejected" alone does not say WHY. They mirror the inquiry
+// side's reasons so the same VA state reads the same on both endpoints; the
+// expired pair is contract-fixed by specs/007-merchant-expiry-callback.
+var (
+	paymentReasonNotFound = &domain.BilingualText{English: "Virtual Account Not Found", Indonesia: "Virtual Account Tidak Ditemukan"}
+	paymentReasonPaid     = &domain.BilingualText{English: "Bill has been paid", Indonesia: "Tagihan telah dibayar"}
+	paymentReasonInactive = &domain.BilingualText{English: "Bill not found", Indonesia: "Tagihan tidak ditemukan"}
+	paymentReasonExpired  = &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"}
+)
+
 // isNotFound reports whether a repository lookup failed because the row does
 // not exist, as opposed to the query itself failing (missing column, closed
 // pool, timeout...). The repository layer maps pgx.ErrNoRows to a sentinel —
@@ -121,18 +154,32 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 			(record.Status == "03" && record.ExpiredDate != nil && time.Now().After(*record.ExpiredDate))
 		if isExpired {
 			u.markExpiredAndNotify(ctx, record)
-			return nil, domain.NewDomainError("4042419", errInvalidBill, domain.ErrVAExpiredInquiry)
+			return nil, domain.NewInquiryError("4042419", "Invalid Bill/Virtual Account", domain.ErrVAExpiredInquiry,
+				u.rejectedAccountData(ctx, record, req.InquiryRequestID, inquiryReasonExpired))
 		}
 
-		// The persisted transaction status decides the inquiry outcome — a bill
-		// that is already settled or cancelled is not payable, and SNAP conveys
-		// that through the responseCode (with inquiryStatus "01" attached by the
-		// handler), not through a 200 that would invite a second payment.
+		// The persisted transaction decides the inquiry outcome — a bill that is
+		// already settled or cancelled is not payable, and SNAP conveys that
+		// through the responseCode plus inquiryStatus "01", not through a 200
+		// that would invite a second payment. The rejection still reports the
+		// full VA (name, amount, bills) so the vendor can show the customer
+		// WHICH bill it is refusing and why.
+		//
+		// "00" is read through IsPayable rather than compared directly: a
+		// variable-bill VA whose cumulative payments still fall short of
+		// totalAmount is NOT a paid bill, however its status column reads, and
+		// answering 4042414 there would make the outstanding balance
+		// uncollectable.
 		switch record.Status {
 		case "00":
-			return nil, domain.NewDomainError("4042414", "Paid Bill", domain.ErrVAPaidBill)
+			if record.IsPayable() {
+				break
+			}
+			return nil, domain.NewInquiryError("4042414", "Paid Bill", domain.ErrVAPaidBill,
+				u.rejectedAccountData(ctx, record, req.InquiryRequestID, inquiryReasonPaid))
 		case "04":
-			return nil, domain.NewDomainError("4042412", errInvalidBill, domain.ErrVAInvalidBill)
+			return nil, domain.NewInquiryError("4042412", "Invalid Bill/Virtual Account", domain.ErrVAInvalidBill,
+				u.rejectedAccountData(ctx, record, req.InquiryRequestID, inquiryReasonInvalidBill))
 		}
 
 		// A merchant-created VA carries no vendor inquiryRequestId — at create-va
@@ -165,7 +212,41 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 	// used to conjure one. An inquiry is a read of an existing bill — only the
 	// merchant's create-va brings a VA into existence, and inventing a row here
 	// would hand the vendor a payable bill for a VA no merchant ever issued.
-	return nil, domain.NewDomainError("4042412", errInvalidBill, domain.ErrVAInvalidBill)
+	// The virtualAccountData echoes back the request's own identity fields —
+	// there is no stored VA to describe, so nothing here is invented: the
+	// vendor gets its own keys back next to inquiryStatus "01".
+	return nil, domain.NewInquiryError("4042412", "Invalid Bill/Virtual Account", domain.ErrVAInvalidBill,
+		&domain.VAAccountData{
+			PartnerServiceID: req.PartnerServiceID,
+			CustomerNo:       req.CustomerNo,
+			VirtualAccountNo: req.VirtualAccountNo,
+			InquiryRequestID: req.InquiryRequestID,
+			SubCompany:       defaultSubCompany,
+			InquiryStatus:    "01",
+			InquiryReason:    inquiryReasonInvalidBill,
+		})
+}
+
+// Bilingual inquiryReason texts. The expired pair is contract-fixed by
+// specs/007-merchant-expiry-callback/contracts/inquiry-expired.md — do not
+// reword it without updating that contract.
+var (
+	inquiryReasonSuccess     = &domain.BilingualText{English: "Success", Indonesia: "Sukses"}
+	inquiryReasonPaid        = &domain.BilingualText{English: "Bill has been paid", Indonesia: "Tagihan telah dibayar"}
+	inquiryReasonExpired     = &domain.BilingualText{English: "expired transaction", Indonesia: "transaksi kadaluarsa"}
+	inquiryReasonInvalidBill = &domain.BilingualText{English: "Bill not found", Indonesia: "Tagihan tidak ditemukan"}
+)
+
+// rejectedAccountData builds the virtualAccountData reported with a rejected
+// inquiry: the same block a successful inquiry returns, but with inquiryStatus
+// "01" and the reason for the refusal. Bill details are best-effort — a lookup
+// failure must not turn a clean 404 into a 500.
+func (u *VAUsecase) rejectedAccountData(ctx context.Context, record *domain.VAInquiryRecord, inquiryRequestID string, reason *domain.BilingualText) *domain.VAAccountData {
+	bills, _ := u.repo.GetVABillDetails(ctx, record.ID)
+	data := inquiryAccountDataFromRecord(record, inquiryRequestID, bills)
+	data.InquiryStatus = "01"
+	data.InquiryReason = reason
+	return data
 }
 
 // inquiryResponseFromRecord builds the successful InquiryResponse purely from
@@ -175,6 +256,22 @@ func (u *VAUsecase) Inquiry(ctx context.Context, req *domain.VAInquiryRequest) (
 // it identifies THIS inquiry, which for a merchant-created VA differs from the
 // id the row was originally keyed by.
 func inquiryResponseFromRecord(record *domain.VAInquiryRecord, inquiryRequestID string, bills []domain.BillDetail) *domain.VAInquiryResponse {
+	data := inquiryAccountDataFromRecord(record, inquiryRequestID, bills)
+	data.InquiryStatus = "00"
+	data.InquiryReason = inquiryReasonSuccess
+
+	return &domain.VAInquiryResponse{
+		ResponseCode:       "2002400",
+		ResponseMessage:    "Successful",
+		VirtualAccountData: data,
+	}
+}
+
+// inquiryAccountDataFromRecord renders the persisted VA as the inquiry's
+// virtualAccountData block, leaving inquiryStatus/inquiryReason to the caller:
+// the account fields are identical whether the inquiry succeeds or is refused,
+// and only the outcome pair differs.
+func inquiryAccountDataFromRecord(record *domain.VAInquiryRecord, inquiryRequestID string, bills []domain.BillDetail) *domain.VAAccountData {
 	currency := record.Currency
 	if currency == "" {
 		currency = "IDR"
@@ -184,30 +281,28 @@ func inquiryResponseFromRecord(record *domain.VAInquiryRecord, inquiryRequestID 
 		totalAmount = "0.00"
 	}
 
-	return &domain.VAInquiryResponse{
-		ResponseCode:    "2002400",
-		ResponseMessage: "Successful",
-		VirtualAccountData: &domain.VAAccountData{
-			InquiryStatus:      "00",
-			InquiryReason:      &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
-			PartnerServiceID:   record.PartnerServiceID,
-			CustomerNo:         record.CustomerNo,
-			VirtualAccountNo:   record.VirtualAccountNo,
-			VirtualAccountName: record.CustomerName,
-			InquiryRequestID:   inquiryRequestID,
-			TotalAmount:        &domain.Amount{Value: totalAmount, Currency: currency},
-			SubCompany:         subCompanyForVA(record, bills),
-			BillDetails:        bills,
-		},
+	return &domain.VAAccountData{
+		PartnerServiceID:   record.PartnerServiceID,
+		CustomerNo:         record.CustomerNo,
+		VirtualAccountNo:   record.VirtualAccountNo,
+		VirtualAccountName: record.CustomerName,
+		InquiryRequestID:   inquiryRequestID,
+		TotalAmount:        &domain.Amount{Value: totalAmount, Currency: currency},
+		SubCompany:         subCompanyForVA(record, bills),
+		BillDetails:        bills,
 	}
 }
+
+// defaultSubCompany is what an inquiry reports when the biller has no
+// sub-company code of its own. BCA expects the field to always be present and
+// numeric, and "00000" is its "no sub-company" value.
+const defaultSubCompany = "00000"
 
 // subCompanyForVA resolves the biller sub-company code to report on inquiry.
 // The transaction's own sub_company wins; failing that, the bills' shared
 // billSubCompany stands in (ASPI makes billSubCompany mandatory whenever a
 // subCompany is in play, so for a merchant-created VA the bill rows are where
-// the code actually lives). Empty when the biller has none — subCompany is
-// optional in InquiryResponse and is then omitted rather than invented.
+// the code actually lives); failing both, defaultSubCompany.
 func subCompanyForVA(record *domain.VAInquiryRecord, bills []domain.BillDetail) string {
 	if record.SubCompany != "" {
 		return record.SubCompany
@@ -217,7 +312,7 @@ func subCompanyForVA(record *domain.VAInquiryRecord, bills []domain.BillDetail) 
 			return bill.BillSubCompany
 		}
 	}
-	return ""
+	return defaultSubCompany
 }
 
 // inquiryNoBill answers an inquiry for a no-bill VA from its registration
@@ -235,12 +330,18 @@ func (u *VAUsecase) inquiryNoBill(ctx context.Context, req *domain.VAInquiryRequ
 		return nil, domain.NewDomainError("4042419", errInvalidBill, domain.ErrVAAccountInactive)
 	}
 
-	// A no-bill VA asserts no bill amount — the customer chose what to pay at
-	// the channel — so the request's own amount is echoed back rather than a
-	// stored total.
+	// A no-bill VA owes nothing, so totalAmount is always zero (spec A-005).
+	//
+	// It used to echo the request's own amount, which read as "this VA has a
+	// bill of X" to vendors that display totalAmount as the amount due — the
+	// exact assertion a no-bill VA must not make. The customer's chosen amount
+	// belongs to the payment, not to a bill that does not exist.
+	//
+	// Only the value is fixed; the currency still follows the request, since
+	// reporting a currency the caller never mentioned would be its own claim.
 	totalAmount := &domain.Amount{Value: "0.00", Currency: "IDR"}
-	if req.Amount != nil {
-		totalAmount = req.Amount
+	if req.Amount != nil && req.Amount.Currency != "" {
+		totalAmount.Currency = req.Amount.Currency
 	}
 
 	return &domain.VAInquiryResponse{
@@ -273,10 +374,12 @@ func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequ
 	// there is no pending transaction to carry them.
 	if account.IsExpired(time.Now()) {
 		u.markRegistrationExpiredAndNotify(ctx, account)
-		return nil, domain.NewDomainError("4042519", errInvalidBill, domain.ErrVAExpiredPayment)
+		return nil, domain.NewPaymentError("4042519", errInvalidBill, domain.ErrVAExpiredPayment,
+			accountRejectionData(req, account, paymentReasonExpired))
 	}
 	if account.Status != domain.VAAccountStatusActive {
-		return nil, domain.NewDomainError("4042519", errInvalidBill, domain.ErrVAAccountInactive)
+		return nil, domain.NewPaymentError("4042519", errInvalidBill, domain.ErrVAAccountInactive,
+			accountRejectionData(req, account, paymentReasonInactive))
 	}
 
 	// A no-bill VA has no bill to match against, so the totalAmount/paidAmount
@@ -346,12 +449,13 @@ func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequ
 
 	if err := u.repo.SaveNoBillPayment(ctx, record); err != nil {
 		// A duplicate means a concurrent caller with the same paymentRequestId
-		// won the race past the GetPayment short-circuit above. Replay that
-		// payment's result instead of failing or double-recording — and notably
-		// without sending a second callback, since we are not the writer.
+		// won the race past the GetPayment short-circuit above. Answer exactly
+		// as that short-circuit would have — 4042518 against the winner's
+		// record — instead of failing or double-recording, and notably without
+		// sending a second callback, since we are not the writer.
 		if errors.Is(err, domain.ErrVAPaymentDuplicate) {
 			if existing, getErr := u.repo.GetPayment(ctx, req.PaymentRequestID); getErr == nil && existing != nil {
-				return paymentResponseFromRecord(existing), nil
+				return nil, duplicatePaymentError(existing)
 			}
 		}
 		return nil, domain.NewDomainError("5002500", errInternalServerError, err)
@@ -393,6 +497,13 @@ func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequ
 // already-persisted payment, used for idempotent replays.
 func paymentResponseFromRecord(existing *domain.VAPaymentRecord) *domain.VAPaymentResponse {
 	txDate := existing.TransactionDate
+	// totalAmount is optional on the ASPI PaymentResponse and not every stored
+	// payment has one (the no-bill path sets it, older billed rows may not), so
+	// it is echoed only when the record actually carries a value.
+	var totalAmount *domain.Amount
+	if existing.TotalAmount != "" {
+		totalAmount = &domain.Amount{Value: existing.TotalAmount, Currency: existing.Currency}
+	}
 	return &domain.VAPaymentResponse{
 		ResponseCode:    "2002500",
 		ResponseMessage: "Successful",
@@ -407,6 +518,7 @@ func paymentResponseFromRecord(existing *domain.VAPaymentRecord) *domain.VAPayme
 			PaymentRequestID:    existing.PaymentRequestID,
 			PaidAmount:          &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
 			PaidBills:           existing.PaidBills,
+			TotalAmount:         totalAmount,
 			TrxDateTime:         &txDate,
 			ReferenceNo:         existing.ReferenceNo,
 			JournalNum:          existing.JournalNum,
@@ -416,6 +528,99 @@ func paymentResponseFromRecord(existing *domain.VAPaymentRecord) *domain.VAPayme
 			PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
 		},
 	}
+}
+
+// vaNotFoundPaymentError rejects a payment naming a VA this system has never
+// issued. The rejection echoes the request's own identity fields — there is no
+// stored VA to describe, so nothing here is invented; the vendor gets its keys
+// back next to paymentFlagStatus "01", exactly as Inquiry does for the same
+// unknown VA.
+//
+// paidAmount and totalAmount are reported as empty rather than echoed from the
+// request on purpose: no bill was matched, so no amount was accepted, and
+// echoing the tendered figure back would read as an acknowledged payment.
+// virtualAccountName is empty for the same reason — naming a holder would mean
+// inventing one.
+func vaNotFoundPaymentError(req *domain.VAPaymentRequest) error {
+	return domain.NewPaymentError(snapCodeVANotFound, snapMsgVANotFound, domain.ErrVAInvalidBill,
+		&domain.VAPaymentStatus{
+			PartnerServiceID:  req.PartnerServiceID,
+			CustomerNo:        req.CustomerNo,
+			VirtualAccountNo:  req.VirtualAccountNo,
+			PaymentRequestID:  req.PaymentRequestID,
+			PaidAmount:        &domain.Amount{},
+			TotalAmount:       &domain.Amount{},
+			TrxDateTime:       req.TrxDateTime,
+			ReferenceNo:       req.ReferenceNo,
+			PaymentFlagStatus: "01",
+			PaymentFlagReason: paymentReasonNotFound,
+		})
+}
+
+// paymentRejectionData renders the virtualAccountData reported with a refused
+// payment against a VA this system DOES know: the stored VA next to
+// paymentFlagStatus "01" and the reason it was refused. The vendor needs to
+// see WHICH bill it is being refused, not just that it was.
+//
+// paidAmount is reported empty rather than echoed from the request, for the
+// same reason as the not-found rejection: nothing was settled, so no amount
+// was accepted, and echoing the tendered figure reads as an acknowledgement.
+// totalAmount comes from the stored bill, which is real.
+func paymentRejectionData(req *domain.VAPaymentRequest, record *domain.VAInquiryRecord, reason *domain.BilingualText) *domain.VAPaymentStatus {
+	currency := record.Currency
+	if currency == "" {
+		currency = "IDR"
+	}
+	return &domain.VAPaymentStatus{
+		PartnerServiceID:  record.PartnerServiceID,
+		CustomerNo:        record.CustomerNo,
+		VirtualAccountNo:  record.VirtualAccountNo,
+		VirtualAccountName: record.CustomerName,
+		TrxID:              record.TrxID,
+		PaymentRequestID:  req.PaymentRequestID,
+		PaidAmount:        &domain.Amount{},
+		TotalAmount:       &domain.Amount{Value: record.TotalAmount, Currency: currency},
+		TrxDateTime:       req.TrxDateTime,
+		ReferenceNo:       req.ReferenceNo,
+		PaymentFlagStatus: "01",
+		PaymentFlagReason: reason,
+	}
+}
+
+// accountRejectionData is paymentRejectionData for a VA answered from its
+// registration rather than a transaction (no-bill VAs, which have no
+// transaction to describe). There is no bill, so totalAmount stays empty.
+func accountRejectionData(req *domain.VAPaymentRequest, account *domain.VAAccount, reason *domain.BilingualText) *domain.VAPaymentStatus {
+	return &domain.VAPaymentStatus{
+		PartnerServiceID:  account.PartnerServiceID,
+		CustomerNo:        account.CustomerNo,
+		VirtualAccountNo:  account.VirtualAccountNo,
+		VirtualAccountName: account.CustomerName,
+		TrxID:             account.TrxID,
+		PaymentRequestID:  req.PaymentRequestID,
+		PaidAmount:        &domain.Amount{},
+		TotalAmount:       &domain.Amount{},
+		TrxDateTime:       req.TrxDateTime,
+		ReferenceNo:       req.ReferenceNo,
+		PaymentFlagStatus: "01",
+		PaymentFlagReason: reason,
+	}
+}
+
+// duplicatePaymentError rejects a paymentRequestId that has already been
+// recorded — the vendor resubmitted with the same X-EXTERNAL-ID and the same
+// paymentRequestId. The rejection carries the colliding payment's
+// virtualAccountData so the vendor can identify what it hit.
+//
+// paymentFlagStatus stays "00" — it describes the *original* payment, which
+// really did settle. It is responseCode that rejects this second request.
+func duplicatePaymentError(existing *domain.VAPaymentRecord) error {
+	return domain.NewPaymentError(
+		snapCodeInconsistentRequest,
+		snapMsgInconsistentRequest,
+		domain.ErrVAPaymentDuplicate,
+		paymentResponseFromRecord(existing).VirtualAccountData,
+	)
 }
 
 // Payment handles VA payment notification from vendor
@@ -435,32 +640,12 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		return nil, domain.NewDomainError("5002500", errInternalServerError, err)
 	}
 	if existing != nil {
-		// Return existing payment status, echoing the identity/amount fields
-		// persisted with the original request per PaymentResponse.virtualAccountData.
-		existingTxDate := existing.TransactionDate
-		return &domain.VAPaymentResponse{
-			ResponseCode:    "2002500",
-			ResponseMessage: "Successful",
-			VirtualAccountData: &domain.VAPaymentStatus{
-				PartnerServiceID:    existing.PartnerServiceID,
-				CustomerNo:          existing.CustomerNo,
-				VirtualAccountNo:    existing.VirtualAccountNo,
-				VirtualAccountName:  existing.CustomerName,
-				VirtualAccountEmail: existing.CustomerEmail,
-				VirtualAccountPhone: existing.CustomerPhone,
-				TrxID:               existing.TrxID,
-				PaymentRequestID:    existing.PaymentRequestID,
-				PaidAmount:          &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
-				PaidBills:           existing.PaidBills,
-				TrxDateTime:         &existingTxDate,
-				ReferenceNo:         existing.ReferenceNo,
-				JournalNum:          existing.JournalNum,
-				PaymentType:         existing.PaymentType,
-				FlagAdvise:          existing.FlagAdvise,
-				PaymentFlagStatus:   "00",
-				PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
-			},
-		}, nil
+		// This paymentRequestId was already settled. Reaching here means the
+		// vendor resubmitted it — either under the same X-EXTERNAL-ID (the
+		// idempotency middleware deliberately stops replaying the cached reply
+		// for this endpoint so the collision surfaces) or under a fresh one.
+		// Either way it is an Inconsistent Request, not a second success.
+		return nil, duplicatePaymentError(existing)
 	}
 
 	// No-bill VAs (vaType 01/04, feature 013-no-bill-payment-transaction) are
@@ -508,28 +693,47 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		return nil, domain.NewDomainError("5002500", errInternalServerError, merr)
 	}
 
-	// A payment may only land on a transaction that is currently PENDING
-	// ("03"). Without this guard, a payment with a brand-new paymentRequestId
-	// (so it misses the idempotency check above) against an already-paid
-	// ("00"), expired ("02"), or deleted ("04") VA would still match this same
-	// virtualAccountNo and silently overwrite the completed transaction's
+	// No registration (handled above) and no transaction: the VA does not exist
+	// as far as this system is concerned. Rejecting here is what stops the
+	// SavePayment below from conjuring a settled row for a VA no merchant ever
+	// issued — the same rule Inquiry applies when it answers 4042412 rather
+	// than inventing a bill.
+	if merchantVA == nil {
+		return nil, vaNotFoundPaymentError(req)
+	}
+
+	// A payment may only land on a transaction that is still open. Without this
+	// guard, a payment with a brand-new paymentRequestId (so it misses the
+	// idempotency check above) against an already-paid ("00"), expired ("02"),
+	// or deleted ("04") VA would still match this same virtualAccountNo and
+	// silently overwrite the completed transaction's
 	// paidAmount/referenceNo/transactionDate via SavePayment's upsert — a paid
 	// transaction must never be mutated after the fact.
-	if merchantVA != nil {
-		// Expiry detection (feature 007-merchant-expiry-callback, contracts/
-		// notify-expired.md): an already-expired VA, or a pending ("03") VA
-		// whose expired_date has passed, returns the expired-specific SNAP
-		// response instead of the generic conflict response.
-		isExpired := merchantVA.Status == "02" ||
-			(merchantVA.Status == "03" && merchantVA.ExpiredDate != nil && time.Now().After(*merchantVA.ExpiredDate))
-		if isExpired {
-			u.markExpiredAndNotify(ctx, merchantVA)
-			return nil, domain.NewDomainError("4042519", errInvalidBill, domain.ErrVAExpiredPayment)
-		}
+	//
+	// Expiry detection (feature 007-merchant-expiry-callback, contracts/
+	// notify-expired.md): an already-expired VA, or a pending ("03") VA whose
+	// expired_date has passed, returns the expired-specific SNAP response
+	// instead of the generic conflict response.
+	isExpired := merchantVA.Status == "02" ||
+		(merchantVA.Status == "03" && merchantVA.ExpiredDate != nil && time.Now().After(*merchantVA.ExpiredDate))
+	if isExpired {
+		u.markExpiredAndNotify(ctx, merchantVA)
+		return nil, domain.NewPaymentError("4042519", errInvalidBill, domain.ErrVAExpiredPayment,
+			paymentRejectionData(req, merchantVA, paymentReasonExpired))
+	}
 
-		if merchantVA.Status != "03" {
-			return nil, domain.NewDomainError("4092500", "Conflict: Bill/Virtual Account already paid or inactive", nil)
+	// IsPayable, not Status == "03": a variable-bill VA that still owes part of
+	// its totalAmount stays collectable even when the row already reads "00",
+	// so the remaining balance is not locked out by a stale status.
+	if !merchantVA.IsPayable() {
+		// The reason distinguishes the two ways a bill closes, mirroring what
+		// Inquiry reports for the same states: settled ("00") versus deleted.
+		reason := paymentReasonInactive
+		if merchantVA.Status == "00" {
+			reason = paymentReasonPaid
 		}
+		return nil, domain.NewPaymentError("4092500", "Conflict: Bill/Virtual Account already paid or inactive", nil,
+			paymentRejectionData(req, merchantVA, reason))
 	}
 
 	// Variable-bill VAs (vaType 02/05, feature 006-static-dynamic-va) accept
@@ -538,7 +742,7 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// via SaveVAPayment rather than the single-settlement equal-amount path
 	// below, and is not subject to the exact totalAmount match check since a
 	// partial payment is expected and valid.
-	if merchantVA != nil && (merchantVA.VAType == "02" || merchantVA.VAType == "05") {
+	if merchantVA.IsVariableBill() {
 		paidAmount, status, err := u.repo.SaveVAPayment(ctx, merchantVA.ID, req.PaidAmount.Value, req.ReferenceNo)
 		if err != nil {
 			return nil, domain.NewDomainError("5002500", errInternalServerError, err)
@@ -594,18 +798,16 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		return nil, domain.NewDomainError("4002501", "Invalid Field Format [amount mismatch]", nil)
 	}
 
-	if merchantVA != nil {
-		if merchantVA.CustomerName != "" {
-			customerName = merchantVA.CustomerName
-		}
-		if merchantVA.InquiryRequestID != "" {
-			inquiryRequestID = merchantVA.InquiryRequestID
-		}
-		if merchantVA.TrxID != "" {
-			trxID = merchantVA.TrxID
-		}
-		notificationURL = merchantVA.NotificationURL
+	if merchantVA.CustomerName != "" {
+		customerName = merchantVA.CustomerName
 	}
+	if merchantVA.InquiryRequestID != "" {
+		inquiryRequestID = merchantVA.InquiryRequestID
+	}
+	if merchantVA.TrxID != "" {
+		trxID = merchantVA.TrxID
+	}
+	notificationURL = merchantVA.NotificationURL
 	if req.VirtualAccountName != "" {
 		customerName = req.VirtualAccountName
 	}

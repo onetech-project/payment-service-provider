@@ -184,6 +184,77 @@ func TestIdempotencyMiddleware_ReplaysCachedResponseOnMatchingPayload(t *testing
 	assert.Contains(t, rec2.Body.String(), "ok")
 }
 
+// WithReplaySuppressedFor lets the VA payment endpoint see its own duplicates
+// so it can answer 4042518 instead of replaying the original success.
+func TestIdempotencyMiddleware_SuppressedReplayReachesHandlerAgain(t *testing.T) {
+	e := echo.New()
+	body := `{"paymentRequestId":"PAY-1"}`
+
+	store := newFakeIdempotencyStore()
+	mw := IdempotencyMiddleware(store, time.Second, time.Second,
+		WithReplaySuppressedFor(func(c echo.Context) bool {
+			return strings.HasSuffix(c.Request().URL.Path, "/transfer-va/payment")
+		}))
+
+	calls := 0
+	handler := mw(func(c echo.Context) error {
+		calls++
+		if calls == 1 {
+			return c.JSON(http.StatusOK, map[string]string{"responseCode": "2002500"})
+		}
+		return c.JSON(http.StatusNotFound, map[string]string{"responseCode": "4042518"})
+	})
+
+	newReq := func() (echo.Context, *httptest.ResponseRecorder) {
+		r := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", strings.NewReader(body))
+		r.Header.Set("X-EXTERNAL-ID", "extid-dup")
+		rec := httptest.NewRecorder()
+		return e.NewContext(r, rec), rec
+	}
+
+	c1, _ := newReq()
+	assert.NoError(t, handler(c1))
+	assert.Equal(t, 1, calls)
+
+	// Same X-EXTERNAL-ID, same payload — normally a replay, here it must reach
+	// the handler so the duplicate can be rejected on its merits.
+	c2, rec2 := newReq()
+	assert.NoError(t, handler(c2))
+
+	assert.Equal(t, 2, calls, "suppressed replay must re-invoke the handler")
+	assert.Empty(t, rec2.Header().Get("X-Cache-Replay"))
+	assert.Equal(t, http.StatusNotFound, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "4042518")
+}
+
+// Suppressing the replay must not weaken the payload-mismatch guard: a reused
+// X-EXTERNAL-ID carrying a different body is still 4227300, not a handler call.
+func TestIdempotencyMiddleware_SuppressedReplayStillRejectsPayloadMismatch(t *testing.T) {
+	e := echo.New()
+	store := newFakeIdempotencyStore()
+	mw := IdempotencyMiddleware(store, time.Second, time.Second,
+		WithReplaySuppressedFor(func(echo.Context) bool { return true }))
+
+	calls := 0
+	handler := mw(func(c echo.Context) error {
+		calls++
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	req1 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"foo":"bar"}`))
+	req1.Header.Set("X-EXTERNAL-ID", "extid-mismatch")
+	assert.NoError(t, handler(e.NewContext(req1, httptest.NewRecorder())))
+
+	req2 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"foo":"different"}`))
+	req2.Header.Set("X-EXTERNAL-ID", "extid-mismatch")
+	rec2 := httptest.NewRecorder()
+	assert.NoError(t, handler(e.NewContext(req2, rec2)))
+
+	assert.Equal(t, 1, calls, "payload mismatch must not reach the handler")
+	assert.Equal(t, http.StatusUnprocessableEntity, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "4227300")
+}
+
 func TestIdempotencyMiddleware_PayloadMismatchReturns422(t *testing.T) {
 	e := echo.New()
 	store := newFakeIdempotencyStore()

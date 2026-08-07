@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -21,15 +23,29 @@ type VAInquiryRequest struct {
 
 // VAInquiryResponse represents response to vendor inquiry
 type VAInquiryResponse struct {
-	ResponseCode       string         `json:"responseCode"`
-	ResponseMessage    string         `json:"responseMessage"`
-	VirtualAccountData *VAAccountData `json:"virtualAccountData,omitempty"`
+	ResponseCode       string                 `json:"responseCode"`
+	ResponseMessage    string                 `json:"responseMessage"`
+	VirtualAccountData *VAAccountData         `json:"virtualAccountData,omitempty"`
+	AdditionalInfo     map[string]interface{} `json:"additionalInfo"`
 }
 
-// VAAccountData contains VA account and bill information
+// MarshalJSON renders additionalInfo as {} rather than null when nothing was
+// set. The key is mandatory in the SNAP inquiry response and vendors read it
+// unconditionally, so an absent or null value is a parse failure on their side
+// — normalising here means no construction site can forget it.
+func (r VAInquiryResponse) MarshalJSON() ([]byte, error) {
+	type alias VAInquiryResponse
+	out := alias(r)
+	if out.AdditionalInfo == nil {
+		out.AdditionalInfo = map[string]interface{}{}
+	}
+	return json.Marshal(out)
+}
+
+// VAAccountData contains VA account and bill information. Field order matches
+// the SNAP inquiry response layout (identity → amount → bills → status), which
+// is also the order the JSON is emitted in.
 type VAAccountData struct {
-	InquiryStatus         string                 `json:"inquiryStatus"`
-	InquiryReason         *BilingualText         `json:"inquiryReason,omitempty"`
 	PartnerServiceID      string                 `json:"partnerServiceId"`
 	CustomerNo            string                 `json:"customerNo"`
 	VirtualAccountNo      string                 `json:"virtualAccountNo"`
@@ -37,11 +53,28 @@ type VAAccountData struct {
 	InquiryRequestID      string                 `json:"inquiryRequestId"`
 	TotalAmount           *Amount                `json:"totalAmount,omitempty"`
 	SubCompany            string                 `json:"subCompany,omitempty"`
-	BillDetails           []BillDetail           `json:"billDetails,omitempty"`
-	FreeTexts             []BilingualText        `json:"freeTexts,omitempty"`
+	BillDetails           []BillDetail           `json:"billDetails"`
+	FreeTexts             []BilingualText        `json:"freeTexts"`
 	VirtualAccountTrxType string                 `json:"virtualAccountTrxType,omitempty"`
 	FeeAmount             *Amount                `json:"feeAmount,omitempty"`
+	InquiryStatus         string                 `json:"inquiryStatus"`
+	InquiryReason         *BilingualText         `json:"inquiryReason,omitempty"`
 	AdditionalInfo        map[string]interface{} `json:"additionalInfo,omitempty"`
+}
+
+// MarshalJSON renders billDetails/freeTexts as [] rather than null when the VA
+// has none: both are arrays in the SNAP contract, and a vendor iterating them
+// must not have to nil-check first.
+func (d VAAccountData) MarshalJSON() ([]byte, error) {
+	type alias VAAccountData
+	out := alias(d)
+	if out.BillDetails == nil {
+		out.BillDetails = []BillDetail{}
+	}
+	if out.FreeTexts == nil {
+		out.FreeTexts = []BilingualText{}
+	}
+	return json.Marshal(out)
 }
 
 // VA Payment Request/Response types
@@ -97,9 +130,24 @@ type VAPaymentBillDetail struct {
 
 // VAPaymentResponse represents response to vendor payment notification
 type VAPaymentResponse struct {
-	ResponseCode       string           `json:"responseCode"`
-	ResponseMessage    string           `json:"responseMessage"`
-	VirtualAccountData *VAPaymentStatus `json:"virtualAccountData,omitempty"`
+	ResponseCode       string                 `json:"responseCode"`
+	ResponseMessage    string                 `json:"responseMessage"`
+	VirtualAccountData *VAPaymentStatus       `json:"virtualAccountData,omitempty"`
+	AdditionalInfo     map[string]interface{} `json:"additionalInfo"`
+}
+
+// MarshalJSON guarantees additionalInfo is always emitted as an object, never
+// null or absent. The ASPI PaymentResponse declares additionalInfo on every
+// response (success and error alike) and vendors parse it unconditionally, so
+// serialising a nil map as `null` would break them. Done here rather than at
+// each construction site so no response can ever be built without it.
+func (r VAPaymentResponse) MarshalJSON() ([]byte, error) {
+	type alias VAPaymentResponse
+	out := alias(r)
+	if out.AdditionalInfo == nil {
+		out.AdditionalInfo = map[string]interface{}{}
+	}
+	return json.Marshal(out)
 }
 
 // VAPaymentStatus contains payment flag status and echoes back the
@@ -108,7 +156,11 @@ type VAPaymentStatus struct {
 	PartnerServiceID    string                `json:"partnerServiceId"`
 	CustomerNo          string                `json:"customerNo"`
 	VirtualAccountNo    string                `json:"virtualAccountNo"`
-	VirtualAccountName  string                `json:"virtualAccountName,omitempty"`
+	// VirtualAccountName carries no omitempty: it is reported even when empty,
+	// including on the not-found rejection where there is no stored holder to
+	// name. Email/phone below stay omitempty — those are genuinely optional
+	// and vendors do not expect placeholders for them.
+	VirtualAccountName  string                `json:"virtualAccountName"`
 	VirtualAccountEmail string                `json:"virtualAccountEmail,omitempty"`
 	VirtualAccountPhone string                `json:"virtualAccountPhone,omitempty"`
 	TrxID               string                `json:"trxId,omitempty"`
@@ -123,8 +175,24 @@ type VAPaymentStatus struct {
 	FlagAdvise          string                `json:"flagAdvise,omitempty"`
 	PaymentFlagStatus   string                `json:"paymentFlagStatus"`
 	PaymentFlagReason   *BilingualText        `json:"paymentFlagReason"`
-	BillDetails         []VAPaymentBillDetail `json:"billDetails,omitempty"`
-	FreeTexts           []BilingualText       `json:"freeTexts,omitempty"`
+	BillDetails         []VAPaymentBillDetail `json:"billDetails"`
+	FreeTexts           []BilingualText       `json:"freeTexts"`
+}
+
+// MarshalJSON guarantees billDetails and freeTexts are always emitted as
+// arrays. They carry no `omitempty`, so a nil slice would serialise as `null`
+// — vendors that iterate the arrays without a nil check choke on that, whereas
+// `[]` is unambiguous and matches the ASPI PaymentResponse shape.
+func (s VAPaymentStatus) MarshalJSON() ([]byte, error) {
+	type alias VAPaymentStatus
+	out := alias(s)
+	if out.BillDetails == nil {
+		out.BillDetails = []VAPaymentBillDetail{}
+	}
+	if out.FreeTexts == nil {
+		out.FreeTexts = []BilingualText{}
+	}
+	return json.Marshal(out)
 }
 
 // VA Status Request/Response types
@@ -391,10 +459,52 @@ type VAInquiryRecord struct {
 	// (additionalInfo.subCompany) or by the vendor's payment notification — and
 	// echoed back on inquiry. Empty when the biller has no sub-company, in which
 	// case the field is omitted from the response.
-	SubCompany  string
+	SubCompany string
+	// PaidAmount is the cumulative amount settled against this transaction
+	// (va_transactions.paid_amount, kept current by SaveVAPayment). "0" when
+	// nothing has been paid. Needed to tell a variable-bill VA that is
+	// genuinely lunas from one whose stored status merely says so.
+	PaidAmount  string
 	ExpiredDate *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+// IsVariableBill reports whether this VA settles cumulatively across several
+// payments (vaType 02/05, "variable" in master_va_type) instead of in one
+// exact-amount settlement.
+func (r *VAInquiryRecord) IsVariableBill() bool {
+	return r.VAType == "02" || r.VAType == "05"
+}
+
+// IsPayable reports whether this transaction can still accept a payment, and
+// therefore whether an inquiry should report it as an open bill.
+//
+// '03' is the plain pending case; for a variable-bill VA it already means
+// "belum lunas", since SaveVAPayment only flips the row to '00' once the
+// cumulative total reaches total_amount.
+//
+// The second case covers a variable-bill row that reads '00' while its
+// payments still fall short of total_amount — settled by status only. The
+// outstanding balance must stay collectable rather than be locked out, so it
+// counts as payable. Scoped to '00' on purpose: expired ('02') and deleted
+// ('04') VAs are closed for reasons no amount comparison may reopen.
+//
+// Amounts that will not parse fall back to the stored status, so bad data
+// cannot silently reopen a closed bill.
+func (r *VAInquiryRecord) IsPayable() bool {
+	if r.Status == "03" {
+		return true
+	}
+	if r.Status != "00" || !r.IsVariableBill() {
+		return false
+	}
+	paid, errPaid := strconv.ParseFloat(r.PaidAmount, 64)
+	total, errTotal := strconv.ParseFloat(r.TotalAmount, 64)
+	if errPaid != nil || errTotal != nil {
+		return false
+	}
+	return paid < total
 }
 
 // VAPaymentRecord represents a persisted payment

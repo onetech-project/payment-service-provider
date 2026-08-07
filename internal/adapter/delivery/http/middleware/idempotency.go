@@ -40,6 +40,27 @@ func (w *bodyInterceptor) Write(b []byte) (int, error) {
 	return w.Response.Write(b)
 }
 
+// IdempotencyOption tunes IdempotencyMiddleware behaviour.
+type IdempotencyOption func(*idempotencyConfig)
+
+type idempotencyConfig struct {
+	suppressReplay func(echo.Context) bool
+}
+
+// WithReplaySuppressedFor stops the middleware from replaying the cached
+// response for requests pred matches, letting the duplicate reach the handler
+// instead. The payload-mismatch (4227300) and in-flight-lock (4097300) guards
+// are untouched — only the "identical key, identical payload" replay is.
+//
+// The VA payment endpoint needs this: a resubmit of the same X-EXTERNAL-ID
+// with the same paymentRequestId must answer 4042518 Inconsistent Request,
+// which only the usecase can build (it needs the persisted payment's data).
+// Replaying the original 2002500 from cache would hide the collision behind a
+// second apparent success.
+func WithReplaySuppressedFor(pred func(echo.Context) bool) IdempotencyOption {
+	return func(cfg *idempotencyConfig) { cfg.suppressReplay = pred }
+}
+
 // IdempotencyMiddleware enforces idempotency for mutating requests, keyed on
 // the ASPI-standard X-EXTERNAL-ID header (rather than a custom Idempotency-Key
 // header, which isn't part of the SNAP/ASPI contract). lockTTL bounds how
@@ -48,7 +69,11 @@ func (w *bodyInterceptor) Write(b []byte) (int, error) {
 // repeated key. Both are caller-supplied (sourced from env, e.g.
 // IDEMPOTENCY_LOCK_TTL_SECONDS / IDEMPOTENCY_CACHE_TTL_SECONDS) rather than
 // hardcoded, since they're operational tuning knobs.
-func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.Duration) echo.MiddlewareFunc {
+func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.Duration, opts ...IdempotencyOption) echo.MiddlewareFunc {
+	cfg := &idempotencyConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			req := c.Request()
@@ -89,13 +114,15 @@ func IdempotencyMiddleware(redisClient IdempotencyStore, lockTTL, cacheTTL time.
 						})
 					}
 
-					for k, vals := range cached.Headers {
-						for _, v := range vals {
-							c.Response().Header().Add(k, v)
+					if cfg.suppressReplay == nil || !cfg.suppressReplay(c) {
+						for k, vals := range cached.Headers {
+							for _, v := range vals {
+								c.Response().Header().Add(k, v)
+							}
 						}
+						c.Response().Header().Set("X-Cache-Replay", "true")
+						return c.Blob(cached.StatusCode, echo.MIMEApplicationJSON, []byte(cached.Body))
 					}
-					c.Response().Header().Set("X-Cache-Replay", "true")
-					return c.Blob(cached.StatusCode, echo.MIMEApplicationJSON, []byte(cached.Body))
 				}
 			}
 

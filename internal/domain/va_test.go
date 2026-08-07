@@ -179,3 +179,67 @@ func TestVAPaymentRecord(t *testing.T) {
 	assert.Equal(t, "test-id", record.ID)
 	assert.Equal(t, "00", record.Status)
 }
+
+func TestVAInquiryRecord_IsPayable(t *testing.T) {
+	tests := []struct {
+		name    string
+		record  VAInquiryRecord
+		payable bool
+	}{
+		{
+			name:    "pending fixed bill is payable",
+			record:  VAInquiryRecord{Status: "03", VAType: "03", TotalAmount: "150000.00"},
+			payable: true,
+		},
+		{
+			name:    "settled fixed bill is not payable",
+			record:  VAInquiryRecord{Status: "00", VAType: "03", TotalAmount: "150000.00", PaidAmount: "150000.00"},
+			payable: false,
+		},
+		{
+			// The defect this exists for: a variable bill marked settled while
+			// its payments still fall short must stay collectable.
+			name:    "variable bill marked 00 but not lunas is payable",
+			record:  VAInquiryRecord{Status: "00", VAType: "05", TotalAmount: "200000.00", PaidAmount: "50000.00"},
+			payable: true,
+		},
+		{
+			name:    "variable bill fully settled is not payable",
+			record:  VAInquiryRecord{Status: "00", VAType: "02", TotalAmount: "200000.00", PaidAmount: "200000.00"},
+			payable: false,
+		},
+		{
+			name:    "variable bill overpaid is not payable",
+			record:  VAInquiryRecord{Status: "00", VAType: "02", TotalAmount: "200000.00", PaidAmount: "250000.00"},
+			payable: false,
+		},
+		{
+			// Closed for a reason no amount comparison may reopen.
+			name:    "deleted variable bill stays closed despite outstanding balance",
+			record:  VAInquiryRecord{Status: "04", VAType: "05", TotalAmount: "200000.00", PaidAmount: "50000.00"},
+			payable: false,
+		},
+		{
+			name:    "expired variable bill stays closed despite outstanding balance",
+			record:  VAInquiryRecord{Status: "02", VAType: "05", TotalAmount: "200000.00", PaidAmount: "50000.00"},
+			payable: false,
+		},
+		{
+			// Bad data must not silently reopen a closed bill.
+			name:    "unparseable amounts fall back to the stored status",
+			record:  VAInquiryRecord{Status: "00", VAType: "05", TotalAmount: "", PaidAmount: ""},
+			payable: false,
+		},
+		{
+			name:    "no-bill VA marked 00 is not reopened by the variable rule",
+			record:  VAInquiryRecord{Status: "00", VAType: "01", TotalAmount: "0.00", PaidAmount: "0"},
+			payable: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.payable, tt.record.IsPayable())
+		})
+	}
+}

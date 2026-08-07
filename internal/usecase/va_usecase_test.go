@@ -377,14 +377,19 @@ func TestVAUsecase_Inquiry_PaidBill_Rejected(t *testing.T) {
 
 	paid := &domain.VAInquiryRecord{
 		ID:               "paid-transaction-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
 		VirtualAccountNo: req.VirtualAccountNo,
+		CustomerName:     "budi manjo",
 		Status:           "00",
 		TotalAmount:      "10000.00",
 		Currency:         "IDR",
+		SubCompany:       "00000",
 	}
 
 	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(paid, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, paid.ID).Return([]domain.BillDetail(nil), nil)
 
 	resp, err := usecase.Inquiry(context.Background(), req)
 
@@ -392,7 +397,43 @@ func TestVAUsecase_Inquiry_PaidBill_Rejected(t *testing.T) {
 	var domainErr *domain.DomainError
 	require.ErrorAs(t, err, &domainErr)
 	assert.Equal(t, "4042414", domainErr.SNAPCode)
+
+	// The rejection reports the bill it refuses, not just that it refused one.
+	require.NotNil(t, domainErr.InquiryData)
+	assert.Equal(t, "01", domainErr.InquiryData.InquiryStatus)
+	assert.Equal(t, &domain.BilingualText{English: "Bill has been paid", Indonesia: "Tagihan telah dibayar"}, domainErr.InquiryData.InquiryReason)
+	assert.Equal(t, req.PartnerServiceID, domainErr.InquiryData.PartnerServiceID)
+	assert.Equal(t, req.CustomerNo, domainErr.InquiryData.CustomerNo)
+	assert.Equal(t, req.VirtualAccountNo, domainErr.InquiryData.VirtualAccountNo)
+	assert.Equal(t, "budi manjo", domainErr.InquiryData.VirtualAccountName)
+	assert.Equal(t, req.InquiryRequestID, domainErr.InquiryData.InquiryRequestID)
+	assert.Equal(t, &domain.Amount{Value: "10000.00", Currency: "IDR"}, domainErr.InquiryData.TotalAmount)
+	assert.Equal(t, "00000", domainErr.InquiryData.SubCompany)
 	mockRepo.AssertNotCalled(t, "SaveInquiry")
+}
+
+// A rejected inquiry must still serialize the full SNAP shape: billDetails and
+// freeTexts as [] rather than null, and a top-level additionalInfo object.
+func TestVAInquiryResponse_RejectedJSONShape(t *testing.T) {
+	resp := domain.VAInquiryResponse{
+		ResponseCode:    "4042414",
+		ResponseMessage: "Paid Bill",
+		VirtualAccountData: &domain.VAAccountData{
+			PartnerServiceID:   "   15974",
+			CustomerNo:         "77121730326",
+			VirtualAccountNo:   "   1597477121730326",
+			VirtualAccountName: "budi manjo bill var",
+			InquiryRequestID:   "202607021545081597400051562507",
+			TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
+			SubCompany:         "00000",
+			InquiryStatus:      "01",
+			InquiryReason:      &domain.BilingualText{English: "Bill has been paid", Indonesia: "Tagihan telah dibayar"},
+		},
+	}
+
+	body, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"responseCode":"4042414","responseMessage":"Paid Bill","virtualAccountData":{"partnerServiceId":"   15974","customerNo":"77121730326","virtualAccountNo":"   1597477121730326","virtualAccountName":"budi manjo bill var","inquiryRequestId":"202607021545081597400051562507","totalAmount":{"value":"150000.00","currency":"IDR"},"subCompany":"00000","billDetails":[],"freeTexts":[],"inquiryStatus":"01","inquiryReason":{"english":"Bill has been paid","indonesia":"Tagihan telah dibayar"}},"additionalInfo":{}}`, string(body))
 }
 
 func TestVAUsecase_Inquiry_DeletedVA_Rejected(t *testing.T) {
@@ -415,6 +456,7 @@ func TestVAUsecase_Inquiry_DeletedVA_Rejected(t *testing.T) {
 
 	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(nil, domain.ErrVAInvalidBill)
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(deleted, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, deleted.ID).Return([]domain.BillDetail(nil), nil)
 
 	resp, err := usecase.Inquiry(context.Background(), req)
 
@@ -423,6 +465,41 @@ func TestVAUsecase_Inquiry_DeletedVA_Rejected(t *testing.T) {
 	require.ErrorAs(t, err, &domainErr)
 	assert.Equal(t, "4042412", domainErr.SNAPCode)
 	mockRepo.AssertNotCalled(t, "SaveInquiry")
+}
+
+// A VA whose biller has no sub-company code still reports subCompany: BCA
+// expects the field present, and "00000" is its "none" value.
+func TestVAUsecase_Inquiry_NoSubCompany_ReportsDefault(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "70001",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "7000108212221111",
+		InquiryRequestID: "INQ-no-subcompany",
+		Amount:           &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	record := &domain.VAInquiryRecord{
+		ID:               "no-subcompany-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		VirtualAccountNo: req.VirtualAccountNo,
+		CustomerName:     "budi manjo",
+		InquiryRequestID: req.InquiryRequestID,
+		Status:           "03",
+		TotalAmount:      "10000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(record, nil)
+	mockRepo.On("GetVABillDetails", mock.Anything, record.ID).Return([]domain.BillDetail(nil), nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "00000", resp.VirtualAccountData.SubCompany)
 }
 
 func TestVAUsecase_Inquiry_SubCompanyFallsBackToBillDetails(t *testing.T) {
@@ -520,7 +597,7 @@ func TestVAUsecase_Payment_Success(t *testing.T) {
 	}
 
 	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(pendingBillFor(req), nil)
 	mockRepo.On("SavePayment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRecord")).Return(nil)
 
 	resp, err := usecase.Payment(context.Background(), req)
@@ -537,7 +614,7 @@ func TestVAUsecase_Payment_Success(t *testing.T) {
 	mockRepo.AssertExpectations(t)
 }
 
-func TestVAUsecase_Payment_Idempotent_EchoesPersistedFields(t *testing.T) {
+func TestVAUsecase_Payment_DuplicatePaymentRequestID_EchoesPersistedFields(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	usecase := NewVAUsecase(mockRepo, nil)
 
@@ -566,13 +643,23 @@ func TestVAUsecase_Payment_Idempotent_EchoesPersistedFields(t *testing.T) {
 
 	resp, err := usecase.Payment(context.Background(), req)
 
-	assert.NoError(t, err)
-	assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
-	assert.Equal(t, existing.PartnerServiceID, resp.VirtualAccountData.PartnerServiceID)
-	assert.Equal(t, existing.VirtualAccountNo, resp.VirtualAccountData.VirtualAccountNo)
-	assert.Equal(t, existing.TrxID, resp.VirtualAccountData.TrxID)
-	assert.Equal(t, existing.PaymentRequestID, resp.VirtualAccountData.PaymentRequestID)
-	assert.Equal(t, existing.PaidAmount, resp.VirtualAccountData.PaidAmount.Value)
+	// A paymentRequestId that is already on file is an Inconsistent Request,
+	// not a replayed success — but the rejection still echoes the colliding
+	// payment so the vendor can see what it hit.
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042518", domainErr.SNAPCode)
+	assert.Equal(t, "Inconsistent Request", domainErr.Message)
+
+	require.NotNil(t, domainErr.PaymentData)
+	// paymentFlagStatus describes the ORIGINAL payment, which did settle.
+	assert.Equal(t, "00", domainErr.PaymentData.PaymentFlagStatus)
+	assert.Equal(t, existing.PartnerServiceID, domainErr.PaymentData.PartnerServiceID)
+	assert.Equal(t, existing.VirtualAccountNo, domainErr.PaymentData.VirtualAccountNo)
+	assert.Equal(t, existing.TrxID, domainErr.PaymentData.TrxID)
+	assert.Equal(t, existing.PaymentRequestID, domainErr.PaymentData.PaymentRequestID)
+	assert.Equal(t, existing.PaidAmount, domainErr.PaymentData.PaidAmount.Value)
 	mockRepo.AssertNotCalled(t, "SavePayment")
 }
 
@@ -716,13 +803,17 @@ func TestVAUsecase_Payment_NoNotificationURL_SkipsCallback(t *testing.T) {
 		PaidAmount:       &domain.Amount{Value: "100000.00", Currency: "IDR"},
 	}
 
+	// A real pending bill, but with no notificationUrl registered against it
+	// (pendingBillFor leaves NotificationURL empty).
+	pending := pendingBillFor(req)
+
 	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
 	mockRepo.On("SavePayment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRecord")).Return(nil)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(pending, nil)
 
 	resp, err := usecase.Payment(context.Background(), req)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "2002500", resp.ResponseCode)
 	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification")
 }
@@ -787,6 +878,7 @@ func TestVAUsecase_Inquiry_Expired_ReturnsExpiredResponseAndNotifies(t *testing.
 		return d.EventType == domain.NotificationEventVAExpired && d.Trigger == domain.NotificationTriggerAuto && d.Status == domain.NotificationDeliveryStatusSuccess
 	})).Return(nil)
 
+	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return([]domain.BillDetail(nil), nil)
 	resp, err := uc.Inquiry(context.Background(), req)
 
 	assert.Nil(t, resp)
@@ -878,6 +970,7 @@ func TestVAUsecase_Inquiry_AlreadyExpired_DoesNotDuplicateNotification(t *testin
 	// already-expired VA MUST keep returning the same 4042419 expired
 	// response, not fall through to success — but must not send a duplicate
 	// callback (the UpdateVAStatus no-op above prevents that).
+	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return([]domain.BillDetail(nil), nil)
 	resp, err := uc.Inquiry(context.Background(), req)
 
 	assert.Nil(t, resp)
@@ -918,6 +1011,7 @@ func TestVAUsecase_Inquiry_Expired_NoNotificationURL_StillTransitionsNoNotify(t 
 	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(merchantVA, nil)
 	mockRepo.On("UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02").Return(nil)
 
+	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return([]domain.BillDetail(nil), nil)
 	resp, err := uc.Inquiry(context.Background(), req)
 
 	assert.Nil(t, resp)
@@ -962,6 +1056,7 @@ func TestVAUsecase_Inquiry_ConcurrentPaymentWinsRace_NoExpiredTransition(t *test
 	// UPDATE affects 0 rows.
 	mockRepo.On("UpdateVAStatus", mock.Anything, merchantVA.VirtualAccountNo, "02").Return(domain.ErrMerchantVANotFound)
 
+	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return([]domain.BillDetail(nil), nil)
 	resp, err := uc.Inquiry(context.Background(), req)
 
 	// The expired-response error is still returned to the vendor for THIS
@@ -973,6 +1068,22 @@ func TestVAUsecase_Inquiry_ConcurrentPaymentWinsRace_NoExpiredTransition(t *test
 	assert.Equal(t, "4042419", domainErr.SNAPCode)
 	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification")
 	mockDelivery.AssertNotCalled(t, "Create")
+}
+
+// pendingBillFor is the open fixed-bill transaction a payment lands on. Every
+// payment path needs one: a VA with no transaction at all is refused 4042512
+// before any of the logic these tests exercise is reached.
+func pendingBillFor(req *domain.VAPaymentRequest) *domain.VAInquiryRecord {
+	return &domain.VAInquiryRecord{
+		ID:               "pending-transaction-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		VirtualAccountNo: req.VirtualAccountNo,
+		VAType:           "03",
+		Status:           "03",
+		TotalAmount:      "100000.00",
+		Currency:         "IDR",
+	}
 }
 
 func TestVAUsecase_Payment_AmountMismatch(t *testing.T) {
@@ -990,7 +1101,7 @@ func TestVAUsecase_Payment_AmountMismatch(t *testing.T) {
 	}
 
 	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(pendingBillFor(req), nil)
 
 	resp, err := usecase.Payment(context.Background(), req)
 
@@ -1015,7 +1126,7 @@ func TestVAUsecase_Payment_OptionalTotalAmount_NoMismatchCheck(t *testing.T) {
 	}
 
 	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
-	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(pendingBillFor(req), nil)
 	mockRepo.On("SavePayment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRecord")).Return(nil)
 
 	resp, err := usecase.Payment(context.Background(), req)
@@ -1342,9 +1453,9 @@ func TestVAUsecase_Payment_NoBill_InactiveRegistrationRejected(t *testing.T) {
 	mockRepo.AssertNotCalled(t, "SaveNoBillPayment", mock.Anything, mock.Anything)
 }
 
-// T035: FR-012 — a retried paymentRequestId replays via the GetPayment
-// short-circuit without creating a second row.
-func TestVAUsecase_Payment_NoBill_RepeatPaymentRequestIDReplays(t *testing.T) {
+// T035: FR-012 — a retried paymentRequestId is rejected as an Inconsistent
+// Request via the GetPayment short-circuit, without creating a second row.
+func TestVAUsecase_Payment_NoBill_RepeatPaymentRequestIDRejected(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	uc := NewVAUsecase(mockRepo, nil)
 
@@ -1363,16 +1474,20 @@ func TestVAUsecase_Payment_NoBill_RepeatPaymentRequestIDReplays(t *testing.T) {
 
 	resp, err := uc.Payment(context.Background(), noBillPaymentReq("PAY-6", "12000.00"))
 
-	require.NoError(t, err)
-	assert.Equal(t, "2002500", resp.ResponseCode)
-	assert.Equal(t, "12000.00", resp.VirtualAccountData.PaidAmount.Value)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042518", domainErr.SNAPCode)
+	require.NotNil(t, domainErr.PaymentData)
+	assert.Equal(t, "12000.00", domainErr.PaymentData.PaidAmount.Value)
 	mockRepo.AssertNotCalled(t, "SaveNoBillPayment", mock.Anything, mock.Anything)
 }
 
 // T036: the concurrency case the short-circuit alone can't cover. Two
 // simultaneous duplicates both read "no payment yet"; the loser is rejected by
-// the UNIQUE index and must replay rather than 500 or double-write.
-func TestVAUsecase_Payment_NoBill_DuplicateRaceReplaysOriginal(t *testing.T) {
+// the UNIQUE index and must answer 4042518 against the winner's row rather
+// than 500 or double-write.
+func TestVAUsecase_Payment_NoBill_DuplicateRaceRejectsLoser(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	notifier := new(MockNotifier)
 	uc := NewVAUsecase(mockRepo, notifier)
@@ -1398,9 +1513,12 @@ func TestVAUsecase_Payment_NoBill_DuplicateRaceReplaysOriginal(t *testing.T) {
 
 	resp, err := uc.Payment(context.Background(), noBillPaymentReq("PAY-7", "9000.00"))
 
-	require.NoError(t, err)
-	assert.Equal(t, "2002500", resp.ResponseCode)
-	assert.Equal(t, "9000.00", resp.VirtualAccountData.PaidAmount.Value)
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042518", domainErr.SNAPCode)
+	require.NotNil(t, domainErr.PaymentData)
+	assert.Equal(t, "9000.00", domainErr.PaymentData.PaidAmount.Value)
 	mockRepo.AssertExpectations(t)
 	// The loser must not fire a second callback for a payment it didn't record.
 	assert.Empty(t, notifier.Calls)
@@ -1524,22 +1642,41 @@ func TestVAUsecase_Inquiry_NoBill_ResolvesFromRegistration(t *testing.T) {
 	mockRepo.AssertNotCalled(t, "GetVAByVirtualAccountNo", mock.Anything, mock.Anything)
 }
 
-// T048: spec A-005 — a no-bill VA asserts no bill, so totalAmount echoes what
-// the customer entered at the channel.
-func TestVAUsecase_Inquiry_NoBill_EchoesRequestAmount(t *testing.T) {
+// T048: spec A-005 — a no-bill VA asserts no bill, so totalAmount is always
+// zero and never the amount the caller sent.
+func TestVAUsecase_Inquiry_NoBill_TotalAmountAlwaysZero(t *testing.T) {
 	mockRepo := new(MockVARepository)
 	uc := NewVAUsecase(mockRepo, nil)
 
 	mockRepo.On("GetInquiry", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
 	mockRepo.On("GetVAAccount", mock.Anything, "159730001234567").Return(noBillAccount(), nil)
 
+	// A request carrying a hefty amount must NOT come back as a bill for it.
 	resp, err := uc.Inquiry(context.Background(), noBillInquiryReq("INQ-2", "123456.78"))
 
 	require.NoError(t, err)
-	assert.Equal(t, "123456.78", resp.VirtualAccountData.TotalAmount.Value)
+	assert.Equal(t, "0.00", resp.VirtualAccountData.TotalAmount.Value)
 	assert.Equal(t, "IDR", resp.VirtualAccountData.TotalAmount.Currency)
 	// A no-bill VA has no bill breakdown to return.
 	assert.Empty(t, resp.VirtualAccountData.BillDetails)
+}
+
+// The zero is unconditional: a request with no amount at all reports the same.
+func TestVAUsecase_Inquiry_NoBill_TotalAmountZeroWithoutRequestAmount(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	uc := NewVAUsecase(mockRepo, nil)
+
+	req := noBillInquiryReq("INQ-2b", "0.00")
+	req.Amount = &domain.Amount{Value: "", Currency: ""}
+
+	mockRepo.On("GetInquiry", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAAccount", mock.Anything, "159730001234567").Return(noBillAccount(), nil)
+
+	resp, err := uc.Inquiry(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, "0.00", resp.VirtualAccountData.TotalAmount.Value)
+	assert.Equal(t, "IDR", resp.VirtualAccountData.TotalAmount.Currency)
 }
 
 // T049: US3 AS2 — prior settled payments never block a new inquiry. This is
@@ -1949,4 +2086,268 @@ func TestVAUsecase_Inquiry_FixedBillWithRegistration_StillUsesTransactionPath(t 
 	require.NoError(t, err)
 	assert.Equal(t, "75000.00", resp.VirtualAccountData.TotalAmount.Value, "bill total, not the request amount")
 	assert.Equal(t, "Transaction Name", resp.VirtualAccountData.VirtualAccountName)
+}
+
+// A variable-bill VA whose cumulative payments still fall short of totalAmount
+// is an OPEN bill, however its status column reads. Answering 4042414 there
+// would make the outstanding balance uncollectable.
+func TestVAUsecase_Inquiry_VariableBillNotLunas_StillOpen(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAInquiryRequest{
+		PartnerServiceID: "15974",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "1597408212221111",
+		InquiryRequestID: "INQ-variable-partial",
+		Amount:           &domain.Amount{Value: "50000.00", Currency: "IDR"},
+	}
+
+	partial := &domain.VAInquiryRecord{
+		ID:               "variable-transaction-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		VirtualAccountNo: req.VirtualAccountNo,
+		CustomerName:     "budi manjo",
+		VAType:           "05",
+		Status:           "00",
+		TotalAmount:      "200000.00",
+		PaidAmount:       "50000.00",
+		Currency:         "IDR",
+		SubCompany:       "00000",
+	}
+
+	mockRepo.On("GetInquiry", mock.Anything, req.InquiryRequestID).Return(partial, nil)
+	mockRepo.On("ClaimInquiryRequestID", mock.Anything, partial.ID, req.InquiryRequestID).Return(nil).Maybe()
+	mockRepo.On("GetVABillDetails", mock.Anything, partial.ID).Return([]domain.BillDetail(nil), nil)
+
+	resp, err := usecase.Inquiry(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "2002400", resp.ResponseCode)
+	assert.Equal(t, "00", resp.VirtualAccountData.InquiryStatus)
+	assert.Equal(t, &domain.Amount{Value: "200000.00", Currency: "IDR"}, resp.VirtualAccountData.TotalAmount)
+}
+
+// Same record shape on the payment side: the guard must not reject the
+// remaining balance with 4092500.
+func TestVAUsecase_Payment_VariableBillNotLunas_Accepted(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "15974",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "1597408212221111",
+		TrxID:            "TRX-variable",
+		PaymentRequestID: "PAY-variable-2",
+		PaidAmount:       &domain.Amount{Value: "150000.00", Currency: "IDR"},
+	}
+
+	partial := &domain.VAInquiryRecord{
+		ID:               "variable-transaction-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		VirtualAccountNo: req.VirtualAccountNo,
+		CustomerName:     "budi manjo",
+		VAType:           "05",
+		Status:           "00",
+		TotalAmount:      "200000.00",
+		PaidAmount:       "50000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(partial, nil)
+	// The cumulative payment reaches totalAmount, so the row settles for real.
+	mockRepo.On("SaveVAPayment", mock.Anything, partial.ID, req.PaidAmount.Value, req.ReferenceNo).
+		Return("200000.00", "00", nil)
+
+	resp, err := usecase.Payment(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "2002500", resp.ResponseCode)
+	assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
+	assert.Equal(t, "200000.00", resp.VirtualAccountData.PaidAmount.Value)
+	mockRepo.AssertExpectations(t)
+}
+
+// The guard still holds where it should: a fully settled bill is refused.
+func TestVAUsecase_Payment_VariableBillLunas_Rejected(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "15974",
+		CustomerNo:       "082122221111",
+		VirtualAccountNo: "1597408212221111",
+		TrxID:            "TRX-variable",
+		PaymentRequestID: "PAY-variable-3",
+		PaidAmount:       &domain.Amount{Value: "10000.00", Currency: "IDR"},
+	}
+
+	settled := &domain.VAInquiryRecord{
+		ID:               "variable-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		VAType:           "05",
+		Status:           "00",
+		TotalAmount:      "200000.00",
+		PaidAmount:       "200000.00",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(settled, nil)
+
+	resp, err := usecase.Payment(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4092500", domainErr.SNAPCode)
+	mockRepo.AssertNotCalled(t, "SaveVAPayment", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// A payment naming a VA that exists nowhere — no registration, no transaction
+// — must be refused 4042512 rather than conjuring a settled row for it.
+func TestVAUsecase_Payment_UnknownVA_Rejected(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	trxDateTime := time.Date(2026, 6, 25, 9, 13, 20, 0, time.FixedZone("WIB", 7*3600))
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "   15973",
+		CustomerNo:       "00000000000",
+		VirtualAccountNo: "   1597300000000000",
+		TrxID:            "TRX-unknown",
+		PaymentRequestID: "202606241142121597300051476279",
+		PaidAmount:       &domain.Amount{Value: "50000.00", Currency: "IDR"},
+		ReferenceNo:      "05147220913",
+		TrxDateTime:      &trxDateTime,
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(nil, domain.ErrMerchantVANotFound)
+
+	resp, err := usecase.Payment(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4042512", domainErr.SNAPCode)
+	assert.Equal(t, "Invalid Bill/Virtual Account [Not Found]", domainErr.Message)
+
+	require.NotNil(t, domainErr.PaymentData)
+	data := domainErr.PaymentData
+	assert.Equal(t, "01", data.PaymentFlagStatus)
+	assert.Equal(t, &domain.BilingualText{English: "Virtual Account Not Found", Indonesia: "Virtual Account Tidak Ditemukan"}, data.PaymentFlagReason)
+	// The request's own keys come back; nothing is invented.
+	assert.Equal(t, req.PartnerServiceID, data.PartnerServiceID)
+	assert.Equal(t, req.CustomerNo, data.CustomerNo)
+	assert.Equal(t, req.VirtualAccountNo, data.VirtualAccountNo)
+	assert.Equal(t, req.PaymentRequestID, data.PaymentRequestID)
+	assert.Equal(t, req.ReferenceNo, data.ReferenceNo)
+	assert.Equal(t, req.TrxDateTime, data.TrxDateTime)
+	// No bill was matched, so no amount was accepted and no holder is named.
+	assert.Empty(t, data.VirtualAccountName)
+	assert.Equal(t, &domain.Amount{}, data.PaidAmount)
+	assert.Equal(t, &domain.Amount{}, data.TotalAmount)
+
+	// The defect this closes: no phantom row for a VA no merchant ever issued.
+	mockRepo.AssertNotCalled(t, "SavePayment", mock.Anything, mock.Anything)
+	mockRepo.AssertNotCalled(t, "SaveVAPayment", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// A closed bill is refused, and the refusal reports WHICH bill it refused —
+// the vendor cannot act on a bare code plus message.
+func TestVAUsecase_Payment_PaidBill_RejectionCarriesVAData(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	trxDateTime := time.Date(2026, 6, 25, 9, 13, 20, 0, time.FixedZone("WIB", 7*3600))
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "   15975",
+		CustomerNo:       "06000000000000000004",
+		VirtualAccountNo: "1597506000000000000000004",
+		TrxID:            "TRX-paid",
+		PaymentRequestID: "PAY-against-paid-bill",
+		PaidAmount:       &domain.Amount{Value: "50000.00", Currency: "IDR"},
+		ReferenceNo:      "05147220913",
+		TrxDateTime:      &trxDateTime,
+	}
+
+	paid := &domain.VAInquiryRecord{
+		ID:               "paid-transaction-id",
+		PartnerServiceID: req.PartnerServiceID,
+		CustomerNo:       req.CustomerNo,
+		VirtualAccountNo: req.VirtualAccountNo,
+		CustomerName:     "budi manjo",
+		TrxID:            "TRX-original",
+		VAType:           "06",
+		Status:           "00",
+		TotalAmount:      "2000000.00",
+		PaidAmount:       "2000000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(paid, nil)
+
+	resp, err := usecase.Payment(context.Background(), req)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4092500", domainErr.SNAPCode)
+
+	require.NotNil(t, domainErr.PaymentData)
+	data := domainErr.PaymentData
+	assert.Equal(t, "01", data.PaymentFlagStatus)
+	assert.Equal(t, &domain.BilingualText{English: "Bill has been paid", Indonesia: "Tagihan telah dibayar"}, data.PaymentFlagReason)
+	assert.Equal(t, paid.VirtualAccountNo, data.VirtualAccountNo)
+	assert.Equal(t, "budi manjo", data.VirtualAccountName)
+	assert.Equal(t, req.PaymentRequestID, data.PaymentRequestID)
+	assert.Equal(t, req.ReferenceNo, data.ReferenceNo)
+	assert.Equal(t, req.TrxDateTime, data.TrxDateTime)
+	// The stored bill is real; the tendered amount was never accepted.
+	assert.Equal(t, &domain.Amount{Value: "2000000.00", Currency: "IDR"}, data.TotalAmount)
+	assert.Equal(t, &domain.Amount{}, data.PaidAmount)
+
+	mockRepo.AssertNotCalled(t, "SavePayment", mock.Anything, mock.Anything)
+}
+
+// A deleted bill is refused with the "not found" reason, not "already paid".
+func TestVAUsecase_Payment_DeletedBill_ReportsInactiveReason(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "   15975",
+		CustomerNo:       "06000000000000000004",
+		VirtualAccountNo: "1597506000000000000000004",
+		TrxID:            "TRX-deleted",
+		PaymentRequestID: "PAY-against-deleted-bill",
+		PaidAmount:       &domain.Amount{Value: "50000.00", Currency: "IDR"},
+	}
+
+	deleted := &domain.VAInquiryRecord{
+		ID:               "deleted-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		VAType:           "06",
+		Status:           "04",
+		TotalAmount:      "100000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(deleted, nil)
+
+	_, err := usecase.Payment(context.Background(), req)
+
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "4092500", domainErr.SNAPCode)
+	require.NotNil(t, domainErr.PaymentData)
+	assert.Equal(t, &domain.BilingualText{English: "Bill not found", Indonesia: "Tagihan tidak ditemukan"}, domainErr.PaymentData.PaymentFlagReason)
 }

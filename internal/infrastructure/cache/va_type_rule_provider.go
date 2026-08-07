@@ -10,6 +10,7 @@ package cache
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,14 +201,26 @@ func (p *CachedVATypeRuleProvider) currentPartnerIDs(ctx context.Context) ([]dom
 	return fresh, nil
 }
 
+// canonicalPartnerServiceID strips the SNAP wire padding. partnerServiceId
+// travels left-padded with spaces to 8 characters ("   15975"), while the
+// master tables hold the bare biller id ("15975") — the padding is a transport
+// detail, not part of the identity. Compared raw, every SNAP-conformant
+// create-va request misses its VA type rule and is rejected 4002702, so both
+// sides are canonicalised here, at the one boundary where wire input meets
+// master data.
+func canonicalPartnerServiceID(partnerServiceID string) string {
+	return strings.TrimSpace(partnerServiceID)
+}
+
 // LookupVATypeRule implements domain.VATypeRuleProvider.
 func (p *CachedVATypeRuleProvider) LookupVATypeRule(ctx context.Context, partnerServiceID, vaType string) (domain.VATypeRule, bool, error) {
 	rules, err := p.currentVATypes(ctx)
 	if err != nil {
 		return domain.VATypeRule{}, false, err
 	}
+	wanted := canonicalPartnerServiceID(partnerServiceID)
 	for _, rule := range rules {
-		if rule.VAType == vaType && rule.PartnerServiceID == partnerServiceID {
+		if rule.VAType == vaType && canonicalPartnerServiceID(rule.PartnerServiceID) == wanted {
 			return rule, true, nil
 		}
 	}
@@ -220,8 +233,9 @@ func (p *CachedVATypeRuleProvider) IsReservedPartnerServiceID(ctx context.Contex
 	if err != nil {
 		return false, err
 	}
+	wanted := canonicalPartnerServiceID(partnerServiceID)
 	for _, record := range records {
-		if record.PartnerServiceID == partnerServiceID {
+		if canonicalPartnerServiceID(record.PartnerServiceID) == wanted {
 			return true, nil
 		}
 	}

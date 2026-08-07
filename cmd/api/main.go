@@ -401,7 +401,16 @@ func main() {
 
 		// Register vendor-specific routes (unified under {snapBasePath}/transfer-va/*)
 		transferVAGroup := e.Group(snapBasePath + "/transfer-va")
-		transferVAGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
+		// Payment is exempt from cached-response replay: a resubmit of the same
+		// X-EXTERNAL-ID + paymentRequestId must reach the handler so it can
+		// answer 4042518 Inconsistent Request against the stored payment,
+		// rather than replaying the original 2002500 as a second success.
+		transferVAGroup.Use(customMiddleware.IdempotencyMiddleware(
+			redisClient, idempotencyLockTTL, idempotencyCacheTTL,
+			customMiddleware.WithReplaySuppressedFor(func(c echo.Context) bool {
+				return strings.HasSuffix(c.Path(), "/transfer-va/payment")
+			}),
+		))
 
 		// Existing SNAP VA endpoints (inquiry, payment, status)
 		for _, vc := range vendorConfigs {

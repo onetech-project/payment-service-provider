@@ -150,14 +150,14 @@ Once US1 lands, a no-bill `/create-va` writes only a `va_accounts` row. Until US
 ### Tests for User Story 3 ⚠️ Write first, confirm they FAIL
 
 - [X] T047 [P] [US3] Failing test in `internal/usecase/va_usecase_test.go`: inquiry against a registered, never-paid no-bill VA returns `2002400` / `inquiryStatus: "00"` with the registered `customer_name` as `virtualAccountName`, and **never** calls `SaveInquiry` (US3 AS1, FR-015, FR-016, SC-002).
-- [X] T048 [P] [US3] Failing test in `internal/usecase/va_usecase_test.go`: `totalAmount` echoes the request's own `amount`, and `"0.00"` when the request carries none (spec A-005).
+- [X] T048 [P] [US3] Failing test in `internal/usecase/va_usecase_test.go`: `totalAmount.value` is `"0.00"` regardless of the request's own `amount` (spec A-005).
 - [X] T049 [P] [US3] Failing test in `internal/usecase/va_usecase_test.go`: inquiry succeeds unchanged when the VA already has settled payments — prior payments never block a new inquiry (US3 AS2).
 - [X] T050 [P] [US3] Failing test in `internal/usecase/va_usecase_test.go`: a VA number with no registration still falls through to the existing legacy path, unchanged (US3 fall-through, FR-022).
 
 ### Implementation for User Story 3
 
 - [X] T051 [US3] In `VAUsecase.Inquiry` (`internal/usecase/va_usecase.go`), insert the registry branch **after** the `GetInquiry` idempotency short-circuit at [va_usecase.go:60](../../internal/usecase/va_usecase.go#L60) and **before** the `GetVAByVirtualAccountNo` lookup at [va_usecase.go:86](../../internal/usecase/va_usecase.go#L86); branch only when `GetVAAccount` returns an ACTIVE no-bill registration
-- [X] T052 [US3] Build the response from the registration per [contracts/inquiry-no-bill.md](./contracts/inquiry-no-bill.md) and return **without** calling `SaveInquiry`, echoing the request `amount` as `totalAmount` and omitting `billDetails`
+- [X] T052 [US3] Build the response from the registration per [contracts/inquiry-no-bill.md](./contracts/inquiry-no-bill.md) and return **without** calling `SaveInquiry`, reporting `totalAmount` as `0.00` and omitting `billDetails`
 - [X] T053 [US3] Preserve the fall-through: any non-`ErrVAAccountNotFound` error from `GetVAAccount` returns `5002400`, while a genuine not-found continues to the existing path untouched (mirrors the `isNotFound` discipline at [va_usecase.go:22](../../internal/usecase/va_usecase.go#L22))
 - [X] T054 [US3] Run quickstart Scenario 2 to confirm the holder name is returned and zero rows are written
 

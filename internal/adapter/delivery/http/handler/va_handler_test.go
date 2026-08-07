@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"backbone-new/internal/domain"
 
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // MockVAUsecase is a mock implementation of domain.VAUsecase
@@ -65,6 +67,48 @@ func TestVAHandler_Inquiry_Success(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
+	mockUsecase.AssertExpectations(t)
+}
+
+// A rejected inquiry goes over the wire with the full virtualAccountData the
+// usecase resolved — identity, amount, bills — not an empty husk carrying only
+// inquiryStatus/inquiryReason.
+func TestVAHandler_Inquiry_PaidBill_ReturnsFullVAData(t *testing.T) {
+	e := echo.New()
+	req := domain.VAInquiryRequest{
+		PartnerServiceID: "   15974",
+		CustomerNo:       "77121730326",
+		VirtualAccountNo: "   1597477121730326",
+		InquiryRequestID: "202607021545081597400051562507",
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/inquiry", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockVAUsecase)
+	mockUsecase.On("Inquiry", mock.Anything, &req).Return((*domain.VAInquiryResponse)(nil),
+		domain.NewInquiryError("4042414", "Paid Bill", domain.ErrVAPaidBill, &domain.VAAccountData{
+			PartnerServiceID:   req.PartnerServiceID,
+			CustomerNo:         req.CustomerNo,
+			VirtualAccountNo:   req.VirtualAccountNo,
+			VirtualAccountName: "budi manjo bill var",
+			InquiryRequestID:   req.InquiryRequestID,
+			TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
+			SubCompany:         "00000",
+			InquiryStatus:      "01",
+			InquiryReason:      &domain.BilingualText{English: "Bill has been paid", Indonesia: "Tagihan telah dibayar"},
+		}))
+
+	h := NewVAHandler(mockUsecase)
+
+	err := h.Inquiry(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.JSONEq(t, `{"responseCode":"4042414","responseMessage":"Paid Bill","virtualAccountData":{"partnerServiceId":"   15974","customerNo":"77121730326","virtualAccountNo":"   1597477121730326","virtualAccountName":"budi manjo bill var","inquiryRequestId":"202607021545081597400051562507","totalAmount":{"value":"150000.00","currency":"IDR"},"subCompany":"00000","billDetails":[],"freeTexts":[],"inquiryStatus":"01","inquiryReason":{"english":"Bill has been paid","indonesia":"Tagihan telah dibayar"}},"additionalInfo":{}}`, rec.Body.String())
 	mockUsecase.AssertExpectations(t)
 }
 
@@ -124,6 +168,148 @@ func TestVAHandler_Payment_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	mockUsecase.AssertExpectations(t)
+}
+
+// The wire shape the vendor actually parses: additionalInfo, billDetails and
+// freeTexts are structurally guaranteed on every payment response, success or
+// rejection, so a vendor can read them without nil/absent checks.
+func TestVAHandler_Payment_ResponseAlwaysCarriesObjectAndArrays(t *testing.T) {
+	e := echo.New()
+	req := domain.VAPaymentRequest{
+		PartnerServiceID: " 12345",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: " 12345123456789012345678",
+		TrxID:            "202607221000001234500001",
+		PaymentRequestID: "202607221000001234500001",
+		PaidAmount:       &domain.Amount{Value: "100000.00", Currency: "IDR"},
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockVAUsecase)
+	// No BillDetails/FreeTexts/AdditionalInfo set anywhere — the marshallers
+	// must still emit them.
+	mockUsecase.On("Payment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRequest")).Return(&domain.VAPaymentResponse{
+		ResponseCode:    "2002500",
+		ResponseMessage: "Successful",
+		VirtualAccountData: &domain.VAPaymentStatus{
+			PaymentFlagStatus: "00",
+		},
+	}, nil)
+
+	require.NoError(t, NewVAHandler(mockUsecase).Payment(c))
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	assert.JSONEq(t, `{}`, string(raw["additionalInfo"]))
+
+	var vaData map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["virtualAccountData"], &vaData))
+	assert.JSONEq(t, `[]`, string(vaData["billDetails"]))
+	assert.JSONEq(t, `[]`, string(vaData["freeTexts"]))
+}
+
+// A resubmitted paymentRequestId is rejected 404/4042518, and the rejection
+// still carries the colliding payment's virtualAccountData.
+func TestVAHandler_Payment_DuplicateReturnsInconsistentRequest(t *testing.T) {
+	e := echo.New()
+	req := domain.VAPaymentRequest{
+		PartnerServiceID: "   15975",
+		CustomerNo:       "77121730326",
+		VirtualAccountNo: "   1597577121730326",
+		TrxID:            "202607071910007420381",
+		PaymentRequestID: "2026070719100074203812040381455",
+		PaidAmount:       &domain.Amount{Value: "250000.00", Currency: "IDR"},
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockVAUsecase)
+	mockUsecase.On("Payment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRequest")).Return(
+		(*domain.VAPaymentResponse)(nil),
+		domain.NewPaymentError("4042518", "Inconsistent Request", domain.ErrVAPaymentDuplicate, &domain.VAPaymentStatus{
+			PartnerServiceID:   req.PartnerServiceID,
+			CustomerNo:         req.CustomerNo,
+			VirtualAccountNo:   req.VirtualAccountNo,
+			VirtualAccountName: "budi manjo bill fixed",
+			PaymentRequestID:   req.PaymentRequestID,
+			PaidAmount:         &domain.Amount{Value: "250000.00", Currency: "IDR"},
+			TotalAmount:        &domain.Amount{Value: "250000.00", Currency: "IDR"},
+			ReferenceNo:        "05146121541",
+			PaymentFlagStatus:  "00",
+			PaymentFlagReason:  &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+		}),
+	)
+
+	require.NoError(t, NewVAHandler(mockUsecase).Payment(c))
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	var resp domain.VAPaymentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "4042518", resp.ResponseCode)
+	assert.Equal(t, "Inconsistent Request", resp.ResponseMessage)
+	require.NotNil(t, resp.VirtualAccountData)
+	assert.Equal(t, "budi manjo bill fixed", resp.VirtualAccountData.VirtualAccountName)
+	assert.Equal(t, "250000.00", resp.VirtualAccountData.PaidAmount.Value)
+	assert.Equal(t, "05146121541", resp.VirtualAccountData.ReferenceNo)
+	assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
+}
+
+// Locks the exact wire shape agreed for the not-found rejection, byte for byte
+// against the contract sample (JSONEq ignores key order only).
+func TestVAHandler_Payment_UnknownVAWireShape(t *testing.T) {
+	const want = `{"responseCode":"4042512","responseMessage":"Invalid Bill/Virtual Account [Not Found]","virtualAccountData":{"paymentFlagReason":{"english":"Virtual Account Not Found","indonesia":"Virtual Account Tidak Ditemukan"},"partnerServiceId":"   15973","customerNo":"00000000000","virtualAccountNo":"   1597300000000000","virtualAccountName":"","paymentRequestId":"202606241142121597300051476279","paidAmount":{"value":"","currency":""},"totalAmount":{"value":"","currency":""},"trxDateTime":"2026-06-25T09:13:20+07:00","referenceNo":"05147220913","paymentFlagStatus":"01","billDetails":[],"freeTexts":[]},"additionalInfo":{}}`
+
+	e := echo.New()
+	trxDateTime := time.Date(2026, 6, 25, 9, 13, 20, 0, time.FixedZone("WIB", 7*3600))
+	req := domain.VAPaymentRequest{
+		PartnerServiceID: "   15973",
+		CustomerNo:       "00000000000",
+		VirtualAccountNo: "   1597300000000000",
+		TrxID:            "TRX-unknown",
+		PaymentRequestID: "202606241142121597300051476279",
+		PaidAmount:       &domain.Amount{Value: "50000.00", Currency: "IDR"},
+		ReferenceNo:      "05147220913",
+		TrxDateTime:      &trxDateTime,
+	}
+
+	body, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", bytes.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httpReq, rec)
+
+	mockUsecase := new(MockVAUsecase)
+	mockUsecase.On("Payment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRequest")).Return(
+		(*domain.VAPaymentResponse)(nil),
+		domain.NewPaymentError("4042512", "Invalid Bill/Virtual Account [Not Found]", domain.ErrVAInvalidBill,
+			&domain.VAPaymentStatus{
+				PartnerServiceID:  req.PartnerServiceID,
+				CustomerNo:        req.CustomerNo,
+				VirtualAccountNo:  req.VirtualAccountNo,
+				PaymentRequestID:  req.PaymentRequestID,
+				PaidAmount:        &domain.Amount{},
+				TotalAmount:       &domain.Amount{},
+				TrxDateTime:       req.TrxDateTime,
+				ReferenceNo:       req.ReferenceNo,
+				PaymentFlagStatus: "01",
+				PaymentFlagReason: &domain.BilingualText{English: "Virtual Account Not Found", Indonesia: "Virtual Account Tidak Ditemukan"},
+			}),
+	)
+
+	require.NoError(t, NewVAHandler(mockUsecase).Payment(c))
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.JSONEq(t, want, rec.Body.String())
 }
 
 func TestVAHandler_Status_Success(t *testing.T) {

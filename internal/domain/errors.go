@@ -69,6 +69,21 @@ type DomainError struct {
 	SNAPCode string
 	Message  string
 	Err      error
+
+	// InquiryData is the virtualAccountData to report alongside a rejected VA
+	// inquiry (paid/expired/invalid bill). SNAP answers those with the same
+	// full account block as a successful inquiry — only inquiryStatus,
+	// inquiryReason and responseCode differ — so the rejection has to carry the
+	// resolved VA with it rather than leave the handler to echo empty strings.
+	// Nil for every error that has no VA behind it (validation, auth, 500s).
+	InquiryData *VAAccountData
+
+	// PaymentData is the InquiryData equivalent for a rejected VA payment: the
+	// virtualAccountData block the vendor must still receive with the
+	// rejection. Currently the duplicate-paymentRequestId case (4042518),
+	// which echoes the payment it collided with so the vendor can identify it.
+	// Nil for every payment rejection with no stored payment behind it.
+	PaymentData *VAPaymentStatus
 }
 
 func (e *DomainError) Error() string {
@@ -83,5 +98,27 @@ func NewDomainError(snapCode, message string, err error) *DomainError {
 		SNAPCode: snapCode,
 		Message:  message,
 		Err:      err,
+	}
+}
+
+// NewInquiryError is NewDomainError for a rejected VA inquiry, carrying the
+// virtualAccountData block the vendor must still receive with the rejection.
+func NewInquiryError(snapCode, message string, err error, data *VAAccountData) *DomainError {
+	return &DomainError{
+		SNAPCode:    snapCode,
+		Message:     message,
+		Err:         err,
+		InquiryData: data,
+	}
+}
+
+// NewPaymentError is NewDomainError for a rejected VA payment, carrying the
+// virtualAccountData block the vendor must still receive with the rejection.
+func NewPaymentError(snapCode, message string, err error, data *VAPaymentStatus) *DomainError {
+	return &DomainError{
+		SNAPCode:    snapCode,
+		Message:     message,
+		Err:         err,
+		PaymentData: data,
 	}
 }

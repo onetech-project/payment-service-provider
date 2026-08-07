@@ -166,8 +166,9 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 	// row reached by virtualAccountNo.
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, status, total_amount, currency,
-			COALESCE(va_type, ''), COALESCE(sub_company, ''), expired_date, created_at, updated_at
+			COALESCE(inquiry_request_id, ''), trx_id, notification_url, status, total_amount, currency,
+			COALESCE(va_type, ''), COALESCE(sub_company, ''), COALESCE(paid_amount, 0)::text,
+			expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE inquiry_request_id = $1`
 
@@ -186,6 +187,7 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 		&record.Currency,
 		&record.VAType,
 		&record.SubCompany,
+		&record.PaidAmount,
 		&record.ExpiredDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,
@@ -209,10 +211,15 @@ func (r *VARepository) GetInquiry(ctx context.Context, inquiryRequestID string) 
 // what rows written before create-va stopped filling the column carry — also a
 // placeholder, never a vendor-supplied id, so it is replaced the same way.
 func (r *VARepository) ClaimInquiryRequestID(ctx context.Context, id string, inquiryRequestID string) error {
+	// NULL is a third spelling of "no vendor id yet", alongside '' and a copy of
+	// trx_id: rows created before create-va started writing '' carry it. It has
+	// to be named explicitly — NULL = '' is unknown, not true, so without this
+	// the UPDATE silently matches 0 rows and the VA stays permanently
+	// unreachable by inquiryRequestId (Status and Payment resolve it by that id).
 	query := `
 		UPDATE va_transactions
 		SET inquiry_request_id = $2, updated_at = NOW()
-		WHERE id = $1 AND (inquiry_request_id = '' OR inquiry_request_id = trx_id)`
+		WHERE id = $1 AND (inquiry_request_id IS NULL OR inquiry_request_id = '' OR inquiry_request_id = trx_id)`
 
 	_, err := r.pool.Exec(ctx, query, id, inquiryRequestID)
 	return err
@@ -568,20 +575,56 @@ func (r *VARepository) UpdateVAStatus(ctx context.Context, virtualAccountNo stri
 	return nil
 }
 
-// GetVAByVirtualAccountNo retrieves the MOST RECENT VA transaction for a
-// virtual account number. A virtualAccountNo is reusable across transaction
-// cycles (see MerchantVAUsecase.CreateVA), so multiple rows can share the
-// same virtual_account_no — without ORDER BY, Postgres does not guarantee
-// which one comes back, which would let a stale/completed row shadow the
-// current transaction.
+// GetVAByVirtualAccountNo retrieves the PAYABLE VA transaction for a virtual
+// account number, falling back to the most recent row when none is payable.
+//
+// A virtualAccountNo is reusable across transaction cycles (see
+// MerchantVAUsecase.CreateVA), so multiple rows can share the same
+// virtual_account_no. Recency alone picks the wrong one: a VA carrying both a
+// settled row and a still-open bill answers from whichever was written last,
+// so an outstanding bill gets reported as 4042414 "Paid Bill" on inquiry and
+// rejected 4092500 on payment purely because a completed row happens to be
+// newer. Payability has to rank ahead of recency.
+//
+// Payable means either of:
+//
+//   - status '03' — pending, nothing settled it yet. For a variable-bill VA
+//     this already carries "belum lunas": SaveVAPayment only flips the row to
+//     '00' once the cumulative total reaches total_amount.
+//
+//   - status '00' on a variable-bill VA (va_type 02/05) whose payments still
+//     fall short of total_amount. Such a row is marked settled but is not
+//     actually lunas, and the remaining balance must stay collectable rather
+//     than be locked out by a stale status. Deliberately scoped to '00': an
+//     expired ('02') or deleted ('04') VA is closed for other reasons and
+//     must NOT be resurrected by an amount comparison.
+//
+// Among payable rows the newest wins (the current bill). With none payable the
+// newest row of any status is returned, so the paid/expired/deleted rejections
+// keep reporting the VA the vendor actually asked about.
 func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.VAInquiryRecord, error) {
+	// inquiry_request_id is COALESCEd like va_type/sub_company: the column is
+	// nullable and a merchant-created VA has no vendor inquiryRequestId until
+	// the first inquiry claims one, so scanning it raw into VAInquiryRecord's
+	// string field fails on exactly the rows this lookup exists to serve — and
+	// that scan error surfaces to the vendor as a bare 5002400. Empty string is
+	// the record's own "not claimed yet" marker (see VAUsecase.Inquiry).
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			inquiry_request_id, trx_id, notification_url, status, total_amount, currency,
-			COALESCE(va_type, ''), COALESCE(sub_company, ''), expired_date, created_at, updated_at
+			COALESCE(inquiry_request_id, ''), trx_id, notification_url, status, total_amount, currency,
+			COALESCE(va_type, ''), COALESCE(sub_company, ''), COALESCE(paid_amount, 0)::text,
+			expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE virtual_account_no = $1
-		ORDER BY created_at DESC
+		ORDER BY
+			CASE
+				WHEN status = '03' THEN 0
+				WHEN status = '00'
+					AND COALESCE(va_type, '') IN ('02', '05')
+					AND COALESCE(paid_amount, 0) < COALESCE(total_amount, 0) THEN 0
+				ELSE 1
+			END,
+			created_at DESC
 		LIMIT 1`
 
 	record := &domain.VAInquiryRecord{}
@@ -599,6 +642,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		&record.Currency,
 		&record.VAType,
 		&record.SubCompany,
+		&record.PaidAmount,
 		&record.ExpiredDate,
 		&record.CreatedAt,
 		&record.UpdatedAt,
