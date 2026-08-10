@@ -37,7 +37,6 @@ curl -X POST http://localhost:8080/v1.0/transfer-va/create-va \
   -H "X-PARTNER-ID: 82150823919040624621823174737537" \
   -H "X-EXTERNAL-ID: 41807553358950093184162180797837" \
   -H "CHANNEL-ID: 95221" \
-  -H "Idempotency-Key: create-va-001" \
   -d '{
     "partnerServiceId": "088899",
     "customerNo": "12345678901234567890",
@@ -71,7 +70,6 @@ curl -X POST http://localhost:8080/v1.0/transfer-va/list \
   -H "X-TIMESTAMP: 2026-07-23T10:00:00+07:00" \
   -H "X-CLIENT-KEY: test-client-key" \
   -H "X-SIGNATURE: <generated-signature>" \
-  -H "Idempotency-Key: list-va-001" \
   -d '{
     "partnerServiceId": "088899",
     "page": 1,
@@ -92,7 +90,6 @@ curl -X DELETE http://localhost:8080/v1.0/transfer-va/delete-va \
   -H "X-PARTNER-ID: 82150823919040624621823174737537" \
   -H "X-EXTERNAL-ID: 41807553358950093184162180797837" \
   -H "CHANNEL-ID: 95221" \
-  -H "Idempotency-Key: delete-va-001" \
   -d '{
     "partnerServiceId": "088899",
     "customerNo": "12345678901234567890",
@@ -108,7 +105,6 @@ curl -X DELETE http://localhost:8080/v1.0/transfer-va/delete-va \
 ```bash
 curl -X POST http://localhost:8080/v1.0/transfer-va/payment \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: payment-001" \
   -d '{
     "partnerServiceId": "088899",
     "customerNo": "12345678901234567890",
@@ -126,9 +122,8 @@ curl -X POST http://localhost:8080/v1.0/transfer-va/payment \
 ### Scenario 5: Verify Idempotency
 
 ```bash
-# Send same create request again with same Idempotency-Key
+# Send the same create request again with the same X-EXTERNAL-ID
 curl -X POST http://localhost:8080/v1.0/transfer-va/create-va \
-  -H "Idempotency-Key: create-va-001" \
   ... (same request body)
 ```
 
@@ -138,7 +133,6 @@ curl -X POST http://localhost:8080/v1.0/transfer-va/create-va \
 
 ```bash
 curl -X POST http://localhost:8080/v1.0/transfer-va/create-va \
-  -H "Idempotency-Key: create-va-002" \
   -d '{
     "partnerServiceId": "088899",
     "customerNo": "999999999999999999",
@@ -161,7 +155,6 @@ curl -X POST http://localhost:8080/v1.0/transfer-va/create-va \
 ```bash
 # Try to pay an expired VA
 curl -X POST http://localhost:8080/v1.0/transfer-va/payment \
-  -H "Idempotency-Key: payment-expired-001" \
   -d '{
     "partnerServiceId": "088899",
     "customerNo": "<expired-va-customer-no>",

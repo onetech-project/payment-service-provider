@@ -106,12 +106,17 @@ POST /openapi/v1.0/access-token/b2b
 
 **Required Headers:**
 
-| Header | Description |
-|--------|-------------|
-| `X-CLIENT-KEY` | Client identifier |
-| `X-TIMESTAMP` | Request timestamp |
-| `X-SIGNATURE` | RSA signature (SHA256withRSA) of the payload |
-| `Idempotency-Key` | Unique request identifier for idempotency |
+These are the four headers BCA documents for the access-token endpoint
+(BCA OpenAPI OAuth & Signature v1.1). No other header is sent or read —
+notably there is no `Idempotency-Key`: idempotency on the transaction
+endpoints is keyed on the ASPI-standard `X-EXTERNAL-ID`.
+
+| Header | Mandatory | Description |
+|--------|-----------|-------------|
+| `Content-Type` | Y | `application/json` |
+| `X-CLIENT-KEY` | Y | Client identifier (`client_id`) |
+| `X-TIMESTAMP` | Y | Request timestamp, ISO 8601 with timezone |
+| `X-SIGNATURE` | Y | Asymmetric signature, `SHA256withRSA(privateKey, clientId + "\|" + timestamp)`, base64 |
 
 **Request Body:**
 
@@ -126,22 +131,29 @@ POST /openapi/v1.0/access-token/b2b
 ```json
 {
   "responseCode": "2007300",
-  "responseMessage": "Success",
+  "responseMessage": "Successful",
   "accessToken": "eyJhbGciOiJSUzI1NiIs...",
-  "tokenType": "bearer",
-  "expiresIn": "86400"
+  "tokenType": "Bearer",
+  "expiresIn": "900"
 }
 ```
 
-**Error Responses:**
+**Error Responses**, per the Errors table in *BCA API — OAuth & Signature
+OpenAPI v1.1*. That table gives the failing **field** its own case code rather
+than one code for the whole endpoint, so the code alone tells you what to fix:
 
-| Code | Status | Description |
-|------|--------|-------------|
-| `4007300` | 400 | Bad request (missing headers, invalid payload) |
-| `4017300` | 401 | Unauthorized (invalid signature, client not found/revoked) |
-| `4097300` | 409 | Conflict (duplicate idempotency key in progress) |
-| `4227300` | 422 | Payload mismatch for idempotency key |
+| Code | Status | Condition |
+|------|--------|-----------|
+| `4007301` | 400 | `Invalid field format [clientId/clientSecret/grantType]` — or `[X-TIMESTAMP]`, which shares this code. A timestamp that is stale (outside ±5 min) reports the same code as one that will not parse; v1.1 publishes no separate code for staleness |
+| `4007302` | 400 | `Invalid mandatory field [X-CLIENT-KEY]` |
+| `4017300` | 401 | `Unauthorized. [Signature]` / `[Unknown client]` / `[Connection not allowed]`. The bracketed reason is contract, not prose — callers match on it |
+| `4097300` | 409 | Duplicate idempotency key still in flight |
 | `5007300` | 500 | Internal server error |
+
+> `4007300` is **not** emitted. v1.1 dropped it from the list, moving
+> `[clientId/clientSecret/grantType]` onto `4007301` alongside `[X-TIMESTAMP]`
+> — consistent with case code `01` meaning "invalid field format" throughout
+> SNAP. Integrations that matched on `4007300` must be updated.
 
 ## Running Tests
 
@@ -215,6 +227,46 @@ The system supports configurable vendor integrations via `.env.<vendor>.<channel
 
 Full field-level ASPI compliance details (request/response schemas, header requirements) are in [`aspi-open-api-va.yaml`](./aspi-open-api-va.yaml) and [`specs/004-snap-va-field-compliance/`](./specs/004-snap-va-field-compliance/).
 
+### BCA specification baseline
+
+Field limits, response codes and endpoint versions are transcribed from these
+BCA technical documents. When they disagree with the older *Developer API BCA*
+portal export, **these win** — they are the versioned, dated artefacts:
+
+| Document | Version | Covers |
+|---|---|---|
+| BCA API — OAuth & Signature OpenAPI | v1.1 (Jan 2025) | `stringToSign`, RSA/HMAC signing, access-token error codes |
+| Tech. Doc. OpenAPI VA-BillPresentment API | v2.4 (Sep 2025) | `/transfer-va/inquiry` (service 24) |
+| Tech. Doc. OpenAPI VA-Payment-Flag API | v2.3 (Sep 2025) | `/transfer-va/payment` (service 25) |
+| Tech. Doc. OpenAPI VA-Payment-Status API V2 | v1.0 | `/transfer-va/status` (service 26) |
+
+Things worth knowing because they changed, or because they are easy to get wrong:
+
+- **The status service is `/openapi/v2.0`**, while inquiry and payment are
+  `/openapi/v1.0`. It also runs in the opposite direction — partner → BCA — so
+  it is the one path we *call* rather than serve. See
+  [Payment reconciliation](docs/guides/vendor-onboarding.md#payment-reconciliation-we-call-you).
+- **`virtualAccountName` is capped at 30 characters** and `create-va` now
+  refuses a longer one (`4002702`). The name is echoed on every inquiry for
+  that VA, so a longer value stored at registration makes BCA fail the inquiry
+  at the channel rather than at the call that caused it.
+- **`freeTexts` entries are capped at 32 characters** each (up from 18), and
+  the limit is enforced per entry, not just on the count.
+- **`inquiryRequestId` is `String(30)`**, down from 128. It is not independent
+  of `paymentRequestId`, which must equal it and is itself capped at 30.
+- **`amount` is a real, optional field** on the inquiry payload. It is accepted
+  and never required — the customer-entered amount belongs to the payment, not
+  to the bill being presented.
+- **`responseMessage` for `2002400`/`2002500` is `"Successful"`**; for
+  `2002600` (status) it is `"Success"`. BCA's own wording differs per service
+  and has changed twice, so each is spelled as its own current table has it.
+- **401 bodies on transfer-va carry `"data": {}`** alongside `responseCode` and
+  `responseMessage`, per the OAuth v1.1 `401xx00` sample. The access-token
+  endpoint's own 401 stays two fields.
+- **`customerNo`/`virtualAccountNo` are `18`/`26`** in every current table.
+  Inbound we still accept `20`/`28` so VA numbers this system issued under the
+  old sequence stay payable; issuance is `18`/`26`.
+
 **Onboarding a real vendor or merchant?** See
 [docs/guides/vendor-onboarding.md](docs/guides/vendor-onboarding.md) or
 [docs/guides/merchant-onboarding.md](docs/guides/merchant-onboarding.md) for
@@ -235,9 +287,15 @@ cp .env.vendor.channel.example .env.bca.va
 ```bash
 VENDOR_CLIENT_ID=your_client_id
 VENDOR_CLIENT_SECRET=your_client_secret
-VENDOR_BASE_URL=https://sandbox.bca.co.id
+# BCA hosts: https://devapi.klikbca.com (UAT), https://api.klikbca.com (prod)
+VENDOR_BASE_URL=https://devapi.klikbca.com
 VENDOR_CHANNEL_ID=95231
 VENDOR_PARTNER_ID=your_partner_id
+# Endpoint paths are also the RelativeUrl component of stringToSign, so a
+# wrong version here fails as 401, not 404. STATUS is v2.0, the others v1.0.
+VENDOR_ENDPOINT_INQUIRY=/openapi/v1.0/transfer-va/inquiry
+VENDOR_ENDPOINT_PAYMENT=/openapi/v1.0/transfer-va/payment
+VENDOR_ENDPOINT_STATUS=/openapi/v2.0/transfer-va/status
 ```
 
 3. Restart the server — the config is picked up from `.env.<vendor>.<channel>` at startup.
@@ -248,7 +306,7 @@ VENDOR_PARTNER_ID=your_partner_id
 |--------|------|---------------|-------------|
 | POST | `/openapi/v1.0/transfer-va/inquiry` | 24 | VA bill inquiry (vendor → PSP) |
 | POST | `/openapi/v1.0/transfer-va/payment` | 25 | VA payment notification (vendor → PSP); triggers an async merchant callback |
-| POST | `/openapi/v1.0/transfer-va/status` | 26 | VA payment status inquiry (vendor → PSP) |
+| POST | `/openapi/v2.0/transfer-va/status` | 26 | VA payment status inquiry (vendor → PSP). **v2.0**, not v1.0 — BCA versions this service separately; v1.0 stays registered for vendors already pointed there |
 | POST | `/openapi/v1.0/transfer-va/create-va` | 27 | Create a Virtual Account (merchant-facing) |
 | POST | `/openapi/v1.0/transfer-va/list` | — | List/filter registered VA **numbers**, one entry per VA (merchant dashboard convenience API, not an ASPI endpoint) |
 | POST | `/openapi/v1.0/transfer-va/list-transactions` | — | List/filter individual **payments**, one entry per transaction (merchant dashboard convenience API, not an ASPI endpoint) |

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"backbone-new/internal/infrastructure/crypto"
 )
 
 // VendorConfig holds generic vendor/channel configuration
@@ -16,6 +18,16 @@ type VendorConfig struct {
 	// Authentication
 	ClientID     string
 	ClientSecret string
+	// OutboundPrivateKeyPath points at the RSA private key used to obtain an
+	// accessToken *from* this vendor, for calls this service originates
+	// (currently the status reconciliation of feature
+	// 014-vendor-status-reconciliation).
+	//
+	// It is not the inbound direction's credential and must not be confused
+	// with it: ClientSecret verifies what the vendor sends US, this key proves
+	// who WE are when we call THEM. Empty means no outbound calls are possible
+	// for this vendor, which is the default.
+	OutboundPrivateKeyPath string
 
 	// Endpoints
 	BaseURL       string
@@ -23,13 +35,26 @@ type VendorConfig struct {
 	APIEndpoints  map[string]string
 
 	// Channel
-	ChannelID    string
-	PartnerID    string
-	Origin       string
+	ChannelID string
+	PartnerID string
+	Origin    string
 
 	// Request
 	RequestTimeout     int
 	SignatureAlgorithm string
+	// StrictMandatoryFields enables the payment fields BCA marks Mandatory
+	// that the wider SNAP standard leaves optional (virtualAccountName,
+	// channelCode, totalAmount, trxDateTime, flagAdvise). Defaults to true so
+	// BCA conformance is the out-of-the-box behaviour; a vendor that
+	// legitimately omits them sets VENDOR_STRICT_MANDATORY_FIELDS=false
+	// without affecting any other vendor.
+	StrictMandatoryFields bool
+
+	// BodyHashEncoding selects how the RequestBody component of stringToSign
+	// is encoded: "hex" (BCA/SNAP spec) or "base64" (vendors onboarded under
+	// feature 012-base64-hash-encoding). Per-vendor so one vendor's
+	// non-conformance cannot pull the others off spec.
+	BodyHashEncoding string
 
 	// SNAP Headers (configurable per vendor)
 	RequiredHeaders []string
@@ -58,15 +83,17 @@ func NewVendorConfigLoader(configDir string) *VendorConfigLoader {
 // Load loads configuration for a specific vendor and channel
 func (l *VendorConfigLoader) Load(vendor, channel string) (*VendorConfig, error) {
 	config := &VendorConfig{
-		Vendor:             vendor,
-		Channel:            channel,
-		APIEndpoints:       make(map[string]string),
-		RequiredHeaders:    []string{"X-TIMESTAMP", "X-SIGNATURE"},
-		ResponseCodeFormat: "AAABBCC",
-		Defaults:           make(map[string]string),
-		RequestTimeout:     30,
-		SignatureAlgorithm: "HMAC-SHA512",
-		CorrelationHeader:  "X-Correlation-ID",
+		Vendor:                vendor,
+		Channel:               channel,
+		APIEndpoints:          make(map[string]string),
+		RequiredHeaders:       []string{"X-TIMESTAMP", "X-SIGNATURE"},
+		ResponseCodeFormat:    "AAABBCC",
+		Defaults:              make(map[string]string),
+		RequestTimeout:        30,
+		SignatureAlgorithm:    "HMAC-SHA512",
+		BodyHashEncoding:      crypto.BodyHashHex,
+		StrictMandatoryFields: true,
+		CorrelationHeader:     "X-Correlation-ID",
 	}
 
 	// Try to load from .env.<vendor>.<channel>
@@ -134,6 +161,9 @@ func (l *VendorConfigLoader) applyEnvVars(config *VendorConfig, envVars map[stri
 	if v, ok := envVars["VENDOR_TOKEN_ENDPOINT"]; ok {
 		config.TokenEndpoint = v
 	}
+	if v, ok := envVars["VENDOR_PRIVATE_KEY_PATH"]; ok {
+		config.OutboundPrivateKeyPath = v
+	}
 	if v, ok := envVars["VENDOR_CHANNEL_ID"]; ok {
 		config.ChannelID = v
 	}
@@ -148,6 +178,12 @@ func (l *VendorConfigLoader) applyEnvVars(config *VendorConfig, envVars map[stri
 	}
 	if v, ok := envVars["VENDOR_SIGNATURE_ALGORITHM"]; ok {
 		config.SignatureAlgorithm = v
+	}
+	if v, ok := envVars["VENDOR_BODY_HASH_ENCODING"]; ok {
+		config.BodyHashEncoding = v
+	}
+	if v, ok := envVars["VENDOR_STRICT_MANDATORY_FIELDS"]; ok {
+		config.StrictMandatoryFields = v != "false"
 	}
 	if v, ok := envVars["VENDOR_DEBUG_LOGGING"]; ok {
 		config.DebugLogging = v == "true"
@@ -188,6 +224,12 @@ func (l *VendorConfigLoader) applyEnvOverrides(config *VendorConfig) {
 	}
 	if v := os.Getenv("VENDOR_PARTNER_ID"); v != "" {
 		config.PartnerID = v
+	}
+	if v := os.Getenv("VENDOR_BODY_HASH_ENCODING"); v != "" {
+		config.BodyHashEncoding = v
+	}
+	if v := os.Getenv("VENDOR_STRICT_MANDATORY_FIELDS"); v != "" {
+		config.StrictMandatoryFields = v != "false"
 	}
 }
 

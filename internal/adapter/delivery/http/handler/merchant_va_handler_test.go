@@ -59,8 +59,8 @@ func TestMerchantVAHandler_CreateVA_Success(t *testing.T) {
 	e := echo.New()
 	req := domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "08889912345678901234567890",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-001",
 		TotalAmount:        &domain.Amount{Value: "150000.00", Currency: "IDR"},
@@ -78,7 +78,7 @@ func TestMerchantVAHandler_CreateVA_Success(t *testing.T) {
 		ResponseCode:    "2002700",
 		ResponseMessage: "Success",
 		VirtualAccountData: &domain.MerchantVAData{
-			VirtualAccountNo: "08889912345678901234567890",
+			VirtualAccountNo: "088899123456789012345678",
 			TrxID:            "trx-001",
 		},
 	}, nil)
@@ -117,8 +117,8 @@ func TestMerchantVAHandler_CreateVA_UsecaseError(t *testing.T) {
 	e := echo.New()
 	req := domain.MerchantCreateVARequest{
 		PartnerServiceID:   "088899",
-		CustomerNo:         "12345678901234567890",
-		VirtualAccountNo:   "08889912345678901234567890",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "088899123456789012345678",
 		VirtualAccountName: "Jokul Doe",
 		TrxID:              "trx-err",
 	}
@@ -358,8 +358,8 @@ func TestMerchantVAHandler_DeleteVA_Success(t *testing.T) {
 	e := echo.New()
 	req := domain.MerchantDeleteVARequest{
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 	}
 
 	body, _ := json.Marshal(req)
@@ -409,8 +409,8 @@ func TestMerchantVAHandler_DeleteVA_AlreadyPaid(t *testing.T) {
 	txDate := time.Now()
 	req := domain.MerchantDeleteVARequest{
 		PartnerServiceID: "088899",
-		CustomerNo:       "12345678901234567890",
-		VirtualAccountNo: "08889912345678901234567890",
+		CustomerNo:       "123456789012345678",
+		VirtualAccountNo: "088899123456789012345678",
 	}
 
 	body, _ := json.Marshal(req)

@@ -1,10 +1,8 @@
 package usecase
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -42,7 +40,12 @@ func (u *SignatureUsecase) GenerateAccessTokenSignature(ctx context.Context, cli
 	}, nil
 }
 
-func (u *SignatureUsecase) GenerateServiceSignature(ctx context.Context, clientSecret, httpMethod, endpointURL, accessToken, timestamp string, requestBody []byte) (*domain.SignatureServiceResponse, error) {
+// GenerateServiceSignature computes a symmetric X-SIGNATURE for a transaction
+// endpoint. bodyHashEncoding selects how the RequestBody component is encoded;
+// an empty value means hex, the BCA/SNAP spec form. It must agree with the
+// vendor's VENDOR_BODY_HASH_ENCODING, or the signature this helper hands out
+// will not verify.
+func (u *SignatureUsecase) GenerateServiceSignatureWithEncoding(ctx context.Context, clientSecret, httpMethod, endpointURL, accessToken, timestamp string, requestBody []byte, bodyHashEncoding string) (*domain.SignatureServiceResponse, error) {
 	if clientSecret == "" || httpMethod == "" || endpointURL == "" || timestamp == "" {
 		return nil, domain.NewDomainError("4000000", "Bad Request. Missing required fields (X-CLIENT-SECRET, HttpMethod, EndpointUrl, X-TIMESTAMP)", domain.ErrMissingHeader)
 	}
@@ -56,7 +59,7 @@ func (u *SignatureUsecase) GenerateServiceSignature(ctx context.Context, clientS
 		secret = string(decoded)
 	}
 
-	bodyHash := crypto.HashSHA256Base64(minifyJSON(requestBody))
+	bodyHash := crypto.HashRequestBody(requestBody, bodyHashEncoding)
 	stringToSign := fmt.Sprintf("%s:%s:%s:%s:%s", httpMethod, endpointURL, accessToken, bodyHash, timestamp)
 
 	hmacSigner := crypto.NewHMACSigner(secret, "HMAC-SHA512")
@@ -69,15 +72,8 @@ func (u *SignatureUsecase) GenerateServiceSignature(ctx context.Context, clientS
 	}, nil
 }
 
-// minifyJSON compacts a JSON request body before hashing, per SNAP's
-// stringToSign spec. Non-JSON or empty bodies hash as an empty string.
-func minifyJSON(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, body); err != nil {
-		return string(body)
-	}
-	return buf.String()
+// GenerateServiceSignature computes a symmetric X-SIGNATURE using the
+// spec-conformant hex body-hash encoding.
+func (u *SignatureUsecase) GenerateServiceSignature(ctx context.Context, clientSecret, httpMethod, endpointURL, accessToken, timestamp string, requestBody []byte) (*domain.SignatureServiceResponse, error) {
+	return u.GenerateServiceSignatureWithEncoding(ctx, clientSecret, httpMethod, endpointURL, accessToken, timestamp, requestBody, crypto.BodyHashHex)
 }

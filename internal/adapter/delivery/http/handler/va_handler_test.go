@@ -39,11 +39,17 @@ func (m *MockVAUsecase) Status(ctx context.Context, req *domain.VAStatusRequest)
 
 func TestVAHandler_Inquiry_Success(t *testing.T) {
 	e := echo.New()
+	// Fixed rather than time.Now(): the monotonic reading time.Now() carries
+	// does not survive the JSON round-trip, so the mock's argument comparison
+	// would fail on a value that is otherwise identical.
+	trxDateInit := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 	req := domain.VAInquiryRequest{
 		PartnerServiceID: " 12345",
 		CustomerNo:       "123456789012345678",
 		VirtualAccountNo: " 12345123456789012345678",
 		InquiryRequestID: "202607221000001234500001",
+		TrxDateInit:      &trxDateInit,
+		ChannelCode:      6011,
 	}
 
 	body, _ := json.Marshal(req)
@@ -75,11 +81,14 @@ func TestVAHandler_Inquiry_Success(t *testing.T) {
 // inquiryStatus/inquiryReason.
 func TestVAHandler_Inquiry_PaidBill_ReturnsFullVAData(t *testing.T) {
 	e := echo.New()
+	trxDateInit := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
 	req := domain.VAInquiryRequest{
 		PartnerServiceID: "   15974",
 		CustomerNo:       "77121730326",
 		VirtualAccountNo: "   1597477121730326",
 		InquiryRequestID: "202607021545081597400051562507",
+		TrxDateInit:      &trxDateInit,
+		ChannelCode:      6011,
 	}
 
 	body, _ := json.Marshal(req)
@@ -136,14 +145,19 @@ func TestVAHandler_Inquiry_MissingFields(t *testing.T) {
 
 func TestVAHandler_Payment_Success(t *testing.T) {
 	e := echo.New()
+	trxDateTime := time.Now()
 	req := domain.VAPaymentRequest{
-		PartnerServiceID: " 12345",
-		CustomerNo:       "123456789012345678",
-		VirtualAccountNo: " 12345123456789012345678",
-		TrxID:            "202607221000001234500001",
-		PaymentRequestID: "202607221000001234500001",
-		PaidAmount:       &domain.Amount{Value: "100000.00", Currency: "IDR"},
-		TotalAmount:      &domain.Amount{Value: "100000.00", Currency: "IDR"},
+		PartnerServiceID:   " 12345",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   " 12345123456789012345678",
+		VirtualAccountName: "Budi Manjo",
+		TrxID:              "202607221000001234500001",
+		PaymentRequestID:   "20260722100000123450",
+		ChannelCode:        6011,
+		PaidAmount:         &domain.Amount{Value: "100000.00", Currency: "IDR"},
+		TotalAmount:        &domain.Amount{Value: "100000.00", Currency: "IDR"},
+		TrxDateTime:        &trxDateTime,
+		FlagAdvise:         "N",
 	}
 
 	body, _ := json.Marshal(req)
@@ -217,13 +231,19 @@ func TestVAHandler_Payment_ResponseAlwaysCarriesObjectAndArrays(t *testing.T) {
 // still carries the colliding payment's virtualAccountData.
 func TestVAHandler_Payment_DuplicateReturnsInconsistentRequest(t *testing.T) {
 	e := echo.New()
+	dupTrxDateTime := time.Date(2026, 7, 7, 19, 10, 0, 0, time.FixedZone("WIB", 7*3600))
 	req := domain.VAPaymentRequest{
-		PartnerServiceID: "   15975",
-		CustomerNo:       "77121730326",
-		VirtualAccountNo: "   1597577121730326",
-		TrxID:            "202607071910007420381",
-		PaymentRequestID: "2026070719100074203812040381455",
-		PaidAmount:       &domain.Amount{Value: "250000.00", Currency: "IDR"},
+		PartnerServiceID:   "   15975",
+		CustomerNo:         "77121730326",
+		VirtualAccountNo:   "   1597577121730326",
+		VirtualAccountName: "budi manjo bill fixed",
+		TrxID:              "202607071910007420381",
+		PaymentRequestID:   "202607071910007420381204",
+		ChannelCode:        6014,
+		PaidAmount:         &domain.Amount{Value: "250000.00", Currency: "IDR"},
+		TotalAmount:        &domain.Amount{Value: "250000.00", Currency: "IDR"},
+		TrxDateTime:        &dupTrxDateTime,
+		FlagAdvise:         "N",
 	}
 
 	body, _ := json.Marshal(req)
@@ -235,7 +255,7 @@ func TestVAHandler_Payment_DuplicateReturnsInconsistentRequest(t *testing.T) {
 	mockUsecase := new(MockVAUsecase)
 	mockUsecase.On("Payment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRequest")).Return(
 		(*domain.VAPaymentResponse)(nil),
-		domain.NewPaymentError("4042518", "Inconsistent Request", domain.ErrVAPaymentDuplicate, &domain.VAPaymentStatus{
+		domain.NewPaymentError(domain.CodePaymentInconsistent, "Inconsistent Request", domain.ErrVAPaymentDuplicate, &domain.VAPaymentStatus{
 			PartnerServiceID:   req.PartnerServiceID,
 			CustomerNo:         req.CustomerNo,
 			VirtualAccountNo:   req.VirtualAccountNo,
@@ -272,14 +292,18 @@ func TestVAHandler_Payment_UnknownVAWireShape(t *testing.T) {
 	e := echo.New()
 	trxDateTime := time.Date(2026, 6, 25, 9, 13, 20, 0, time.FixedZone("WIB", 7*3600))
 	req := domain.VAPaymentRequest{
-		PartnerServiceID: "   15973",
-		CustomerNo:       "00000000000",
-		VirtualAccountNo: "   1597300000000000",
-		TrxID:            "TRX-unknown",
-		PaymentRequestID: "202606241142121597300051476279",
-		PaidAmount:       &domain.Amount{Value: "50000.00", Currency: "IDR"},
-		ReferenceNo:      "05147220913",
-		TrxDateTime:      &trxDateTime,
+		PartnerServiceID:   "   15973",
+		CustomerNo:         "00000000000",
+		VirtualAccountNo:   "   1597300000000000",
+		VirtualAccountName: "budi manjo",
+		TrxID:              "TRX-unknown",
+		PaymentRequestID:   "202606241142121597300051476279",
+		ChannelCode:        6014,
+		PaidAmount:         &domain.Amount{Value: "50000.00", Currency: "IDR"},
+		TotalAmount:        &domain.Amount{Value: "50000.00", Currency: "IDR"},
+		ReferenceNo:        "05147220913",
+		TrxDateTime:        &trxDateTime,
+		FlagAdvise:         "N",
 	}
 
 	body, _ := json.Marshal(req)
@@ -291,7 +315,7 @@ func TestVAHandler_Payment_UnknownVAWireShape(t *testing.T) {
 	mockUsecase := new(MockVAUsecase)
 	mockUsecase.On("Payment", mock.Anything, mock.AnythingOfType("*domain.VAPaymentRequest")).Return(
 		(*domain.VAPaymentResponse)(nil),
-		domain.NewPaymentError("4042512", "Invalid Bill/Virtual Account [Not Found]", domain.ErrVAInvalidBill,
+		domain.NewPaymentError(domain.CodePaymentNotFound, "Invalid Bill/Virtual Account [Not Found]", domain.ErrVAInvalidBill,
 			&domain.VAPaymentStatus{
 				PartnerServiceID:  req.PartnerServiceID,
 				CustomerNo:        req.CustomerNo,

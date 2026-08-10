@@ -158,9 +158,12 @@ create-va)
 inquiry)
 	EP="/openapi/v1.0/transfer-va/inquiry"
 	[[ -z "$INQUIRY_REQUEST_ID" ]] && INQUIRY_REQUEST_ID="INQ-$(date +%s)$((RANDOM % 9000 + 1000))"
+	# trxDateInit, not txnDateInit — BCA renamed the field at VA-BillPresentment
+	# v1.6 and both it and channelCode are Mandatory (Y) in v2.4, so a vendor
+	# with VENDOR_STRICT_MANDATORY_FIELDS answers 4002402 without them.
 	BODY="$(jq -cn --arg p "$PARTNER_SERVICE_ID" --arg c "$CUSTOMER_NO" --arg v "$VA_NO" \
 		--arg d "$TIMESTAMP" --arg a "$AMOUNT" --arg r "$INQUIRY_REQUEST_ID" \
-		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,txnDateInit:$d,amount:{value:$a,currency:"IDR"},inquiryRequestId:$r}')"
+		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,trxDateInit:$d,channelCode:6011,amount:{value:$a,currency:"IDR"},inquiryRequestId:$r}')"
 	;;
 payment)
 	EP="/openapi/v1.0/transfer-va/payment"
@@ -197,10 +200,18 @@ delete-va)
 esac
 
 # SNAP symmetric signature over the exact minified body emitted below.
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | openssl base64 -A)"
+# `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
+# minified body, so hashing $BODY raw (it is pretty-printed here) yields a
+# different digest and every request comes back 401. -j (not just -c)
+# suppresses jq's trailing newline, which would otherwise be hashed too.
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
 STRING_TO_SIGN="${METHOD}:${EP}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 
+# No X-CLIENT-KEY here. It belongs to the access-token endpoint alone (emitted
+# above for `-e token`); BCA's transfer-va header tables are closed sets and do
+# not list it, so a simulator that emits it teaches an integrator to send a
+# header the real channel never sends.
 emit "$METHOD" "${BASE_URL}${EP}" "$BODY" \
 	"Content-Type: application/json" \
 	"Authorization: Bearer ${ACCESS_TOKEN}" \
@@ -208,8 +219,7 @@ emit "$METHOD" "${BASE_URL}${EP}" "$BODY" \
 	"X-SIGNATURE: ${SIGNATURE}" \
 	"X-PARTNER-ID: ${PARTNER_ID}" \
 	"X-EXTERNAL-ID: ${EXTERNAL_ID}" \
-	"CHANNEL-ID: ${CHANNEL_ID}" \
-	"X-CLIENT-KEY: ${CLIENT_ID}"
+	"CHANNEL-ID: ${CHANNEL_ID}"
 
 echo
 echo "stringToSign (for debugging a signature mismatch):"

@@ -160,6 +160,14 @@ func main() {
 	// doesn't get rejected. Never skipped in prod.
 	skipTimestampSkewCheck := appEnv == "dev" || appEnv == "uat"
 
+	// Merchant signatures now hash the MINIFIED body, matching the vendor side
+	// and SNAP. Defaults to also accepting the previous raw-body digest so the
+	// change cannot break a merchant at deploy time; set
+	// MERCHANT_LEGACY_BODY_HASH=false once every merchant has migrated. Only
+	// merchants sending whitespace-bearing JSON are affected at all — for a
+	// compact body the two digests are identical.
+	acceptLegacyMerchantBodyHash := getEnvOrDefault("MERCHANT_LEGACY_BODY_HASH", "true") != "false"
+
 	// 1. Initialize Telemetry
 	otelEndpoint := getEnvOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	shutdownTracer, err := telemetry.InitTracer(ctx, "payment-integration-gateway", otelEndpoint)
@@ -296,6 +304,30 @@ func main() {
 	asynqMux := asynq.NewServeMux()
 	worker.RegisterWorker(asynqMux, paymentWorker)
 
+	// Load vendor configurations.
+	//
+	// This has to happen before the Asynq worker starts, because the
+	// reconciliation sweep needs an outbound client built from one of these
+	// configs and its handler must be registered on asynqMux first.
+	configDir := getEnvOrDefault("CONFIG_DIR", ".")
+	configLoader := config.NewVendorConfigLoader(configDir)
+	vendorConfigs, err := configLoader.LoadAll()
+	if err != nil {
+		log.Printf("Warning: Failed to load vendor configs: %v", err)
+	}
+
+	// Vendor status reconciliation (feature 014-vendor-status-reconciliation).
+	//
+	// Off by default: it makes OUTBOUND calls to a vendor, so it must not
+	// start running the moment someone deploys this build. Operations enables
+	// it once the vendor's outbound credentials are provisioned.
+	reconciler := buildReconciler(vaRepo, notifier, vendorConfigs)
+	adminReconcileHandler := handler.NewAdminReconcileHandler(reconciler)
+	if reconciler != nil {
+		worker.RegisterReconcileWorker(asynqMux, worker.NewReconcileWorker(reconciler))
+		startReconcileScheduler(redisAddr, redisPassword)
+	}
+
 	// Start Asynq worker in background
 	go func() {
 		srv := queue.NewServer(redisAddr, redisPassword, 0)
@@ -303,14 +335,6 @@ func main() {
 			log.Printf("Asynq worker error: %v", err)
 		}
 	}()
-
-	// Load vendor configurations
-	configDir := getEnvOrDefault("CONFIG_DIR", ".")
-	configLoader := config.NewVendorConfigLoader(configDir)
-	vendorConfigs, err := configLoader.LoadAll()
-	if err != nil {
-		log.Printf("Warning: Failed to load vendor configs: %v", err)
-	}
 
 	// 6. Echo Server Setup
 	e := echo.New()
@@ -361,9 +385,27 @@ func main() {
 	// In prod, only the "/openapi/v1.0" prefix mandated by the SNAP/ASPI
 	// spec is exposed. In dev/uat, the same routes are additionally
 	// mirrored under "/api/v1.0" and "/v1.0" for easier testing.
+	// statusRoute is the sub-path of the inquiry-status service, registered
+	// under both the v1.0 and v2.0 base paths.
+	const statusRoute = "/status"
+
 	snapBasePaths := []string{"/openapi/v1.0"}
 	if appEnv == "dev" || appEnv == "uat" {
 		snapBasePaths = []string{"/openapi/v1.0", "/api/v1.0", "/v1.0"}
+	}
+
+	// Developer API BCA versions the inquiry-status service at v2.0 while
+	// inquiry and payment stay at v1.0, so the endpoint we expose is mirrored
+	// there to match the shape vendors expect. v1.0 is kept registered
+	// alongside it so vendors already pointed there are not broken.
+	//
+	// Note this is for ASPI-generic vendors that put service 26 on the PJP.
+	// BCA itself never calls it — service 26 runs partner→BCA, and our side of
+	// that is the outbound reconciler, not this route. See
+	// internal/domain/reconciliation.go for why the two directions differ.
+	statusBasePaths := []string{"/openapi/v2.0"}
+	if appEnv == "dev" || appEnv == "uat" {
+		statusBasePaths = []string{"/openapi/v2.0", "/api/v2.0", "/v2.0"}
 	}
 
 	// Mirror the extra base paths into the generated Swagger spec too, so
@@ -385,6 +427,9 @@ func main() {
 	adminGroup.POST("/clients/:clientId/secret", clientHandler.AddClientSecret)
 	adminGroup.DELETE("/clients/:clientId/secret/:secretId", clientHandler.RevokeClientSecret)
 	adminGroup.POST("/transactions/:virtualAccountNo/resend-callback", adminResendHandler.Resend)
+	// On-demand counterpart of the periodic reconciliation sweep: asks the
+	// vendor what really happened to a transaction still recorded as pending.
+	adminGroup.POST("/transactions/:virtualAccountNo/reconcile", adminReconcileHandler.Reconcile)
 	if adminAPIKey == "" {
 		log.Println("Warning: ADMIN_API_KEY not set — /admin/* endpoints are disabled")
 	}
@@ -412,22 +457,26 @@ func main() {
 			}),
 		))
 
-		// Existing SNAP VA endpoints (inquiry, payment, status)
-		for _, vc := range vendorConfigs {
+		// SNAP VA endpoints (inquiry, payment, status), registered ONCE for
+		// all vendors. Registering them per vendor does not work: echo keeps
+		// only the last route registered for a method+path, so every vendor
+		// but the last became unreachable. MultiVendorSNAPAuth resolves the
+		// vendor from the request instead, and records it on the context for
+		// the handler to apply that vendor's own field rules.
+		if len(vendorConfigs) > 0 {
 			vendorGroup := transferVAGroup.Group("")
-			vendorGroup.Use(customMiddleware.SNAPAuthMiddleware(vc, jwtIssuer, skipTimestampSkewCheck))
+			vendorGroup.Use(customMiddleware.MultiVendorSNAPAuth(vendorConfigs, jwtIssuer, skipTimestampSkewCheck))
 			vendorGroup.POST("/inquiry", vaHandler.Inquiry)
 			vendorGroup.POST("/payment", vaHandler.Payment)
-			vendorGroup.POST("/status", vaHandler.Status)
-			log.Printf("Registered vendor routes for: %s/%s%s", vc.Vendor, vc.Channel, snapBasePath)
-		}
-
-		// Default routes if no vendor configs
-		if len(vendorConfigs) == 0 {
+			vendorGroup.POST(statusRoute, vaHandler.Status)
+			for _, vc := range vendorConfigs {
+				log.Printf("Registered vendor: %s/%s under %s", vc.Vendor, vc.Channel, snapBasePath)
+			}
+		} else {
 			log.Println("No vendor configs found, using default vendor VA routes")
 			transferVAGroup.POST("/inquiry", vaHandler.Inquiry)
 			transferVAGroup.POST("/payment", vaHandler.Payment)
-			transferVAGroup.POST("/status", vaHandler.Status)
+			transferVAGroup.POST(statusRoute, vaHandler.Status)
 		}
 
 		// Merchant VA Dashboard endpoints (SNAP ASPI compliant) — require a
@@ -435,13 +484,30 @@ func main() {
 		// its own sub-group so MerchantAuthMiddleware never applies to the
 		// vendor routes above (and SNAPAuthMiddleware never applies here).
 		merchantGroup := transferVAGroup.Group("")
-		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo, skipTimestampSkewCheck))
+		merchantGroup.Use(customMiddleware.MerchantAuthMiddleware(jwtIssuer, clientRepo, skipTimestampSkewCheck, acceptLegacyMerchantBodyHash))
 		merchantGroup.POST("/create-va", merchantVAHandler.CreateVA)
 		merchantGroup.POST("/list", merchantVAHandler.ListVA)
 		merchantGroup.POST("/list-transactions", merchantVAHandler.ListTransactions)
 		merchantGroup.DELETE("/delete-va", merchantVAHandler.DeleteVA)
 
 		log.Printf("Registered SNAP routes under base path: %s", snapBasePath)
+	}
+
+	// Inquiry-status at v2.0, where BCA actually calls it. Same middleware
+	// chain as the v1.0 transfer-va group so idempotency and SNAP auth apply
+	// identically.
+	for _, statusBasePath := range statusBasePaths {
+		statusGroup := e.Group(statusBasePath + "/transfer-va")
+		statusGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
+
+		if len(vendorConfigs) > 0 {
+			vendorStatusGroup := statusGroup.Group("")
+			vendorStatusGroup.Use(customMiddleware.MultiVendorSNAPAuth(vendorConfigs, jwtIssuer, skipTimestampSkewCheck))
+			vendorStatusGroup.POST(statusRoute, vaHandler.Status)
+		} else {
+			statusGroup.POST(statusRoute, vaHandler.Status)
+		}
+		log.Printf("Registered SNAP status route under base path: %s", statusBasePath)
 	}
 
 	port := getEnvOrDefault("PORT", "8080")

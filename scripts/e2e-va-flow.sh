@@ -307,6 +307,18 @@ echo "=================================================================="
 INQUIRY_RESPONSE="$("$SCRIPT_DIR/vendor-inquiry-va.sh" -s "$PARTNER_SERVICE_ID" -c "$CUSTOMER_NO" -v "$VA_NO" -a "$AMOUNT" -f "$VENDOR_ENV_FILE" -u "$BASE_URL")"
 echo "$INQUIRY_RESPONSE" | jq .
 
+# Assert the inquiry actually succeeded. Without this the flow reported "done"
+# even when every inquiry was being rejected, because only create-va and
+# payment were ever checked — and a rejected inquiry still leaves
+# CONFIRMED_INQUIRY_REQUEST_ID empty, which silently turns step 3 into a
+# no-inquiry payment instead of the inquiry-then-pay flow this script claims
+# to exercise. A no-bill VA has no bill to present, so it is exempt.
+INQUIRY_CODE="$(echo "$INQUIRY_RESPONSE" | jq -r '.responseCode // empty')"
+if [[ "$IS_NO_BILL" != true && "$INQUIRY_CODE" != 2* ]]; then
+	echo "!! inquiry did not succeed (got: ${INQUIRY_CODE:-<none>}) — aborting." >&2
+	exit 1
+fi
+
 # ASPI PaymentRequest.paymentRequestId: "If Payment comes from the Inquiry
 # process, this value must be the same with inquiryRequestId" — which is this
 # flow, so step 3 reuses the id this inquiry was keyed on.

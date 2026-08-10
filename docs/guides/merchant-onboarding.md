@@ -115,7 +115,22 @@ For every request to `create-va`, `list`, or `delete-va`:
 
 1. **Build the request body** as a JSON object per the request's schema.
 2. **Compute the timestamp**: current time in ISO 8601.
-3. **Hash the body**: `bodyHash = base64(SHA256(body))`.
+3. **Hash the body**: `bodyHash = base64(SHA256(minify(body)))`.
+
+   **Minify first.** `minify` means the JSON with all insignificant whitespace
+   removed — the same `MinifyJson` step SNAP specifies and the vendor
+   endpoints apply. If you send a compact body this changes nothing (minifying
+   compact JSON is a no-op); if you pretty-print your JSON, hashing the raw
+   bytes gives a different digest than we compute and every request comes back
+   `[Invalid signature]`. In `jq` terms the pipeline is `jq -cj .` — the `-j`
+   matters, because `jq -c` alone appends a newline that would be hashed too.
+
+   > **Transitional**: we currently *also* accept a signature computed over
+   > the un-minified body, so integrations written against the previous
+   > behaviour keep working. That fallback will be switched off
+   > (`MERCHANT_LEGACY_BODY_HASH=false`) once all merchants have migrated —
+   > move to the minified form at your earliest convenience. Only merchants
+   > sending whitespace-bearing JSON are affected at all.
 4. **Build `stringToSign`**:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
@@ -152,6 +167,24 @@ For every request to `create-va`, `list`, or `delete-va`:
    [vendor-onboarding.md](./vendor-onboarding.md#request-signing-steps) if you
    also operate on that side.
 
+### How this compares to the vendor side
+
+Both sides use the same `stringToSign` shape and the same minify-then-hash
+rule for the body. Only three things differ, and none of them is a difference
+in *algorithm*:
+
+| | Merchant (`create-va`/`list`/`delete-va`) | Vendor (`inquiry`/`payment`/`status`) |
+|---|---|---|
+| Body digest | `SHA-256(minify(body))` | `SHA-256(minify(body))` — same rule |
+| Digest encoding | **base64** | lowercase **hex** (or base64 per that vendor's config) |
+| `{accessToken}` slot | always the real token | empty on the legacy path, the real token once migrated |
+| `CHANNEL-ID` / `X-PARTNER-ID` | not enforced | required |
+
+The body rule was **not** always the same — these endpoints previously hashed
+the raw, un-minified body while the vendor endpoints minified, so an identical
+body produced two different valid signatures depending on which endpoint it
+went to. That is now unified; see the transitional note in step 3 above.
+
 ### Timestamp freshness
 
 `X-TIMESTAMP` must be within **±5 minutes** of our server's clock — same
@@ -167,6 +200,7 @@ tolerance as the vendor side. Requests outside that window are rejected with
 | Your `clientId` has no shared secret provisioned | `401 Unauthorized. [No signing secret provisioned for this client]` |
 | `X-TIMESTAMP` outside ±5 minute window | `401 Unauthorized. [Timestamp skew exceeds 5 minutes]` |
 | `X-SIGNATURE` missing or doesn't match | `401 Unauthorized. [Invalid signature]` |
+| Body hashed without minifying, once the transitional fallback is off | `401 Unauthorized. [Invalid signature]` — indistinguishable from a wrong secret, so check step 3 first |
 
 There is **no opt-out** — both checks are unconditional from deployment.
 Make sure you're provisioned (Step 0 above) **before** attempting any
@@ -176,8 +210,14 @@ of how correctly it's signed.
 Idempotency is keyed on `X-EXTERNAL-ID` alone (not scoped per endpoint):
 replaying the same value with the **same** body returns the original
 response with an `X-Cache-Replay: true` header; with a **different** body you
-get `422 Unprocessable Entity` (`4227300`), and while the first request is
-still in flight you get `409 Conflict` (`4097300`).
+get `409 Conflict`, and while the first request is still in flight you also get
+`409 Conflict`. Both carry the calling service's own conflict code (e.g.
+`4092700` on create-va).
+
+> This used to answer `422 Unprocessable Entity` (`4227300`) for the
+> payload-mismatch case. `422` is not a SNAP status at all, and a reused
+> `X-EXTERNAL-ID` is a conflict — BCA documents exactly this as `Conflict`. If
+> you matched on `4227300`, switch to the `409`.
 
 ## Response codes
 
@@ -186,8 +226,8 @@ code, `CC` = case code. The service code differs **per endpoint**:
 
 | Endpoint | Method | Success | Common failures |
 |---|---|---|---|
-| `/access-token/b2b` | POST | `2007300` | `4017300` unknown client or bad RSA signature |
-| `/transfer-va/create-va` (27) | POST | `2002700` | `4002700` field format · `4002701` missing mandatory · `5002700` |
+| `/access-token/b2b` | POST | `2007300` | `4007301` invalid field format (`grantType` or `X-TIMESTAMP`) · `4007302` missing `X-CLIENT-KEY` · `4017300` unknown client or bad RSA signature |
+| `/transfer-va/create-va` (27) | POST | `2002700` | `4002700` field format (incl. over-long `freeTexts`) · `4002701` missing mandatory · `4002702` invalid field format (over-long `virtualAccountName`, bad `vaType` combination) · `4092700` number still has a pending bill · `5002700` |
 | `/transfer-va/delete-va` (31) | DELETE | `2003100` | `4003101` field format / missing mandatory · `5003100` |
 | `/transfer-va/list` | POST | `2002400` | not an ASPI-defined endpoint — a dashboard convenience API |
 | `/transfer-va/list-transactions` | POST | `2002400` | not an ASPI-defined endpoint — a dashboard convenience API |
@@ -205,6 +245,17 @@ worth calling out:
   `virtualAccountNo` is `partnerServiceId` + `customerNo` — so
   `"   12345"` + `"0001234567"` gives `"   123450001234567"`. Sending an
   unpadded `partnerServiceId` is the single most common create-va mistake.
+- **`virtualAccountName` is capped at 30 characters** (`4002702` if longer),
+  and each `freeTexts` entry at 32 (`4002700`). These are not our limits —
+  both fields are echoed verbatim into the SNAP inquiry response, where BCA
+  caps them (*Tech. Doc. OpenAPI VA-BillPresentment v2.4*) and fails the whole
+  inquiry on an over-long value. Enforcing them at create-va means you find out
+  here, rather than discovering it when a customer is standing at an ATM. We
+  reject rather than truncate: a silently shortened holder name is not the name
+  you registered.
+- **`customerNo` is up to 18 digits** and `virtualAccountNo` up to 26. VAs we
+  issue use those widths. Numbers issued under our older sequence went to
+  20/28 and remain payable, but new ones will not exceed 18/26.
 - **`additionalInfo.dbUrlProcess`** is where you register the callback URL
   for this VA. When the vendor later reports a payment, we POST a
   `payment.received` notification there asynchronously. Without it, the VA
@@ -298,8 +349,11 @@ A second event type, `va.expired`, is sent when a VA passes its
 Two differences from the request-signing scheme above, both easy to trip on:
 
 - The HMAC is computed over the **raw body bytes only**, not over a
-  `stringToSign`. Compare against the exact bytes you received, before
-  parsing the JSON.
+  `stringToSign`, and there is **no minify step** here — compare against the
+  exact bytes you received, before parsing or re-serialising the JSON. (No
+  ambiguity arises: the body we send is already compact, so raw and minified
+  are the same bytes. Re-serialising is still the thing most likely to break
+  your verification.)
 - The key is a **separate, service-wide notification secret**
   (`NOTIFICATION_SECRET`), *not* the shared secret you use to sign create-va
   requests. Ask operations for its value.

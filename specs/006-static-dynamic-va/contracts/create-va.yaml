@@ -106,8 +106,10 @@ components:
               type: string
               description: >
                 Echoed unchanged for static requests; system-generated
-                (2-digit vaType + 18-digit zero-padded sequence, 20 digits
-                total) for dynamic requests.
+                (2-digit vaType + 16-digit zero-padded sequence, 18 digits
+                total) for dynamic requests. 18 is BCA's customerNo limit on
+                the payment and status services (String(18)); issuing wider
+                yields a VA that passes inquiry and is rejected at payment.
             virtualAccountNo:
               type: string
             totalAmount:

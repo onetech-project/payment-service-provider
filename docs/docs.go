@@ -389,6 +389,62 @@ const docTemplate = `{
                 }
             }
         },
+        "/admin/transactions/{virtualAccountNo}/reconcile": {
+            "post": {
+                "security": [
+                    {
+                        "AdminAPIKey": []
+                    }
+                ],
+                "description": "Admin-only: calls the vendor's SNAP Inquiry Status service (code 26) for the given virtualAccountNo. If the vendor reports the payment as successful while this service still had it pending, the transaction is settled and the merchant payment callback is sent. Safe to call repeatedly — an already-settled transaction is reported back without a second callback.",
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Ask the vendor what really happened to a pending transaction",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Admin API key",
+                        "name": "X-Admin-API-Key",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Virtual account number",
+                        "name": "virtualAccountNo",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.reconcileResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.reconcileErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Transaction not found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.reconcileErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Reconciliation is not configured for this deployment",
+                        "schema": {
+                            "$ref": "#/definitions/handler.reconcileErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/transactions/{virtualAccountNo}/resend-callback": {
             "post": {
                 "security": [
@@ -898,7 +954,7 @@ const docTemplate = `{
                         "SnapSignature": []
                     }
                 ],
-                "description": "Vendor-initiated inquiry for Virtual Account bill/customer details prior to payment. Read-only.",
+                "description": "Vendor-initiated inquiry for Virtual Account bill/customer details prior to payment. Read-only. Mandatory body fields per BCA: partnerServiceId, customerNo, virtualAccountNo, inquiryRequestId. There is no ` + "`" + `amount` + "`" + ` field on this request.",
                 "tags": [
                     "Virtual Account"
                 ],
@@ -927,21 +983,21 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID",
+                        "description": "Partner ID using Company Code VA, max 8 chars (BCA tech docs v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID",
                         "name": "X-PARTNER-ID",
                         "in": "header",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
+                        "description": "Numeric string, max 36 chars, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID",
+                        "description": "PJP channel id (BCA VA: 95231). Value-checked whenever the vendor config sets VENDOR_CHANNEL_ID",
                         "name": "CHANNEL-ID",
                         "in": "header",
                         "required": true
@@ -964,37 +1020,31 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field",
+                        "description": "4002400 Bad Request (unparseable body), 4002401 Invalid Field Format {field}, 4002402 Invalid Mandatory Field {field}",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
                     },
                     "401": {
-                        "description": "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window",
+                        "description": "4012400 Unauthorized. [reason], 4012401 Invalid Token (B2B)",
                         "schema": {
-                            "$ref": "#/definitions/domain.VAInquiryResponse"
+                            "$ref": "#/definitions/domain.SNAPErrorResponse"
                         }
                     },
                     "404": {
-                        "description": "Not Found (mapped from downstream error), or 4042419 Expired Transaction (virtualAccountData.inquiryStatus=01, feature 007-merchant-expiry-callback)",
+                        "description": "All with virtualAccountData.inquiryStatus=01: 4042412 Invalid Bill/Virtual Account [Not Found], 4042414 Paid Bill, 4042419 Invalid Bill/Virtual Account (expired)",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
                     },
                     "409": {
-                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
-                        "schema": {
-                            "$ref": "#/definitions/domain.VAInquiryResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "X-EXTERNAL-ID reused with a different payload",
+                        "description": "4092400 Conflict — X-EXTERNAL-ID reused",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
                     },
                     "500": {
-                        "description": "Internal Server Error",
+                        "description": "5002400 Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/domain.VAInquiryResponse"
                         }
@@ -1218,7 +1268,7 @@ const docTemplate = `{
                         "SnapSignature": []
                     }
                 ],
-                "description": "Vendor-initiated notification that a payment against a Virtual Account has been received. State-changing: records the payment. Mandatory body fields per ASPI: partnerServiceId, customerNo, virtualAccountNo, trxId, paymentRequestId, paidAmount.",
+                "description": "Vendor-initiated notification that a payment against a Virtual Account has been received. State-changing: records the payment. Mandatory body fields per BCA: partnerServiceId, customerNo, virtualAccountNo, virtualAccountName, paymentRequestId, channelCode, paidAmount, totalAmount, trxDateTime, flagAdvise. trxId is conditional (mandatory only when the payment originates from a Create VA request).",
                 "tags": [
                     "Virtual Account"
                 ],
@@ -1247,21 +1297,21 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID",
+                        "description": "Partner ID using Company Code VA, max 8 chars (BCA tech docs v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID",
                         "name": "X-PARTNER-ID",
                         "in": "header",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
+                        "description": "Numeric string, max 36 chars, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID",
+                        "description": "PJP channel id (BCA VA: 95231). Value-checked whenever the vendor config sets VENDOR_CHANNEL_ID",
                         "name": "CHANNEL-ID",
                         "in": "header",
                         "required": true
@@ -1278,43 +1328,37 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "2002500 Successful, paymentFlagStatus=00",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field",
+                        "description": "4002500 Bad Request (unparseable body), 4002501 Invalid Field Format {field}, 4002502 Invalid Mandatory Field {field}",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
                     },
                     "401": {
-                        "description": "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window",
+                        "description": "4012500 Unauthorized. [reason] (invalid HMAC signature, or X-TIMESTAMP outside the ±5 minute freshness window), 4012501 Invalid Token (B2B)",
                         "schema": {
-                            "$ref": "#/definitions/domain.VAPaymentResponse"
+                            "$ref": "#/definitions/domain.SNAPErrorResponse"
                         }
                     },
                     "404": {
-                        "description": "Not Found (mapped from downstream error), or 4042519 Expired Transaction (virtualAccountData.paymentFlagStatus=01, feature 007-merchant-expiry-callback)",
+                        "description": "All with virtualAccountData.paymentFlagStatus=01 unless noted: 4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither the registry nor any transaction; virtualAccountData echoes the request keys with empty paidAmount/totalAmount), 4042513 Invalid Amount, 4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID and paymentRequestId; echoes the ORIGINAL flag status and the payment it collided with), 4042519 Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
                     },
                     "409": {
-                        "description": "Conflict (mapped from downstream error, or in-flight request with same X-EXTERNAL-ID)",
-                        "schema": {
-                            "$ref": "#/definitions/domain.VAPaymentResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "X-EXTERNAL-ID reused with a different payload",
+                        "description": "4092500 Conflict — same X-EXTERNAL-ID with a different paymentRequestId, or an in-flight request still holding the key",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
                     },
                     "500": {
-                        "description": "Internal Server Error",
+                        "description": "5002500 Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
@@ -1322,7 +1366,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/openapi/v1.0/transfer-va/status": {
+        "/openapi/v2.0/transfer-va/status": {
             "post": {
                 "security": [
                     {
@@ -1332,7 +1376,7 @@ const docTemplate = `{
                         "SnapSignature": []
                     }
                 ],
-                "description": "Vendor-initiated inquiry of the current payment status of a Virtual Account transaction. Read-only.",
+                "description": "Vendor-initiated inquiry of the current payment status of a Virtual Account transaction. Read-only. Registered under /openapi/v2.0 as well as v1.0 — BCA calls this service at v2.0.",
                 "tags": [
                     "Virtual Account"
                 ],
@@ -1361,21 +1405,21 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Partner identifier, max 36 chars. Enforced whenever the vendor config sets VENDOR_PARTNER_ID",
+                        "description": "Partner ID using Company Code VA, max 8 chars (BCA tech docs v2.3/v2.4). Value-checked whenever the vendor config sets VENDOR_PARTNER_ID",
                         "name": "X-PARTNER-ID",
                         "in": "header",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "Numeric string, unique per calendar day. Doubles as the idempotency key",
+                        "description": "Numeric string, max 36 chars, unique per calendar day. Doubles as the idempotency key",
                         "name": "X-EXTERNAL-ID",
                         "in": "header",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "PJP channel id, 5 chars. Mandatory per the ASPI security standard, and enforced whenever the vendor config sets VENDOR_CHANNEL_ID",
+                        "description": "PJP channel id (BCA VA: 95231). Value-checked whenever the vendor config sets VENDOR_CHANNEL_ID",
                         "name": "CHANNEL-ID",
                         "in": "header",
                         "required": true
@@ -1392,43 +1436,37 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "2002600 Success. paymentFlagStatus 00 settled / 01 rejected / 02 timeout / 03 pending",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }
                     },
                     "400": {
-                        "description": "Invalid Field Format / Invalid Mandatory Field",
+                        "description": "4002600 Bad Request (unparseable body), 4002601 Invalid Field Format {field}, 4002602 Invalid Mandatory Field {field}",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }
                     },
                     "401": {
-                        "description": "Unauthorized: invalid HMAC signature or X-TIMESTAMP outside the ±5 minute freshness window",
+                        "description": "4012600 Unauthorized. [reason], 4012601 Invalid Token (B2B)",
                         "schema": {
-                            "$ref": "#/definitions/domain.VAStatusResponse"
+                            "$ref": "#/definitions/domain.SNAPErrorResponse"
                         }
                     },
                     "404": {
-                        "description": "Not Found (mapped from downstream error)",
+                        "description": "4042601 Transaction Not Found",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }
                     },
                     "409": {
-                        "description": "Conflict: request already in progress for this X-EXTERNAL-ID",
-                        "schema": {
-                            "$ref": "#/definitions/domain.VAStatusResponse"
-                        }
-                    },
-                    "422": {
-                        "description": "X-EXTERNAL-ID reused with a different payload",
+                        "description": "4092600 Conflict — X-EXTERNAL-ID reused",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }
                     },
                     "500": {
-                        "description": "Internal Server Error",
+                        "description": "5002601 Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/domain.VAStatusResponse"
                         }
@@ -1908,6 +1946,21 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.SNAPErrorResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "responseCode": {
+                    "type": "string"
+                },
+                "responseMessage": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.SNAPTokenRequest": {
             "type": "object",
             "properties": {
@@ -2066,7 +2119,12 @@ const docTemplate = `{
                     "additionalProperties": true
                 },
                 "amount": {
-                    "$ref": "#/definitions/domain.Amount"
+                    "description": "Amount is Optional (N) on the inquiry payload. It was absent from the\ntable altogether in the older documentation and reappears in\nVA-BillPresentment v2.4; it has never been mandatory, and requiring it\nwould reject every inquiry that omits it. Treated as a passthrough: the\namount a customer entered belongs to the payment, not to the bill this\ninquiry presents.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.Amount"
+                        }
+                    ]
                 },
                 "channelCode": {
                     "type": "integer"
@@ -2074,13 +2132,29 @@ const docTemplate = `{
                 "customerNo": {
                     "type": "string"
                 },
+                "hashedSourceAccountNo": {
+                    "description": "HashedSourceAccountNo String(32) and SourceBankCode String(3) are both\nOptional, and both carry the paying account's identity through from the\nchannel.",
+                    "type": "string"
+                },
                 "inquiryRequestId": {
+                    "type": "string"
+                },
+                "language": {
+                    "description": "Language is String(2) ISO-639-1, Optional.",
                     "type": "string"
                 },
                 "partnerServiceId": {
                     "type": "string"
                 },
-                "txnDateInit": {
+                "passApp": {
+                    "description": "PassApp is String(64) Optional, \"Key for 3rd party to access API like\nclient secret\". Bound and length-checked but never acted on: this\nservice authenticates on X-SIGNATURE, and treating a body field as a\nsecond credential would be a way in that the signature does not cover.",
+                    "type": "string"
+                },
+                "sourceBankCode": {
+                    "type": "string"
+                },
+                "trxDateInit": {
+                    "description": "TrxDateInit is spelled trxDateInit by BCA (Developer API BCA, inquiry\npayload). It was previously tagged \"txnDateInit\", which silently never\nbound.",
                     "type": "string"
                 },
                 "virtualAccountNo": {
@@ -2091,6 +2165,10 @@ const docTemplate = `{
         "domain.VAInquiryResponse": {
             "type": "object",
             "properties": {
+                "additionalInfo": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
                 "responseCode": {
                     "type": "string"
                 },
@@ -2235,6 +2313,10 @@ const docTemplate = `{
         "domain.VAPaymentResponse": {
             "type": "object",
             "properties": {
+                "additionalInfo": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
                 "responseCode": {
                     "type": "string"
                 },
@@ -2246,19 +2328,46 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.VAPaymentResponseBillDetail": {
+            "type": "object",
+            "properties": {
+                "additionalInfo": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "billAmount": {
+                    "$ref": "#/definitions/domain.Amount"
+                },
+                "billDescription": {
+                    "$ref": "#/definitions/domain.BilingualText"
+                },
+                "billNo": {
+                    "type": "string"
+                },
+                "billSubCompany": {
+                    "type": "string"
+                },
+                "billerReferenceId": {
+                    "type": "string"
+                },
+                "reason": {
+                    "$ref": "#/definitions/domain.BilingualText"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.VAPaymentStatus": {
             "type": "object",
             "properties": {
                 "billDetails": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/domain.VAPaymentBillDetail"
+                        "$ref": "#/definitions/domain.VAPaymentResponseBillDetail"
                     }
                 },
                 "customerNo": {
-                    "type": "string"
-                },
-                "flagAdvise": {
                     "type": "string"
                 },
                 "freeTexts": {
@@ -2267,14 +2376,8 @@ const docTemplate = `{
                         "$ref": "#/definitions/domain.BilingualText"
                     }
                 },
-                "journalNum": {
-                    "type": "string"
-                },
                 "paidAmount": {
                     "$ref": "#/definitions/domain.Amount"
-                },
-                "paidBills": {
-                    "type": "string"
                 },
                 "partnerServiceId": {
                     "type": "string"
@@ -2288,9 +2391,6 @@ const docTemplate = `{
                 "paymentRequestId": {
                     "type": "string"
                 },
-                "paymentType": {
-                    "type": "string"
-                },
                 "referenceNo": {
                     "type": "string"
                 },
@@ -2300,19 +2400,11 @@ const docTemplate = `{
                 "trxDateTime": {
                     "type": "string"
                 },
-                "trxId": {
-                    "type": "string"
-                },
-                "virtualAccountEmail": {
-                    "type": "string"
-                },
                 "virtualAccountName": {
+                    "description": "VirtualAccountName carries no omitempty: it is reported even when empty,\nincluding on the not-found rejection where there is no stored holder to\nname.",
                     "type": "string"
                 },
                 "virtualAccountNo": {
-                    "type": "string"
-                },
-                "virtualAccountPhone": {
                     "type": "string"
                 }
             }
@@ -2449,6 +2541,10 @@ const docTemplate = `{
         "domain.VAStatusResponse": {
             "type": "object",
             "properties": {
+                "additionalInfo": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
                 "responseCode": {
                     "type": "string"
                 },
@@ -2495,6 +2591,17 @@ const docTemplate = `{
                 }
             }
         },
+        "handler.amount": {
+            "type": "object",
+            "properties": {
+                "currency": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
         "handler.clientResponse": {
             "type": "object",
             "properties": {
@@ -2511,6 +2618,41 @@ const docTemplate = `{
                     "$ref": "#/definitions/domain.ClientSecret"
                 },
                 "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.reconcileErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.reconcileResponse": {
+            "type": "object",
+            "properties": {
+                "outcome": {
+                    "type": "string"
+                },
+                "paidAmount": {
+                    "$ref": "#/definitions/handler.amount"
+                },
+                "reconciledAt": {
+                    "type": "string"
+                },
+                "settled": {
+                    "type": "boolean"
+                },
+                "vendorPaymentFlagStatus": {
+                    "type": "string"
+                },
+                "vendorResponseCode": {
+                    "description": "The vendor's raw answer is echoed so an operator can see what the\noutcome was inferred from rather than having to trust it.",
+                    "type": "string"
+                },
+                "virtualAccountNo": {
                     "type": "string"
                 }
             }

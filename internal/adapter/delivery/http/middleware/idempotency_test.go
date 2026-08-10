@@ -22,11 +22,11 @@ type fakeIdempotencyStore struct {
 	cache  map[string][]byte
 	locked map[string]bool
 
-	getErr   error
-	lockErr  error
-	lockOK   *bool // nil means "compute from locked map"
-	setErr   error
-	relErr   error
+	getErr  error
+	lockErr error
+	lockOK  *bool // nil means "compute from locked map"
+	setErr  error
+	relErr  error
 }
 
 func newFakeIdempotencyStore() *fakeIdempotencyStore {
@@ -119,7 +119,9 @@ func TestIdempotencyMiddleware_MissingKey(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "4007300")
+	// Missing X-EXTERNAL-ID is a mandatory-field rejection carrying the
+	// service code of the endpoint called.
+	assert.Contains(t, rec.Body.String(), "Invalid Mandatory Field [X-EXTERNAL-ID]")
 }
 
 func TestIdempotencyMiddleware_FirstRequestCachesResponse(t *testing.T) {
@@ -228,7 +230,8 @@ func TestIdempotencyMiddleware_SuppressedReplayReachesHandlerAgain(t *testing.T)
 }
 
 // Suppressing the replay must not weaken the payload-mismatch guard: a reused
-// X-EXTERNAL-ID carrying a different body is still 4227300, not a handler call.
+// X-EXTERNAL-ID carrying a different body is still a conflict, not a handler
+// call.
 func TestIdempotencyMiddleware_SuppressedReplayStillRejectsPayloadMismatch(t *testing.T) {
 	e := echo.New()
 	store := newFakeIdempotencyStore()
@@ -251,11 +254,11 @@ func TestIdempotencyMiddleware_SuppressedReplayStillRejectsPayloadMismatch(t *te
 	assert.NoError(t, handler(e.NewContext(req2, rec2)))
 
 	assert.Equal(t, 1, calls, "payload mismatch must not reach the handler")
-	assert.Equal(t, http.StatusUnprocessableEntity, rec2.Code)
-	assert.Contains(t, rec2.Body.String(), "4227300")
+	assert.Equal(t, http.StatusConflict, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "4097300")
 }
 
-func TestIdempotencyMiddleware_PayloadMismatchReturns422(t *testing.T) {
+func TestIdempotencyMiddleware_PayloadMismatchReturnsConflict(t *testing.T) {
 	e := echo.New()
 	store := newFakeIdempotencyStore()
 	mw := IdempotencyMiddleware(store, time.Second, time.Second)
@@ -275,8 +278,10 @@ func TestIdempotencyMiddleware_PayloadMismatchReturns422(t *testing.T) {
 	c2 := e.NewContext(req2, rec2)
 	assert.NoError(t, handler(c2))
 
-	assert.Equal(t, http.StatusUnprocessableEntity, rec2.Code)
-	assert.Contains(t, rec2.Body.String(), "4227300")
+	// SNAP has no 422. BCA documents a reused X-EXTERNAL-ID carrying a
+	// different payload as 409 Conflict.
+	assert.Equal(t, http.StatusConflict, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "Conflict")
 }
 
 func TestIdempotencyMiddleware_LockFailureReturns409(t *testing.T) {
@@ -299,7 +304,7 @@ func TestIdempotencyMiddleware_LockFailureReturns409(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusConflict, rec.Code)
-	assert.Contains(t, rec.Body.String(), "4097300")
+	assert.Contains(t, rec.Body.String(), "Conflict")
 }
 
 func TestIdempotencyMiddleware_LockErrorReturns409(t *testing.T) {

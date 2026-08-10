@@ -76,8 +76,42 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 	if req.VirtualAccountName == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [virtualAccountName]", nil)
 	}
+	// Refused here, not truncated. virtualAccountName is String(30) Max on the
+	// inquiry RESPONSE (Tech. Doc. OpenAPI VA-BillPresentment v2.4), and its
+	// Notes are absolute: "The length of the characters sent must not exceed
+	// the number stated in the technical documentation". A longer name stored
+	// now is echoed on every inquiry for this VA, so BCA fails the inquiry at
+	// the channel — in front of the customer, with nothing pointing back at
+	// create-va. Truncating instead would silently show a different holder
+	// name than the merchant registered, which is worse than a clear rejection
+	// at the point the merchant can still fix it.
+	if len(req.VirtualAccountName) > domain.MaxVirtualAccountName {
+		return nil, domain.NewDomainError("4002702", "Invalid Field Format [virtualAccountName]", nil)
+	}
 	if req.TrxID == "" {
 		return nil, domain.NewDomainError("4002701", "Invalid Mandatory Field [trxId]", nil)
+	}
+
+	// Reject a bill that could never be presented. These lists are echoed
+	// verbatim in the SNAP inquiry response, and BCA's Notes cap both at 5
+	// ("billDetails should not be greater than 5", "The occurences for
+	// freeTexts field in inquiry bill should not be greater than 5"). Accepting
+	// six here and discovering it at inquiry time means the merchant's VA fails
+	// at the channel, in front of the customer, with no indication of why —
+	// so it is refused at the point the merchant can still fix it.
+	if len(req.BillDetails) > domain.MaxInquiryBillDetails {
+		return nil, domain.NewDomainError("4002700", "Invalid Field Format [billDetails]", nil)
+	}
+	if len(req.FreeTexts) > domain.MaxInquiryFreeTexts {
+		return nil, domain.NewDomainError("4002700", "Invalid Field Format [freeTexts]", nil)
+	}
+	// Same reasoning as the count above, applied to each entry: freeTexts are
+	// echoed verbatim into the inquiry response, and BCA caps each language
+	// string at 32 characters. Caught here, the merchant can still shorten it.
+	for _, t := range req.FreeTexts {
+		if len(t.English) > domain.MaxFreeTextLength || len(t.Indonesia) > domain.MaxFreeTextLength {
+			return nil, domain.NewDomainError("4002700", "Invalid Field Format [freeTexts]", nil)
+		}
 	}
 
 	var vaTypeRule domain.VATypeRule
@@ -120,12 +154,20 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		}
 	}
 
-	// Use the client-supplied virtualAccountNo per ASPI VAIdentity (maxLength
-	// 28). For a dynamic managed request it may be empty at this point (it is
-	// resolved below, once customerNo is known/generated).
+	// Use the client-supplied virtualAccountNo. The cap is BCA's payment/status
+	// limit (26), not ASPI's nominal 28: a longer VA number passes inquiry and
+	// is then rejected at payment, so it is refused at issue time instead —
+	// see domain.MaxIssuedVirtualAccountNo. For a dynamic managed request it
+	// may be empty at this point (resolved below, once customerNo is known).
 	vaNo := req.VirtualAccountNo
-	if vaNo != "" && len(vaNo) > 28 {
+	if vaNo != "" && len(vaNo) > domain.MaxIssuedVirtualAccountNo {
 		return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
+	}
+	// Same reasoning for the merchant-supplied static customerNo. The dynamic
+	// path generates its own at 18 digits (NextCustomerNoSequence) and is
+	// checked by the virtualAccountNo cap below.
+	if len(req.CustomerNo) > domain.MaxIssuedCustomerNo {
+		return nil, domain.NewDomainError("4002700", "Invalid Field Format [customerNo too long]", nil)
 	}
 
 	// A no-bill VA (vaType 01/04) is an address, not a transaction: /create-va
@@ -153,7 +195,7 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		// (partnerServiceId + customerNo).
 		if vaNo == "" {
 			vaNo = req.PartnerServiceID + customerNo
-			if len(vaNo) > 28 {
+			if len(vaNo) > domain.MaxIssuedVirtualAccountNo {
 				return nil, domain.NewDomainError("4002700", "Invalid Field Format [virtualAccountNo too long]", nil)
 			}
 		}
@@ -226,12 +268,23 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		return nil, domain.NewDomainError("4092700", "Conflict: VA already has an active pending transaction", nil)
 	}
 
-	// Save transaction
+	// Save transaction.
+	//
+	// inquiry_request_id carries a placeholder, not "". The column is UNIQUE,
+	// and the vendor's real inquiryRequestId does not exist yet at create-va
+	// time — so writing "" made every billed VA after the first collide with
+	// it on SaveInquiry's ON CONFLICT, leaving the second and later VAs with
+	// no transaction row at all: invisible to inquiry (4042412) and, worse,
+	// payable for any amount because there was no stored bill to check
+	// against. The VA number is the natural placeholder: unique per VA,
+	// stable across billing cycles on that number, and recognised as
+	// claimable by the first inquiry (see domain.IsPlaceholderInquiryRequestID).
 	record := &domain.VAInquiryRecord{
 		PartnerServiceID: req.PartnerServiceID,
 		CustomerNo:       customerNo,
 		CustomerName:     req.VirtualAccountName,
 		VirtualAccountNo: vaNo,
+		InquiryRequestID: vaNo,
 		TrxID:            req.TrxID,
 		NotificationURL:  notificationURLFromAdditionalInfo(req.AdditionalInfo),
 		Status:           "03",
@@ -239,6 +292,7 @@ func (u *MerchantVAUsecase) CreateVA(ctx context.Context, req *domain.MerchantCr
 		Currency:         "IDR",
 		VAType:           vaType,
 		SubCompany:       subCompanyFromAdditionalInfo(req.AdditionalInfo),
+		FreeTexts:        req.FreeTexts,
 		ExpiredDate:      req.ExpiredDate,
 		CreatedAt:        now,
 		UpdatedAt:        now,

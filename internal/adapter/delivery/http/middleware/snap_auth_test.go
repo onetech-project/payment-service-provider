@@ -20,8 +20,8 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// sha256Sum is a small helper for constructing a hex-encoded (pre-migration
-// convention) body hash in TestSNAPAuthMiddleware_HexEncodedSignature_Rejected.
+// sha256Sum is a small helper for constructing a raw body hash in
+// TestSNAPAuthMiddleware_HexSignatureEncoding_Rejected.
 func sha256Sum(data string) []byte {
 	h := sha256.New()
 	h.Write([]byte(data))
@@ -35,7 +35,9 @@ func sha256Sum(data string) []byte {
 func newSignedRequest(t *testing.T, path, body, secret, timestamp string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	bodyHash := crypto.HashSHA256Base64(body)
+	// Hex is the BCA/SNAP spec encoding for the body-hash component and the
+	// default for a VendorConfig that does not pin one.
+	bodyHash := crypto.HashRequestBody([]byte(body), crypto.BodyHashHex)
 	stringToSign := crypto.BuildStringToSign(http.MethodPost, path, "", bodyHash, timestamp)
 	signature := crypto.NewHMACSigner(secret, "HMAC-SHA512").Sign(stringToSign)
 	req.Header.Set("X-TIMESTAMP", timestamp)
@@ -62,7 +64,10 @@ func TestSNAPAuthMiddleware_MissingHeaders(t *testing.T) {
 	err := handler(c)
 
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	// A missing mandatory header is "Invalid Mandatory Field" (400), not
+	// Unauthorized — BCA's Appendix A separates the two.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Invalid Mandatory Field")
 }
 
 func TestSNAPAuthMiddleware_InvalidTimestamp(t *testing.T) {
@@ -215,9 +220,9 @@ func TestSNAPAuthMiddleware_InvalidSignature_Rejected(t *testing.T) {
 }
 
 func TestSNAPAuthMiddleware_HexEncodedSignature_Rejected(t *testing.T) {
-	// Feature 012-base64-hash-encoding: a request signed with the old hex
-	// convention (both bodyHash and HMAC signature) must be rejected now
-	// that the server only accepts base64.
+	// X-SIGNATURE itself is always base64 ("X-SIGNATURE should be encoded by
+	// Base64" — Developer API BCA). A hex-encoded HMAC must be rejected
+	// regardless of how the body-hash component is encoded.
 	e := echo.New()
 	timestamp := time.Now().Format(time.RFC3339)
 	body := `{"partnerServiceId":"15973"}`
@@ -270,7 +275,10 @@ func TestSNAPAuthMiddleware_EmptySignatureValue_Rejected(t *testing.T) {
 	err := handler(c)
 
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	// An empty X-SIGNATURE is an absent mandatory header: 4002402 on the
+	// inquiry service, not a 401.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "4002402")
 }
 
 func TestSNAPAuthMiddleware_MissingSecret_FailsClosed(t *testing.T) {
@@ -296,10 +304,10 @@ func TestSNAPAuthMiddleware_MissingSecret_FailsClosed(t *testing.T) {
 }
 
 func TestSNAPAuthMiddleware_TimestampMissingTimezone_Rejected(t *testing.T) {
-	// "2026-07-22T10:00:00" (no timezone offset) passes the loose
-	// isValidISO8601 format check but fails strict time.RFC3339 parsing —
-	// this must be rejected as unauthorized (feature 009's new freshness
-	// check), not treated as an internal error.
+	// "2026-07-22T10:00:00" (no timezone offset) is not ISO 8601 as BCA
+	// defines it — the timezone designator is mandatory — so it is rejected
+	// as Invalid Field Format [X-TIMESTAMP] rather than being treated as an
+	// internal error or silently accepted.
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/inquiry", strings.NewReader(`{}`))
 	req.Header.Set("X-TIMESTAMP", "2026-07-22T10:00:00")
@@ -318,7 +326,8 @@ func TestSNAPAuthMiddleware_TimestampMissingTimezone_Rejected(t *testing.T) {
 	err := handler(c)
 
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Invalid Field Format [X-TIMESTAMP]")
 }
 
 func TestSNAPAuthMiddleware_StaleTimestamp_Rejected(t *testing.T) {
@@ -421,7 +430,7 @@ func TestSNAPAuthMiddleware_SkewCheckSkippedWhenFlagSet(t *testing.T) {
 func newTokenBoundSignedRequest(t *testing.T, path, body, token, secret, timestamp string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	bodyHash := crypto.HashSHA256Base64(body)
+	bodyHash := crypto.HashRequestBody([]byte(body), crypto.BodyHashHex)
 	stringToSign := crypto.BuildStringToSign(http.MethodPost, path, token, bodyHash, timestamp)
 	signature := crypto.NewHMACSigner(secret, "HMAC-SHA512").Sign(stringToSign)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -482,7 +491,10 @@ func TestSNAPAuthMiddleware_MigratedVendor_MissingAuthorization_Rejected(t *test
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.False(t, called)
-	assert.Contains(t, rec.Body.String(), "Authorization")
+	// BCA publishes 4012401 "Invalid Token (B2B)" for a missing/invalid
+	// bearer token on the inquiry service.
+	assert.Contains(t, rec.Body.String(), "4012401")
+	assert.Contains(t, rec.Body.String(), "Invalid Token (B2B)")
 	assert.NotContains(t, rec.Body.String(), "Invalid signature")
 	mockIssuer.AssertNotCalled(t, "ValidateToken", mock.Anything)
 }
@@ -595,25 +607,12 @@ func TestSNAPAuthMiddleware_MigratedVendor_ExpiredToken_Rejected(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.False(t, called)
-	assert.Contains(t, rec.Body.String(), "expired")
+	assert.Contains(t, rec.Body.String(), "4012401")
+	assert.Contains(t, rec.Body.String(), "Invalid Token (B2B)")
 }
 
-func TestIsValidISO8601(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected bool
-	}{
-		{"2026-07-22T10:00:00+07:00", true},
-		{"2026-07-22T10:00:00Z", true},
-		{"2026-07-22T10:00:00", true},
-		{"invalid", false},
-		{"2026-07-22", false},
-		{"", false},
-		{"2026/07/22T10:00:00", false},
-	}
-
-	for _, tt := range tests {
-		result := isValidISO8601(tt.input)
-		assert.Equal(t, tt.expected, result, "Input: %s", tt.input)
-	}
-}
+// The loose isValidISO8601 helper is gone: X-TIMESTAMP is now parsed with
+// time.Parse(time.RFC3339) directly, which is what BCA requires (ISO 8601
+// *with* a timezone designator). The behaviour it used to guard is covered by
+// TestSNAPAuthMiddleware_TimestampMissingTimezone_Rejected and
+// TestSNAPAuthMiddleware_InvalidTimestampFormat_Rejected.

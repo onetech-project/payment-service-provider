@@ -162,7 +162,22 @@ For every request to `inquiry`, `payment`, or `status`:
 1. **Build the request body** as a JSON object per the SNAP transfer-va spec.
 2. **Compute the timestamp**: current time in ISO 8601, e.g.
    `2026-07-30T10:15:00+07:00`.
-3. **Hash the body**: `bodyHash = base64(SHA256(body))`.
+3. **Hash the body**: `bodyHash = hex(SHA256(minify(body)))`.
+
+   **Minify first.** SNAP specifies
+   `Lowercase(HexEncode(SHA-256(MinifyJson(RequestBody))))` — `minify` is the
+   JSON with all insignificant whitespace removed. If you send a compact body
+   this changes nothing; if you pretty-print, hashing the raw bytes gives a
+   different digest than we compute and every request comes back
+   `[Invalid signature]`. In `jq` terms: `jq -cj .` — the `-j` matters,
+   because `jq -c` alone appends a newline that would be hashed too.
+
+   **Encoding is lowercase hex**, per the SNAP spec. Vendors onboarded under
+   feature `012-base64-hash-encoding` sign with base64 instead; that is a
+   per-vendor setting (`VENDOR_BODY_HASH_ENCODING`) so one vendor's
+   non-conformant encoding cannot push every other vendor off spec. Ask
+   operations which one is provisioned for your channel if you are unsure —
+   the merchant endpoints use base64 for the same historical reason.
 4. **Build `stringToSign`**:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
@@ -181,14 +196,14 @@ For every request to `inquiry`, `payment`, or `status`:
      ```
      Example for `POST /openapi/v1.0/transfer-va/inquiry`:
      ```
-     POST:/openapi/v1.0/transfer-va/inquiry::OjVWOu4+711dTdc7...:2026-07-30T10:15:00+07:00
+     POST:/openapi/v1.0/transfer-va/inquiry::ede1b7f180fdcb80bc6d71a3...:2026-07-30T10:15:00+07:00
      ```
    - **Migrated path**: the `{accessToken}` slot is the **real token from
      Step 1** (not empty) — you genuinely send it via `Authorization`, so
      both sides of the signature computation must agree on that same value.
      Example:
      ```
-     POST:/openapi/v1.0/transfer-va/inquiry:eyJhbGciOi...:OjVWOu4+711dTdc7...:2026-07-30T10:15:00+07:00
+     POST:/openapi/v1.0/transfer-va/inquiry:eyJhbGciOi...:ede1b7f180fdcb80bc6d71a3...:2026-07-30T10:15:00+07:00
      ```
 5. **Sign**: `signature = base64(HMAC-SHA512(yourSharedSecret, stringToSign))`.
 6. **Send these headers**:
@@ -199,14 +214,33 @@ For every request to `inquiry`, `payment`, or `status`:
    | `Authorization` | `Bearer <accessToken>` from Step 1 | Migrated path only |
    | `X-TIMESTAMP` | The same timestamp used in step 2 | Both |
    | `X-SIGNATURE` | The base64 signature from step 5 | Both |
-   | `X-PARTNER-ID` | Your assigned partner ID (max 36 chars) | Both |
-   | `X-EXTERNAL-ID` | Numeric string, unique per calendar day (idempotency key) | Both |
-   | `CHANNEL-ID` | Your assigned channel ID (5 chars) | Both |
+   | `X-PARTNER-ID` | Your assigned Company Code VA (`String(8)` Max) | Both |
+   | `X-EXTERNAL-ID` | Numeric string, `String(36)` Max, unique per calendar day (idempotency key) | Both |
+   | `CHANNEL-ID` | Your assigned channel id — `95231` for BCA VA (`String(5)` Fixed) | Both |
    | `X-CLIENT-KEY` | Your `VENDOR_CLIENT_ID` | Only if your config demands it — see below |
 
    Per the ASPI *Standar Teknis dan Keamanan*, `CHANNEL-ID` is **Mandatory**
    on transaction requests (not optional), and `X-EXTERNAL-ID` must be a
    numeric string unique within the same calendar day.
+
+#### How this compares to the merchant side
+
+Both sides use the same `stringToSign` shape and the same minify-then-hash
+rule for the body. Only three things differ, and none of them is a difference
+in *algorithm*:
+
+| | Vendor (`inquiry`/`payment`/`status`) | Merchant (`create-va`/`list`/`delete-va`) |
+|---|---|---|
+| Body digest | `SHA-256(minify(body))` | `SHA-256(minify(body))` — same rule |
+| Digest encoding | lowercase **hex** (or base64 per `VENDOR_BODY_HASH_ENCODING`) | **base64** |
+| `{accessToken}` slot | empty on the legacy path, the real token once migrated | always the real token |
+| `CHANNEL-ID` / `X-PARTNER-ID` | required | not enforced |
+
+The body rule was **not** always the same: the merchant endpoints used to hash
+the raw, un-minified body. If you operate on both sides and wrote your
+merchant signing against that older behaviour, see
+[merchant-onboarding.md](./merchant-onboarding.md#step-2-sign-your-create-valistdelete-va-request)
+— there is a transitional fallback, but it will be turned off.
 
 #### About `X-CLIENT-KEY`
 
@@ -244,14 +278,25 @@ NTP-synchronized.
 | No `Authorization` header at all | `401 Unauthorized. [Missing or invalid Authorization header]` | Migrated path only |
 | Token invalid, malformed, or expired | `401 Unauthorized. [Invalid or expired access token]` | Migrated path only |
 | Token was issued for a different `clientId` than yours, or was swapped after signing | `401 Unauthorized. [Invalid signature]` (same generic message — not distinguished from a plain signature mismatch) | Migrated path only |
-| `X-EXTERNAL-ID` reused with a *different* body | `422 Unprocessable Entity. X-EXTERNAL-ID payload mismatch.` (`4227300`) | Both |
-| `X-EXTERNAL-ID` reused while the first request is still in flight | `409 Conflict. Request currently in progress for this X-EXTERNAL-ID.` (`4097300`) | Both |
+| `X-EXTERNAL-ID` reused with a *different* body | `409 Conflict` — with the calling service's own code (`4092400`/`4092500`/`4092600`) | Both |
+| `X-EXTERNAL-ID` reused while the first request is still in flight | `409 Conflict` — same per-service code | Both |
 
 Reusing an `X-EXTERNAL-ID` with the *same* body is safe — you get the
 original response back, tagged with an `X-Cache-Replay: true` header. Note
 the idempotency key is the `X-EXTERNAL-ID` value alone, not scoped per
 endpoint, so the same value must not be reused across different endpoints
 either.
+
+> Both conflict cases used to answer `422` (`4227300`) and `409` (`4097300`).
+> `422` is not a SNAP status at all, and neither `4227300` nor `4097300` is a
+> code BCA publishes for the transfer-va services — every rejection now carries
+> the service code of the endpoint you called, which is what BCA matches on.
+>
+> The `/payment` endpoint is a deliberate exception to the *replay* half: a
+> resubmitted `paymentRequestId` reaches the handler instead of being replayed
+> from cache, so it can be answered `4042518` (or `2002500` for an advice
+> retry) rather than hidden behind a second apparent success. See
+> [Retries](#retries-flagadvise).
 
 ## Request payloads
 
@@ -261,31 +306,85 @@ tables. `additionalInfo` is an open extension slot and is not covered here.
 
 ### `POST /transfer-va/inquiry` (service code 24)
 
+Field table per *Tech. Doc. OpenAPI VA-BillPresentment API v2.4*.
+
 | Field | Obligation | Notes |
 |---|---|---|
-| `partnerServiceId` | M | 8 chars, **left-padded with spaces** |
-| `customerNo` | M | up to 20 digits |
-| `virtualAccountNo` | M | `partnerServiceId` + `customerNo`, 28 chars |
-| `inquiryRequestId` | M | unique per inquiry, up to 128 chars |
-| `trxDateInit` | O | ISO-8601 with timezone, 25 chars |
-| `amount` | O | `{value, currency}`; `value` has 2 decimals |
-| `channelCode`, `language`, `hashedSourceAccountNo`, `sourceBankCode`, `passApp` | O | |
+| `partnerServiceId` | M | `String(8)`, **left-padded with spaces** |
+| `customerNo` | M | `String(18)` — we accept up to 20 inbound, see below |
+| `virtualAccountNo` | M | `partnerServiceId` + `customerNo`, `String(26)` — we accept up to 28 inbound |
+| `inquiryRequestId` | M | `String(30)`, unique per inquiry, generated by you |
+| `trxDateInit` | M in v2.4 | ISO-8601 with timezone, `Date(25)`. **We do not require it** |
+| `channelCode` | M in v2.4 | ISO-18245, `Numeric(4)`. **We do not require it**, but a value you do send must be one of `6000`,`6010`–`6020` |
+| `amount` | O | `{value, currency}`; `value` is `String(13.2)` |
+| `language`, `hashedSourceAccountNo`, `sourceBankCode`, `passApp` | O | |
+
+> **We are deliberately more permissive than the spec on receive.**
+> `trxDateInit` and `channelCode` became Mandatory in v2.4, but both are
+> BCA-generated and always present on a real BCA inquiry; requiring them would
+> only reject other vendors that omit what BCA happens to send. Likewise
+> `customerNo`/`virtualAccountNo` are accepted at the older `20`/`28` widths so
+> VA numbers this system issued under its previous sequence stay payable.
+> Being looser than the spec on *receive* cannot produce a wrong answer — the
+> reverse can, so **issuance** is at the narrower `18`/`26`.
+>
+> `inquiryRequestId` is the exception we *do* enforce at `30`. It is not
+> independent: "if payment comes from the Inquiry process, `paymentRequestId`
+> must be the same with `inquiryRequestId`", and `paymentRequestId` is capped
+> at 30 on the payment service. A longer id accepted here would only fail at
+> the payment that follows — after the customer has been shown a bill.
 
 > The ASPI page spells this field `trxDateInit` in its field table but
-> `txnDateInit` in its sample request. We accept **`txnDateInit`**, matching
-> `aspi-open-api-va.yaml`. It is optional either way.
+> `txnDateInit` in its sample request; BCA's v2.4 table says `trxDateInit`. We
+> bind **`trxDateInit`**.
 
 ### `POST /transfer-va/payment` (service code 25)
+
+Field table per *Tech. Doc. OpenAPI VA-Payment-Flag API v2.3*.
 
 | Field | Obligation | Notes |
 |---|---|---|
 | `partnerServiceId`, `customerNo`, `virtualAccountNo` | M | as above |
-| `paymentRequestId` | M | **If the payment follows an inquiry, this must equal that inquiry's `inquiryRequestId`.** |
+| `virtualAccountName` | M | `String(30)` |
+| `paymentRequestId` | M | `String(30)`. **If the payment follows an inquiry, this must equal that inquiry's `inquiryRequestId`.** |
+| `channelCode` | M | ISO-18245, one of `6000`, `6010`–`6020` |
+| `paidAmount` | M | `{value, currency}`, `String(13.2)` |
+| `totalAmount` | M | must equal `paidAmount`, and must match the **stored** bill — see below |
+| `trxDateTime` | M | ISO-8601 with timezone |
+| `flagAdvise` | M | `N` = new request, `Y` = advice/retry. See [Retries](#retries-flagadvise) |
 | `trxId` | C | **Mandatory if the payment follows a create-VA request** — send the `trxId` we returned from `create-va`, not one you generate |
-| `paidAmount` | M | `{value, currency}` |
-| `totalAmount` | O | when present, must equal `paidAmount` or you get `4002501 Invalid Field Format [amount mismatch]` |
-| `trxDateTime` | O | ISO-8601 with timezone |
-| `referenceNo`, `journalNum`, `paymentType`, `flagAdvise`, `paidBills`, `subCompany`, `billDetails`, `freeTexts` | O | |
+| `referenceNo` | C | `String(11)`, mandatory for non-multi-bill |
+| `subCompany` | C | `String(5)`, mandatory for non-multi-bill with single settlement |
+| `billDetails` | C | max **5** entries; mandatory for multi-bill / multi-settlement |
+| `freeTexts` | O | max 9 entries, each `english`/`indonesia` up to **32** chars |
+| `journalNum`, `paymentType`, `paidBills`, `cumulativePaymentAmount`, `hashedSourceAccountNo`, `sourceBankCode` | O | |
+
+The mandatory set marked M above is enforced by default and can be relaxed
+per vendor via `VENDOR_STRICT_MANDATORY_FIELDS=false` — the wider SNAP standard
+leaves several of them optional, and this gateway fronts more vendors than BCA.
+`trxId` is never in that set: BCA itself marks it conditional.
+
+**`totalAmount` is checked against the stored bill, not against your own
+request.** Comparing `paidAmount` to the `totalAmount` in the same request
+validates nothing — both come from you. A payment of `1.00` against a
+`250000.00` bill is rejected `4042513 Invalid amount` however the request
+labels itself.
+
+### Retries (`flagAdvise`)
+
+`flagAdvise: "Y"` marks an advice/retry — a deliberate re-send of a payment you
+believe may not have been recorded. Resending a `paymentRequestId` we already
+hold behaves differently depending on it:
+
+| You send | We answer |
+|---|---|
+| Same `paymentRequestId`, `flagAdvise: "Y"` | `2002500` replaying the original outcome — you asked "did this land?", and it did |
+| Same `paymentRequestId`, `flagAdvise: "N"` | `4042518 Inconsistent Request`, carrying `paymentFlagStatus`/`paymentFlagReason` **of the first request** (so `00` if it settled) |
+| Same `X-EXTERNAL-ID`, *different* body | `4092500 Conflict` |
+
+Note `X-EXTERNAL-ID` must be unique per calendar day, so a genuine advice retry
+carries a **new** `X-EXTERNAL-ID` with the *same* `paymentRequestId`. Reusing
+both while changing `flagAdvise` changes the body, and lands on `4092500`.
 
 **Do not send `inquiryRequestId`** — it is not a field of the ASPI
 PaymentRequest. It appears only inside the *description* of
@@ -297,11 +396,72 @@ There is also no `transactionDate` on this endpoint — only `trxDateTime`.
 
 ### `POST /transfer-va/status` (service code 26)
 
-| Field | Obligation |
+Field table per *Tech. Doc. OpenAPI VA-Payment-Status API V2 v1.0*. Note the
+path is **`/openapi/v2.0/transfer-va/status`** — BCA versions this service
+separately from inquiry and payment. We keep `/openapi/v1.0` registered too,
+for vendors already pointed there.
+
+| Field | Obligation | Notes |
+|---|---|---|
+| `partnerServiceId` | M | `String(8)` |
+| `customerNo` | M | `String(18)` |
+| `virtualAccountNo` | M | `String(26)` |
+| `inquiryRequestId` | M | `String(30)` |
+| `additionalInfo` | O | |
+
+`paymentRequestId` is **not** a field of the status request — it appears only
+in the response. Sending it is harmless; requiring it would be wrong.
+
+> **Direction differs between BCA and the ASPI-generic model.** ASPI puts
+> service 26 on the PJP, so we expose this endpoint and you may call it. BCA
+> puts it on its own side: its *Virtual Account untuk Biller* documentation
+> targets the status sample at BCA's host while inquiry and payment target the
+> co-partner's, and the `paymentFlagStatus` description says *"03 = Pending
+> between BCA and the partner. If the payment flag process is not yet completed
+> and **the partner performs an inquiry** within that time frame, the
+> transaction with status 03 will be delivered to the partner."*
+>
+> Both work: this endpoint stays available for vendors following the generic
+> model, and we call *yours* for reconciliation — see below.
+
+## Payment reconciliation (we call you)
+
+If a `/payment` call never reaches us — the network drops it, we crash
+mid-write, or you exhaust your advice retries — we hold no evidence the
+payment happened. The customer has paid, the merchant is never told, and
+nothing on our side knows to look. Your `/payment` retries with
+`flagAdvise: "Y"` cover the case where our *response* was lost; they cannot
+cover the case where the *request* never arrived.
+
+So we periodically call **your** SNAP Inquiry Status service (code 26) for
+transactions we still record as pending, and act on what you report:
+
+| Your `paymentFlagStatus` | What we do |
 |---|---|
-| `partnerServiceId`, `customerNo`, `virtualAccountNo` | M |
-| `inquiryRequestId` | M |
-| `paymentRequestId` | M |
+| `00` | Record the payment and fire the merchant callback that never went out |
+| `03` | Nothing — still in flight; we ask again next cycle |
+| `01` | Nothing — correctly still unpaid |
+| `02` | Nothing automatic. Whether a timeout settles depends on the company's reconciliation type registered at your end, which we cannot see, so it is escalated to an operator rather than guessed |
+| `4042601` | Nothing — you have no such transaction, so it was never paid |
+
+What this means for you:
+
+- **Expect low-volume, read-only traffic** on your status endpoint —
+  transactions pending past a threshold (default 15 minutes), batched
+  (default 100 per sweep, every 5 minutes). It never retries a settled
+  transaction.
+- **We authenticate as a normal SNAP client**: `Authorization: Bearer` from
+  your `/access-token/b2b`, RSA-signed with the private key whose public half
+  you registered for us, plus the same `X-SIGNATURE`/`X-TIMESTAMP`/
+  `CHANNEL-ID`/`X-PARTNER-ID`/`X-EXTERNAL-ID` header set described above.
+- **We need outbound credentials from you** to do this at all: your base URL,
+  a `clientId` we can obtain tokens under, and your registration of our public
+  key. Without them reconciliation stays disabled and this traffic never
+  appears.
+
+Every attempt is recorded — including the ones that concluded "nothing to do"
+— because a reconciler that has silently stopped working is otherwise
+indistinguishable from one with nothing to reconcile.
 
 ## Response codes
 
@@ -309,23 +469,41 @@ We follow the ASPI `AAABBCC` format — `AAA` = HTTP status, `BB` = service
 code, `CC` = case code. Note the service code differs **per endpoint**, so
 `/payment` never returns a `…24…` code:
 
-| Endpoint | Success | Common failures |
+| Endpoint | Success | Failures |
 |---|---|---|
-| `/access-token/b2b` | `2007300` | `4017300` unknown client / bad signature |
-| `/inquiry` (24) | `2002400` | `4002401` field format · `4002402` missing mandatory · `4042419` expired bill · `4042414` bill already paid · `4042412` invalid/deleted VA · `5002400` |
-| `/payment` (25) | `2002500` | `4002501` field format / amount mismatch · `4002502` missing mandatory · `4042519` VA expired · `4092500` already paid or inactive · `5002500` |
-| `/status` (26) | `2002600` | `4042619` invalid bill/VA · `5002600` |
+| `/access-token/b2b` | `2007300` "Successful" | `4007301` invalid field format (`clientId`/`clientSecret`/`grantType`, or `X-TIMESTAMP`) · `4007302` missing `X-CLIENT-KEY` · `4017300` `Unauthorized. [Signature]` / `[Unknown client]` |
+| `/inquiry` (24) | `2002400` "Successful" | `4002400` bad request · `4002401` field format · `4002402` missing mandatory · `4012400`/`4012401` unauthorized · `4092400` conflict · `4042412` unregistered VA · `4042414` paid bill · `4042419` expired · `5002400` |
+| `/payment` (25) | `2002500` "Successful" | `4002500` bad request · `4002501` field format · `4002502` missing mandatory · `4012500`/`4012501` unauthorized · `4092500` conflict · `4042512` unregistered VA · `4042513` invalid amount · `4042514` paid bill · `4042518` inconsistent request · `4042519` expired · `5002500` |
+| `/status` (26) | `2002600` **"Success"** | `4002600` bad request · `4002601` field format · `4002602` missing mandatory · `4012600`/`4012601` unauthorized · `4042601` transaction not found · `4092600` conflict · `5002601` |
 
-`paymentFlagStatus` in a `/payment` or `/status` success body is `"00"` for
-settled and `"03"` for pending (a partial payment on a variable-bill VA).
+Note `2002600` pairs with `"Success"` while `2002400`/`2002500` pair with
+`"Successful"`. That is BCA's own inconsistency across the three documents, not
+a typo here — each is spelled as its own current table has it.
 
-`inquiryStatus` in an `/inquiry` body reflects the VA's stored state: `"00"`
-on the `2002400` success body, `"01"` on every `404…` body above, alongside an
-`inquiryReason` saying which of the three it was. `subCompany` and
-`totalAmount` are likewise read back from the stored transaction (or its bill
-details), so an inquiry replay always reports the same figures as the first
-inquiry did; `subCompany` is omitted entirely when the biller has none
-registered.
+Every 4xx body except the `401`s carries `virtualAccountData` with
+`inquiryStatus`/`paymentFlagStatus` `"01"` and a bilingual reason. BCA treats a
+response whose status/reason are empty as a failed transaction *regardless of
+the code*, so a bare `{responseCode, responseMessage}` is not a valid
+rejection. The `401`s are the documented exception — BCA's tables show `-` in
+the status column for them — and instead carry `"data": {}` per OAuth v1.1.
+
+`4042518` is the one code whose `paymentFlagStatus` is **not** `01`: it echoes
+the flag status of the first request, so a replayed success reports `00`.
+
+**`paymentFlagStatus` values differ by service.** The payment service (25)
+publishes only `00`/`01`/`02` and states "payment flag status other than
+00,01,02 will be considered as 01". So an accepted instalment against a
+variable-bill VA reports **`00`**, not `03` — the bill's remaining pending-ness
+is carried by the transaction, not by this flag. `03` = Pending exists **only**
+on the status service (26). Reporting `03` on a payment tells the channel the
+payment was rejected while the money has in fact been recorded.
+
+`inquiryStatus` on a `2002400` is `"00"`. `subCompany` and `totalAmount` are
+read back from the stored transaction (or its bill details), so an inquiry
+replay always reports the same figures as the first inquiry did; `subCompany`
+falls back to BCA's default `"00000"` when the biller has none registered,
+rather than being omitted — v2.4 marks it Conditional-mandatory for
+non-multibill single-settlement transactions.
 
 There is **no opt-out or grace period** once you're on a given path —
 enforcement is unconditional from the moment your `.env.<vendor>.<channel>`

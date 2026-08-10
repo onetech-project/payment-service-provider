@@ -231,7 +231,11 @@ JSON
 # SNAP symmetric signature: HMAC_SHA512(clientSecret, stringToSign)
 # stringToSign = HTTPMethod:EndpointUrl:AccessToken:Base64(SHA-256(minify(body))):Timestamp
 # bodyHash/signature are base64-encoded (feature 012-base64-hash-encoding), not hex.
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | openssl base64 -A)"
+# `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
+# minified body, so hashing $BODY raw (it is pretty-printed here) yields a
+# different digest and every request comes back 401. -j (not just -c)
+# suppresses jq's trailing newline, which would otherwise be hashed too.
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | openssl base64 -A)"
 STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 
@@ -269,7 +273,6 @@ curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "CHANNEL-ID: ${CHANNEL_ID}" \
 	-H "X-PARTNER-ID: ${PARTNER_ID}" \
 	-H "X-EXTERNAL-ID: ${EXTERNAL_ID}" \
-	-H "Idempotency-Key: $(uuidgen)" \
 	"${AUTH_HEADER[@]}" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)

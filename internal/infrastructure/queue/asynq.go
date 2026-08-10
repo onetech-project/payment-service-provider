@@ -79,3 +79,64 @@ func NewServer(redisAddr, redisPassword string, db int) *Server {
 func (s *Server) Run(mux *asynq.ServeMux) error {
 	return s.server.Run(mux)
 }
+
+// Scheduler wraps asynq.Scheduler for periodic task enqueuing.
+//
+// Separate from Server on purpose: the Server processes whatever is queued,
+// the Scheduler decides when something should be queued. Running the Scheduler
+// on every replica is safe — asynq elects a single active scheduler through
+// Redis — so exactly one sweep is enqueued per interval no matter how many
+// instances are deployed.
+type Scheduler struct {
+	scheduler *asynq.Scheduler
+}
+
+// NewScheduler creates a periodic-task scheduler connected to Redis.
+func NewScheduler(redisAddr, redisPassword string, db int) *Scheduler {
+	return &Scheduler{
+		scheduler: asynq.NewScheduler(asynq.RedisClientOpt{
+			Addr:     redisAddr,
+			Password: redisPassword,
+			DB:       db,
+		}, nil),
+	}
+}
+
+// RegisterPeriodic schedules taskType on a cron spec (asynq also accepts the
+// "@every 5m" form). interval must match the cron spec's period.
+//
+// interval is passed separately because it sets the uniqueness window, and
+// getting that wrong is silent: a periodic task always carries the same
+// payload, so asynq's unique lock is keyed identically on every firing. A
+// window longer than the period therefore does not "prevent stacking", it
+// throttles the schedule itself — a fixed one-hour window made an "@every 1m"
+// sweep run once an hour and made the configured interval meaningless, with
+// nothing logged to say so.
+//
+// Sized to the interval, the lock does what was intended: a firing is dropped
+// only while the previous run of the same task is still in flight, so a slow
+// sweep cannot stack duplicates and double the outbound traffic aimed at the
+// vendor.
+func (s *Scheduler) RegisterPeriodic(cronSpec, taskType string, interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("periodic task %s: interval must be positive, got %s", taskType, interval)
+	}
+	_, err := s.scheduler.Register(cronSpec, asynq.NewTask(taskType, nil),
+		asynq.Unique(interval),
+		asynq.MaxRetry(2),
+		// Bounded well under the interval-derived unique window so a hung run
+		// cannot hold the lock indefinitely and stop the schedule for good.
+		asynq.Timeout(interval),
+	)
+	return err
+}
+
+// Run starts the scheduler (blocking).
+func (s *Scheduler) Run() error {
+	return s.scheduler.Run()
+}
+
+// Shutdown stops the scheduler.
+func (s *Scheduler) Shutdown() {
+	s.scheduler.Shutdown()
+}

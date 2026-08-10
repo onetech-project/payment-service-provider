@@ -19,7 +19,7 @@
 #
 # Usage:
 #   ./scripts/vendor-payment-va.sh -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> \
-#       -a <amount> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]
+#       -a <amount> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-i <channel-id>] [-p <partner-id>] [-n <virtualAccountName>] [-C <channelCode>] [-A <flagAdvise>] [-u <base-url>]
 #
 # -f loads VENDOR_CLIENT_SECRET straight out of a .env.<vendor>.<channel> file
 # (same raw-secret convention the server itself uses, see vendor_config.go),
@@ -46,12 +46,20 @@ ENV_FILE=""
 CHANNEL_ID="95231"
 PARTNER_ID="111111"
 ACCESS_TOKEN=""
-CLIENT_KEY=""
 TRX_ID=""
 PAYMENT_REQUEST_ID=""
+# Fields BCA's PaymentRequest table marks Mandatory (Y) that the wider SNAP
+# standard leaves optional. A vendor configured with
+# VENDOR_STRICT_MANDATORY_FIELDS=true — which is what .env.bca.va sets, and
+# therefore what BCA conformance actually looks like — rejects a payment
+# without them (4002502). They were absent here, so this script could only
+# ever drive a NON-BCA-conformant vendor.
+VA_NAME="Payer Name"
+CHANNEL_CODE="6011"
+FLAG_ADVISE="N"
 
 usage() {
-	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> -a <amount> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-k <client-key>] [-t <trxId>] [-q <paymentRequestId>] [-i <channel-id>] [-p <partner-id>] [-u <base-url>]" >&2
+	echo "Usage: $0 -s <partnerServiceId> -c <customerNo> -v <virtualAccountNo> -a <amount> (-e <client-secret> | -f <env-file>) [-o <access-token>] [-t <trxId>] [-q <paymentRequestId>] [-i <channel-id>] [-p <partner-id>] [-n <virtualAccountName>] [-C <channelCode>] [-A <flagAdvise>] [-u <base-url>]" >&2
 	exit 1
 }
 
@@ -70,7 +78,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "s:c:v:a:e:f:o:k:t:q:i:p:u:h" opt; do
+while getopts "s:c:v:a:e:f:o:t:q:i:p:u:n:C:A:h" opt; do
 	case "$opt" in
 	s) PARTNER_SERVICE_ID="$OPTARG" ;;
 	c) CUSTOMER_NO="$OPTARG" ;;
@@ -79,11 +87,13 @@ while getopts "s:c:v:a:e:f:o:k:t:q:i:p:u:h" opt; do
 	e) CLIENT_SECRET="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
 	o) ACCESS_TOKEN="$OPTARG" ;;
-	k) CLIENT_KEY="$OPTARG" ;;
 	t) TRX_ID="$OPTARG" ;;
 	q) PAYMENT_REQUEST_ID="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
+	n) VA_NAME="$OPTARG" ;;
+	C) CHANNEL_CODE="$OPTARG" ;;
+	A) FLAG_ADVISE="$OPTARG" ;;
 	u) BASE_URL="$OPTARG" ;;
 	h | *) usage ;;
 	esac
@@ -98,12 +108,6 @@ if [[ -n "$ENV_FILE" ]]; then
 	[[ -z "$CLIENT_SECRET" ]] && echo "!! ${ENV_FILE}: VENDOR_CLIENT_SECRET is empty — fill it in, or pass -e <client-secret> directly." >&2
 
 	VENDOR_CLIENT_ID="$(read_env_var "$ENV_FILE" VENDOR_CLIENT_ID || true)"
-	# X-CLIENT-KEY is not an ASPI transaction-request header, but a deployment
-	# is free to list it in VENDOR_REQUIRED_HEADERS, and the UAT instance does
-	# — SNAPAuthMiddleware then rejects inquiry/payment/status without it
-	# ("Missing required header: X-CLIENT-KEY"). Default it to the vendor's
-	# clientId so those deployments work; -k overrides.
-	[[ -z "$CLIENT_KEY" ]] && CLIENT_KEY="$VENDOR_CLIENT_ID"
 
 	if [[ -z "$ACCESS_TOKEN" ]]; then
 		VENDOR_PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" VENDOR_PRIVATE_KEY_PATH || true)"
@@ -154,8 +158,11 @@ BODY=$(cat <<JSON
   "partnerServiceId": "${PARTNER_SERVICE_ID}",
   "customerNo": "${CUSTOMER_NO}",
   "virtualAccountNo": "${VA_NO}",
+  "virtualAccountName": "${VA_NAME}",
   ${TRX_ID_FIELD}
   "paymentRequestId": "${PAYMENT_REQUEST_ID}",
+  "channelCode": ${CHANNEL_CODE},
+  "flagAdvise": "${FLAG_ADVISE}",
   "paidAmount": {"value": "${AMOUNT}", "currency": "IDR"},
   "totalAmount": {"value": "${AMOUNT}", "currency": "IDR"},
   "trxDateTime": "${TRX_DATE}",
@@ -165,12 +172,21 @@ JSON
 )
 
 # SNAP symmetric signature: HMAC_SHA512(clientSecret, stringToSign)
-# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Base64(SHA-256(minify(body))):Timestamp
+# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp
 # AccessToken is the real accessToken for migrated vendors (feature
 # 011-vendor-access-token-signature), or "" for legacy (non-migrated) vendors.
-# bodyHash/signature are base64-encoded (feature 012-base64-hash-encoding),
-# not hex.
-BODY_HASH="$(printf '%s' "$BODY" | openssl dgst -sha256 -binary | openssl base64 -A)"
+# The body hash is lowercase hex, per BCA's Signature Symmetric spec. Set
+# BODY_HASH_ENCODER="openssl base64 -A" for a vendor configured with
+# VENDOR_BODY_HASH_ENCODING=base64 (feature 012-base64-hash-encoding).
+# X-SIGNATURE itself is always base64.
+#
+# `jq -cj .` is the MinifyJson step, and it is load-bearing: BCA specifies
+# SHA-256(MinifyJson(RequestBody)), and the server hashes the minified body
+# (crypto.HashRequestBody). $BODY here is pretty-printed, so hashing it raw
+# produced a different digest than the server computed and every request came
+# back 401 "Unauthorized. [Signature]". -j (not just -c) suppresses jq's
+# trailing newline, which would otherwise be hashed too.
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
 STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 
@@ -193,21 +209,14 @@ echo >&2
 AUTH_HEADER=()
 [[ -n "$ACCESS_TOKEN" ]] && AUTH_HEADER=(-H "Authorization: Bearer ${ACCESS_TOKEN}")
 
-# X-CLIENT-KEY is sent only when known — it is never part of stringToSign, so
-# adding it is inert on deployments that don't list it as required.
-CLIENT_KEY_HEADER=()
-[[ -n "$CLIENT_KEY" ]] && CLIENT_KEY_HEADER=(-H "X-CLIENT-KEY: ${CLIENT_KEY}")
-
 curl -sS -X POST "${BASE_URL}${ENDPOINT}" \
 	-H "Content-Type: application/json" \
 	"${AUTH_HEADER[@]}" \
-	"${CLIENT_KEY_HEADER[@]}" \
 	-H "X-TIMESTAMP: ${TIMESTAMP}" \
 	-H "X-SIGNATURE: ${SIGNATURE}" \
 	-H "CHANNEL-ID: ${CHANNEL_ID}" \
 	-H "X-PARTNER-ID: ${PARTNER_ID}" \
 	-H "X-EXTERNAL-ID: ${EXTERNAL_ID}" \
-	-H "Idempotency-Key: $(uuidgen)" \
 	-d "${BODY}" \
 	| (command -v jq >/dev/null && jq . || cat)
 

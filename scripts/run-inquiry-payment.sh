@@ -42,7 +42,10 @@ echo ">>> Token obtained (expires in 15min)"
 sign_request() {
   local method="$1" endpoint="$2" body="$3" ts="$4"
   local body_hash
-  body_hash="$(printf '%s' "$body" | openssl dgst -sha256 -binary | openssl base64 -A)"
+  # Lowercase hex per BCA's Signature Symmetric spec. Override with
+  # BODY_HASH_ENCODER="openssl base64 -A" for a vendor configured with
+  # VENDOR_BODY_HASH_ENCODING=base64.
+  body_hash="$(printf '%s' "$body" | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
   local sts="${method}:${endpoint}:${ACCESS_TOKEN}:${body_hash}:${ts}"
   printf '%s' "$sts" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A
 }
@@ -60,6 +63,9 @@ EXTERNAL_ID="$(date +%s)$((RANDOM % 9000 + 1000))"
 INQUIRY_REQ_ID="INQ-$(date +%s)$((RANDOM % 9000 + 1000))"
 INQUIRY_EP="/openapi/v1.0/transfer-va/inquiry"
 
+# trxDateInit, not txnDateInit — BCA renamed the field at VA-BillPresentment
+# v1.6 and both it and channelCode are Mandatory (Y) in v2.4, so a vendor with
+# VENDOR_STRICT_MANDATORY_FIELDS answers 4002402 without them.
 INQUIRY_BODY=$(jq -cn \
   --arg p "$PARTNER_SERVICE_ID" \
   --arg c "$CUSTOMER_NO" \
@@ -67,7 +73,7 @@ INQUIRY_BODY=$(jq -cn \
   --arg d "$TIMESTAMP" \
   --arg a "$AMOUNT" \
   --arg r "$INQUIRY_REQ_ID" \
-  '{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,txnDateInit:$d,amount:{value:$a,currency:"IDR"},inquiryRequestId:$r}')
+  '{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,trxDateInit:$d,channelCode:6011,amount:{value:$a,currency:"IDR"},inquiryRequestId:$r}')
 
 INQUIRY_SIG=$(sign_request "POST" "$INQUIRY_EP" "$INQUIRY_BODY" "$TIMESTAMP")
 
