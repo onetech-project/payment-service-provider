@@ -27,6 +27,8 @@
 #   -t  trxId — for payment, pass the trxId returned by create-va
 #   -q  paymentRequestId — for payment, pass the inquiry's inquiryRequestId
 #   -r  inquiryRequestId (inquiry/status)
+#   -C  channelCode (inquiry/payment, default 6011 = ATM)
+#   -A  flagAdvise (payment, default N; Y = advice/retry)
 #
 # The generated X-TIMESTAMP is only accepted within ±5 minutes of server time,
 # and the accessToken expires after 15 minutes. Generate one request at a time,
@@ -50,9 +52,17 @@ PAYMENT_REQUEST_ID=""
 INQUIRY_REQUEST_ID=""
 CHANNEL_ID="95231"
 PARTNER_ID="1-MANJO-SNAP"
+# Fields BCA's PaymentRequest table marks Mandatory (Y) that the wider SNAP
+# standard leaves optional. A vendor configured with
+# VENDOR_STRICT_MANDATORY_FIELDS=true — which is what .env.bca.va sets, and
+# therefore what BCA conformance actually looks like — rejects a payment
+# without them (4002502). channelCode is Mandatory on the v2.4 inquiry payload
+# too, so the same value serves both.
+CHANNEL_CODE="6011"
+FLAG_ADVISE="N"
 
 usage() {
-	echo "Usage: $0 -e <token|create-va|inquiry|payment|status|delete-va> -f <env-file> [-u <base-url>] [-s <partnerServiceId>] [-c <customerNo>] [-v <virtualAccountNo>] [-n <name>] [-a <amount>] [-t <trxId>] [-q <paymentRequestId>] [-r <inquiryRequestId>]" >&2
+	echo "Usage: $0 -e <token|create-va|inquiry|payment|status|delete-va> -f <env-file> [-u <base-url>] [-s <partnerServiceId>] [-c <customerNo>] [-v <virtualAccountNo>] [-n <name>] [-a <amount>] [-t <trxId>] [-q <paymentRequestId>] [-r <inquiryRequestId>] [-C <channelCode>] [-A <flagAdvise>]" >&2
 	exit 1
 }
 
@@ -71,7 +81,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:h" opt; do
+while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:C:A:h" opt; do
 	case "$opt" in
 	e) ENDPOINT_NAME="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
@@ -86,6 +96,8 @@ while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:h" opt; do
 	r) INQUIRY_REQUEST_ID="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
+	C) CHANNEL_CODE="$OPTARG" ;;
+	A) FLAG_ADVISE="$OPTARG" ;;
 	h | *) usage ;;
 	esac
 done
@@ -163,20 +175,29 @@ inquiry)
 	# with VENDOR_STRICT_MANDATORY_FIELDS answers 4002402 without them.
 	BODY="$(jq -cn --arg p "$PARTNER_SERVICE_ID" --arg c "$CUSTOMER_NO" --arg v "$VA_NO" \
 		--arg d "$TIMESTAMP" --arg a "$AMOUNT" --arg r "$INQUIRY_REQUEST_ID" \
-		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,trxDateInit:$d,channelCode:6011,amount:{value:$a,currency:"IDR"},inquiryRequestId:$r}')"
+		--argjson ch "$CHANNEL_CODE" \
+		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,trxDateInit:$d,channelCode:$ch,amount:{value:$a,currency:"IDR"},inquiryRequestId:$r}')"
 	;;
 payment)
 	EP="/openapi/v1.0/transfer-va/payment"
 	# paymentRequestId must equal the inquiry's inquiryRequestId when the
 	# payment follows an inquiry (ASPI PaymentRequest); trxId is mandatory when
 	# it follows a create-VA. Both come from the earlier responses via -q/-t.
+	#
+	# virtualAccountName, channelCode and flagAdvise are here because BCA marks
+	# them Mandatory (Y) on service 25 and domain.ValidatePaymentRequest
+	# enforces that set for any vendor with VENDOR_STRICT_MANDATORY_FIELDS=true
+	# — .env.bca.va does. Without them the request signs and authenticates
+	# fine and is then rejected 4002502, which reads like a spec disagreement
+	# rather than a missing field the simulator never sent.
 	[[ -z "$PAYMENT_REQUEST_ID" ]] && PAYMENT_REQUEST_ID="PAY-$(date +%s)$((RANDOM % 9000 + 1000))"
 	BODY="$(jq -cn --arg p "$PARTNER_SERVICE_ID" --arg c "$CUSTOMER_NO" --arg v "$VA_NO" \
 		--arg t "$TRX_ID" --arg q "$PAYMENT_REQUEST_ID" --arg a "$AMOUNT" \
 		--arg d "$TIMESTAMP" --arg n "R$(date +%s | tail -c 10)" \
-		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v}
+		--arg vn "$VA_NAME" --argjson ch "$CHANNEL_CODE" --arg fa "$FLAG_ADVISE" \
+		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,virtualAccountName:$vn}
 		 + (if $t == "" then {} else {trxId:$t} end)
-		 + {paymentRequestId:$q,paidAmount:{value:$a,currency:"IDR"},totalAmount:{value:$a,currency:"IDR"},trxDateTime:$d,referenceNo:$n}')"
+		 + {paymentRequestId:$q,channelCode:$ch,flagAdvise:$fa,paidAmount:{value:$a,currency:"IDR"},totalAmount:{value:$a,currency:"IDR"},trxDateTime:$d,referenceNo:$n}')"
 	;;
 status)
 	EP="/openapi/v1.0/transfer-va/status"
@@ -199,12 +220,31 @@ delete-va)
 	;;
 esac
 
+# The RequestBody component's encoding is not the same on both sides of this
+# gateway, so it is chosen per endpoint rather than fixed:
+#
+#   vendor   (inquiry/payment/status)  lowercase hex, per BCA's Signature
+#                                      Symmetric spec — matches
+#                                      VENDOR_BODY_HASH_ENCODING=hex.
+#   merchant (create-va/delete-va)     base64 — MerchantAuthMiddleware hashes
+#                                      with crypto.BodyHashBase64 (feature
+#                                      012-base64-hash-encoding), and hex here
+#                                      produced a permanent
+#                                      "Unauthorized. [Invalid signature]".
+#
+# BODY_HASH_ENCODER still overrides both, for a vendor onboarded with the
+# non-default encoding. X-SIGNATURE itself is always base64.
+case "$ENDPOINT_NAME" in
+create-va | delete-va) DEFAULT_BODY_HASH_ENCODER="openssl base64 -A" ;;
+*)                     DEFAULT_BODY_HASH_ENCODER="xxd -p -c 256" ;;
+esac
+
 # SNAP symmetric signature over the exact minified body emitted below.
 # `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
 # minified body, so hashing $BODY raw (it is pretty-printed here) yields a
 # different digest and every request comes back 401. -j (not just -c)
 # suppresses jq's trailing newline, which would otherwise be hashed too.
-BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-xxd -p -c 256})"
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-$DEFAULT_BODY_HASH_ENCODER})"
 STRING_TO_SIGN="${METHOD}:${EP}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 

@@ -34,6 +34,12 @@ e2e-*.log
 *.key
 *.crt
 
+# scripts/qa.sh's remembered VA (the one inquiry/pay/status act on) and the run
+# logs it writes when QA_LOG_DIR is set. Both are per-tester scratch, and the
+# logs carry live bearer accessTokens for the same reason e2e-*.log does.
+.qa-state
+qa-logs/
+
 # IDE & OS Files
 .DS_Store
 Thumbs.db

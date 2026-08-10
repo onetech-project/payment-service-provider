@@ -187,6 +187,32 @@ Run validation script (tests + Docker build):
 ./scripts/validate-snap-token.sh
 ```
 
+## Testing against UAT
+
+`scripts/` holds one script per endpoint plus several end-to-end flows. Driving
+them by hand means knowing which script to call, which of the two credential
+files it wants (merchant and vendor secrets are different, and swapping them
+fails as an invalid signature), and copying VA numbers between steps.
+
+`scripts/qa.sh` is the single entry point over all of them:
+
+```bash
+cp scripts/.env.qa.example scripts/.env.qa   # base URL + credential paths
+./scripts/qa.sh doctor                       # tools, credentials, connectivity
+./scripts/qa.sh                              # interactive menu
+
+./scripts/qa.sh create -a 250000.00          # create a VA and remember it
+./scripts/qa.sh inquiry                      # no arguments — acts on that VA
+./scripts/qa.sh pay
+./scripts/qa.sh status
+```
+
+It picks the right credential file per command, carries the VA between steps,
+and shells out to the same scripts a developer would run by hand — it does not
+re-implement any request. `./scripts/qa.sh request inquiry` prints a signed,
+copy-paste-ready request for Postman or the ASPI simulator instead of sending
+it. Set `QA_LOG_DIR` to keep a plain-text log of every run.
+
 ## Architecture
 
 The project follows clean architecture principles:
