@@ -21,6 +21,12 @@
 # bind-mounted by docker-compose.yml, so they are uploaded to the server as
 # plain files instead of shipping inside the image.
 #
+# The tag is pinned into the server's .env before the pull. The remote compose
+# file interpolates the app image tag from ${VERSION_KEY} (APP_VERSION) in
+# ${REMOTE_ENV_FILE}, so pushing a new tag without rewriting that value means
+# compose pulls and restarts the tag already recorded there — the deploy reports
+# success while the old image keeps running. See --skip-version.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +39,7 @@ DO_BUILD=true
 DO_PUSH=true
 DO_DEPLOY=true
 DO_MIGRATIONS=true
+DO_VERSION=true
 DO_APPLY_MIGRATIONS=false
 DO_CONFIG=false
 PRUNE_MIGRATIONS=false
@@ -41,7 +48,7 @@ CLI_APP_ENV=""
 CLI_TAG=""
 
 usage() {
-  sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
+  sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
   cat <<'EOF'
 
 Options:
@@ -54,6 +61,9 @@ Options:
   --skip-push        Don't push the image to the registry
   --skip-deploy      Don't run the remote pull/up step
   --skip-migrations  Don't upload db/migrations to the server
+  --skip-version     Don't rewrite APP_VERSION in the server's .env. The deploy
+                     then runs whatever tag that file already names, which is
+                     only what you want when pinning the tag by hand.
   --apply-migrations Run the `migrate` compose service on the server after the
                      upload, so the schema is up to date before the app starts.
                      Off by default: it writes to the remote database.
@@ -85,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --skip-push)     DO_PUSH=false ;;
     --skip-deploy)   DO_DEPLOY=false ;;
     --skip-migrations)  DO_MIGRATIONS=false ;;
+    --skip-version)     DO_VERSION=false ;;
     --apply-migrations) DO_APPLY_MIGRATIONS=true ;;
     --prune-migrations) PRUNE_MIGRATIONS=true ;;
     --config)        DO_CONFIG=true ;;
@@ -132,6 +143,14 @@ BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 # on the server as plain files before the stack comes up.
 LOCAL_MIGRATIONS_DIR="${LOCAL_MIGRATIONS_DIR:-${ROOT_DIR}/db/migrations}"
 REMOTE_MIGRATIONS_DIR="${REMOTE_MIGRATIONS_DIR:-${REMOTE_DIR}/db/migrations}"
+
+# The stack's own .env on the server — the file docker compose interpolates
+# variables from. Not one of ours: it holds the server's whole runtime config
+# (database credentials and the rest), so it is edited in place, one key at a
+# time, never rewritten wholesale.
+REMOTE_ENV_FILE="${REMOTE_ENV_FILE:-${REMOTE_DIR}/.env}"
+# The key in that file carrying the app image tag.
+VERSION_KEY="${VERSION_KEY:-APP_VERSION}"
 
 # Space-separated, repo-root-relative paths uploaded by --config. These are
 # excluded by both .gitignore and .dockerignore (.env.*, *.pem), so the server
@@ -195,6 +214,13 @@ info "image       : ${APP_IMAGE}"
 [[ "${DO_DEPLOY}" == true ]] && info "remote dir  : ${REMOTE_DIR}"
 if [[ "${DO_DEPLOY}" == true && "${DO_MIGRATIONS}" == true ]]; then
   info "migrations  : ${LOCAL_MIGRATIONS_DIR} -> ${REMOTE_MIGRATIONS_DIR}"
+fi
+if [[ "${DO_DEPLOY}" == true ]]; then
+  if [[ "${DO_VERSION}" == true ]]; then
+    info "version     : ${VERSION_KEY}=${TAG} in ${REMOTE_ENV_FILE}"
+  else
+    warn "version pinning skipped — the deploy will run whatever tag ${REMOTE_ENV_FILE} already names, not ${TAG}"
+  fi
 fi
 if [[ "${DO_DEPLOY}" == true && "${DO_CONFIG}" == true ]]; then
   info "config      : ${DEPLOY_CONFIG_FILES} -> ${REMOTE_DIR}"
@@ -279,6 +305,72 @@ upload_config() {
   info "done"
 }
 
+# Rewrites VERSION_KEY in the server's own .env to the tag this run pushed, then
+# proves compose actually resolves to it.
+#
+# Sent over stdin as a script rather than interpolated into a remote command
+# line: the deploy step below builds its command as `bash -c '...'`, which
+# cannot carry the quotes awk and the [[ ]] tests need. Config values come in as
+# positional arguments for the same reason.
+update_remote_version() {
+  step "Pinning ${VERSION_KEY}=${TAG} in ${REMOTE_ENV_FILE}"
+
+  ssh_run "bash -s -- '${REMOTE_ENV_FILE}' '${VERSION_KEY}' '${TAG}' '${REMOTE_DIR}' '${APP_IMAGE}'" <<'REMOTE'
+set -euo pipefail
+env_file="$1"; key="$2"; value="$3"; remote_dir="$4"; expected_image="$5"
+
+if [[ ! -f "$env_file" ]]; then
+  echo "error: no such file on the server: $env_file" >&2
+  echo "       this is the stack's own .env, the file docker compose reads" >&2
+  echo "       ${key} from. Set REMOTE_ENV_FILE if it lives elsewhere." >&2
+  exit 1
+fi
+
+# Last assignment wins in a .env, so read the last one.
+current="$(awk -F= -v k="$key" '$1 == k { v = substr($0, length(k) + 2) } END { print v }' "$env_file")"
+
+if [[ "$current" == "$value" ]]; then
+  echo "    ${key} already ${value}"
+else
+  cp -p "$env_file" "${env_file}.bak"
+  # Written to a temp file in the same directory and moved into place, so an
+  # interrupted deploy cannot leave the stack with a half-written .env.
+  tmp="$(mktemp "${env_file}.XXXXXX")"
+  # Every occurrence is rewritten, not just the first: a duplicate key left
+  # behind further down the file would be the one compose ends up using.
+  awk -F= -v k="$key" -v v="$value" '
+    $1 == k { print k "=" v; found = 1; next }
+    { print }
+    END { if (!found) print k "=" v }
+  ' "$env_file" > "$tmp"
+  chmod --reference="$env_file" "$tmp" 2>/dev/null || true
+  mv "$tmp" "$env_file"
+  echo "    ${key}: ${current:-<unset>} -> ${value}  (backup: ${env_file}.bak)"
+fi
+
+# The rewrite exists so that compose resolves the app image to the tag just
+# pushed. Verifying it here is what turns "deployed, but still running the old
+# image" from a silent outcome into a failed deploy.
+cd "$remote_dir"
+if images="$(docker compose config --images 2>/dev/null)"; then
+  if printf '%s\n' "$images" | grep -qxF "$expected_image"; then
+    echo "    compose resolves ${expected_image}"
+  else
+    echo "error: ${key} is now ${value}, but compose still does not resolve to" >&2
+    echo "       ${expected_image}. It resolves:" >&2
+    printf '%s\n' "$images" | sed 's/^/         /' >&2
+    echo "       Check that the compose file interpolates \${${key}} into the" >&2
+    echo "       app image tag, or pass --skip-version if it pins tags itself." >&2
+    exit 1
+  fi
+else
+  echo "    warning: could not run 'docker compose config --images' to verify the tag" >&2
+fi
+REMOTE
+
+  info "done"
+}
+
 if [[ "${DO_DEPLOY}" == true && "${DO_MIGRATIONS}" == true ]]; then
   upload_migrations
 fi
@@ -288,6 +380,13 @@ if [[ "${DO_DEPLOY}" == true && "${DO_CONFIG}" == true ]]; then
 fi
 
 # --- remote deploy -----------------------------------------------------------
+
+# Ordered last of the uploads and before the pull: the tag has to be recorded on
+# the server before compose reads it, and after --config, which writes into the
+# same directory.
+if [[ "${DO_DEPLOY}" == true && "${DO_VERSION}" == true ]]; then
+  update_remote_version
+fi
 
 if [[ "${DO_DEPLOY}" == true ]]; then
   step "Deploying to ${SSH_HOST}"
