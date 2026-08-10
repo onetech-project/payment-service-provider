@@ -4,11 +4,12 @@ Recorded request/response traffic from the SNAP Virtual Account end-to-end
 suites, kept here so the wire format can be checked against BCA's field tables
 without re-running anything or reading the tests.
 
-Three files, three different things being proved:
+Four files, four different things being proved:
 
 | File | What produced it | What it proves |
 |---|---|---|
 | [e2e-transcript.md](e2e-transcript.md) | `test/e2e` (in-process) | Every scenario the Go suite covers — all three billing types, the negative cases, multi-vendor and multi-merchant isolation — through the production router, idempotency middleware, SNAP auth middleware, handler and usecase |
+| [payment-transcript.md](payment-transcript.md) | `test/e2e`, filtered to one service | The same run, narrowed to `/transfer-va/payment` alone: every payment-flag exchange the suite produces, for reviewing service 25 against VA-Payment-Flag v2.3 without reading past the other services |
 | [live-flows-transcript.md](live-flows-transcript.md) | `scripts/e2e-*.sh` against a real deployment | The full merchant→vendor lifecycle with real Postgres, real Redis idempotency, real B2B access tokens and real Asynq callbacks: create-va, inquiry, payment, status, delete-va, expiry |
 | [live-negative-transcript.md](live-negative-transcript.md) | `scripts/e2e-negative-cases.sh` | The rejections that are decided from stored state — not found, paid bill, wrong amount, inconsistent request — plus the auth, header and payload rejections, against that same real deployment |
 
@@ -25,6 +26,18 @@ resolved against the repository root:
 
 ```sh
 E2E_TRANSCRIPT=docs/e2e/e2e-transcript.md go test ./test/e2e/...
+```
+
+`E2E_TRANSCRIPT_ENDPOINT` narrows the output to one service, matched as a suffix
+of the request path. The whole suite still runs and every call is still
+recorded — the filter is applied when the file is written, so an exchange kept
+here was still reached through its scenario's real preceding state. Selecting
+the traffic with `-run` instead would drop the payments that happen inside tests
+not named for them:
+
+```sh
+E2E_TRANSCRIPT=docs/e2e/payment-transcript.md \
+  E2E_TRANSCRIPT_ENDPOINT=/transfer-va/payment go test ./test/e2e/...
 ```
 
 **Live transcripts.** These need a running deployment with a vendor and a

@@ -28,6 +28,18 @@ import (
 // A relative path is resolved against the repository root, not the package
 // directory.
 //
+// E2E_TRANSCRIPT_ENDPOINT narrows the output to one service, matched as a
+// suffix of the request path:
+//
+//	E2E_TRANSCRIPT=docs/e2e/payment-transcript.md \
+//	  E2E_TRANSCRIPT_ENDPOINT=/transfer-va/payment go test ./test/e2e/...
+//
+// The whole suite still runs and every call is still recorded — the filter is
+// applied when the file is written. That matters: a payment is reached through
+// an inquiry, a seeded bill or a prior payment depending on the scenario, so
+// selecting the traffic with `-run` instead would silently drop the payment
+// exchanges that live inside tests not named for them.
+//
 // Off by default on purpose. Every run stamps fresh timestamps, X-EXTERNAL-IDs
 // and signatures into the file, so writing it unconditionally would make an
 // ordinary `go test ./...` dirty the working tree.
@@ -45,12 +57,32 @@ type transcriptEntry struct {
 }
 
 type transcriptRecorder struct {
-	mu      sync.Mutex
-	path    string
-	entries []transcriptEntry
+	mu   sync.Mutex
+	path string
+	// endpoint, when set, keeps only the exchanges whose request path ends
+	// with it. Empty means everything.
+	endpoint string
+	entries  []transcriptEntry
 }
 
-var transcript = &transcriptRecorder{path: transcriptPath(os.Getenv("E2E_TRANSCRIPT"))}
+var transcript = &transcriptRecorder{
+	path:     transcriptPath(os.Getenv("E2E_TRANSCRIPT")),
+	endpoint: os.Getenv("E2E_TRANSCRIPT_ENDPOINT"),
+}
+
+// selected returns the recorded exchanges this transcript should contain.
+func (r *transcriptRecorder) selected() []transcriptEntry {
+	if r.endpoint == "" {
+		return r.entries
+	}
+	out := make([]transcriptEntry, 0, len(r.entries))
+	for _, e := range r.entries {
+		if strings.HasSuffix(e.path, r.endpoint) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 // transcriptPath resolves a relative E2E_TRANSCRIPT against the repository
 // root rather than the package directory. `go test` runs each package in its
@@ -135,18 +167,37 @@ func (r *transcriptRecorder) flush() error {
 		}
 	}
 
+	entries := r.selected()
+
 	var b strings.Builder
-	b.WriteString("# SNAP Virtual Account — end-to-end request/response transcript\n\n")
-	b.WriteString("Every request this suite puts on the wire and every response it got back,\n")
-	b.WriteString("captured from an actual run of `test/e2e`. The suite drives the production\n")
-	b.WriteString("router, idempotency middleware, SNAP auth middleware, handler and usecase\n")
-	b.WriteString("against an in-memory repository, so the headers, `stringToSign` inputs,\n")
-	b.WriteString("service codes and JSON envelopes below are the real ones.\n\n")
+	if r.endpoint == "" {
+		b.WriteString("# SNAP Virtual Account — end-to-end request/response transcript\n\n")
+		b.WriteString("Every request this suite puts on the wire and every response it got back,\n")
+		b.WriteString("captured from an actual run of `test/e2e`.\n\n")
+	} else {
+		fmt.Fprintf(&b, "# SNAP Virtual Account — `%s` transcript\n\n", r.endpoint)
+		fmt.Fprintf(&b, "Every `%s` request this suite puts on the wire and every response it\n", r.endpoint)
+		b.WriteString("got back, captured from an actual run of `test/e2e`. The whole suite ran;\n")
+		b.WriteString("the other services were filtered out of this file, so each exchange below\n")
+		b.WriteString("still reached this endpoint through its scenario's real preceding state —\n")
+		b.WriteString("a completed inquiry, a seeded bill, or an earlier payment.\n\n")
+	}
+	b.WriteString("The suite drives the production router, idempotency middleware, SNAP auth\n")
+	b.WriteString("middleware, handler and usecase against an in-memory repository, so the\n")
+	b.WriteString("headers, `stringToSign` inputs, service codes and JSON envelopes below are\n")
+	b.WriteString("the real ones.\n\n")
 	b.WriteString("Regenerate with:\n\n")
-	b.WriteString("```sh\nE2E_TRANSCRIPT=docs/e2e/e2e-transcript.md go test ./test/e2e/...\n```\n\n")
+	b.WriteString("```sh\n")
+	if r.endpoint == "" {
+		b.WriteString("E2E_TRANSCRIPT=docs/e2e/e2e-transcript.md go test ./test/e2e/...\n")
+	} else {
+		fmt.Fprintf(&b, "E2E_TRANSCRIPT=docs/e2e/%s \\\n  E2E_TRANSCRIPT_ENDPOINT=%s go test ./test/e2e/...\n",
+			filepath.Base(r.path), r.endpoint)
+	}
+	b.WriteString("```\n\n")
 	fmt.Fprintf(&b, "- Generated: `%s`\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(&b, "- Commit: `%s`\n", gitDescribe())
-	fmt.Fprintf(&b, "- Exchanges: %d across %d scenarios\n\n", len(r.entries), countTests(r.entries))
+	fmt.Fprintf(&b, "- Exchanges: %d across %d scenarios\n\n", len(entries), countTests(entries))
 	b.WriteString("Signatures and timestamps are genuine but computed over the suite's own\n")
 	b.WriteString("throwaway vendor secret, so they change on every run.\n\n")
 
@@ -161,7 +212,7 @@ func (r *transcriptRecorder) flush() error {
 
 		lastTest := ""
 		seq := 0
-		for _, e := range r.entries {
+		for _, e := range entries {
 			if e.source != source {
 				continue
 			}
@@ -192,11 +243,13 @@ func (r *transcriptRecorder) flush() error {
 	return os.WriteFile(r.path, []byte(b.String()), 0o644)
 }
 
-// orderedSources lists the files that actually produced traffic, known ones
-// first in reading order.
+// orderedSources lists the files that actually produced traffic THIS TRANSCRIPT
+// contains, known ones first in reading order. Driven by selected() rather than
+// entries so a filtered transcript does not print an empty section for a file
+// whose traffic was entirely for another service.
 func (r *transcriptRecorder) orderedSources() []string {
 	present := map[string]bool{}
-	for _, e := range r.entries {
+	for _, e := range r.selected() {
 		present[e.source] = true
 	}
 	var out []string
