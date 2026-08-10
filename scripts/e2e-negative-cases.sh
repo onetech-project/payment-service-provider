@@ -67,6 +67,14 @@ read_env_var() {
 CLIENT_SECRET="$(read_env_var "$VENDOR_ENV_FILE" VENDOR_CLIENT_SECRET)"
 VENDOR_CLIENT_ID="$(read_env_var "$VENDOR_ENV_FILE" VENDOR_CLIENT_ID || true)"
 VENDOR_KEY_PATH="$(read_env_var "$VENDOR_ENV_FILE" VENDOR_PRIVATE_KEY_PATH || true)"
+# The RequestBody component of stringToSign. hex is the BCA/SNAP spec form and
+# the default; vendors onboarded under feature 012-base64-hash-encoding sign
+# with base64 instead. Reading it from the vendor's own config rather than
+# assuming hex is what stops every case in this suite from coming back 401
+# against such a vendor — a failure that says "signature" and hides whichever
+# rejection the case was actually written to check.
+BODY_HASH_ENCODING="$(read_env_var "$VENDOR_ENV_FILE" VENDOR_BODY_HASH_ENCODING || true)"
+[[ -z "$BODY_HASH_ENCODING" ]] && BODY_HASH_ENCODING="hex"
 CHANNEL_ID="$(read_env_var "$VENDOR_ENV_FILE" VENDOR_CHANNEL_ID || true)"
 PARTNER_ID="$(read_env_var "$VENDOR_ENV_FILE" VENDOR_PARTNER_ID || true)"
 [[ -z "$CHANNEL_ID" ]] && CHANNEL_ID="95231"
@@ -146,10 +154,12 @@ snap() {
 	# empty output there would produce a signature over the wrong bytes and
 	# the request would come back 401 instead of reaching the parser, hiding
 	# the very rejection the case is testing.
+	local encode="xxd -p -c 256"
+	[[ "$BODY_HASH_ENCODING" == "base64" ]] && encode="openssl base64 -A"
 	if printf '%s' "$sign_body" | jq -e . >/dev/null 2>&1; then
-		hash="$(printf '%s' "$sign_body" | jq -cj . | openssl dgst -sha256 -binary | xxd -p -c 256)"
+		hash="$(printf '%s' "$sign_body" | jq -cj . | openssl dgst -sha256 -binary | $encode)"
 	else
-		hash="$(printf '%s' "$sign_body" | openssl dgst -sha256 -binary | xxd -p -c 256)"
+		hash="$(printf '%s' "$sign_body" | openssl dgst -sha256 -binary | $encode)"
 	fi
 	sts="POST:${path}:${ACCESS_TOKEN}:${hash}:${ts}"
 	sig="${SIG_OVERRIDE:-$(printf '%s' "$sts" | openssl dgst -sha512 -hmac "$secret" -binary | openssl base64 -A)}"
@@ -220,6 +230,23 @@ check() { # check <label> <want-http> <want-code>
 	} >>"$TRANSCRIPT"
 }
 
+# check_flag asserts virtualAccountData.paymentFlagStatus on the last response.
+# Separate from check because responseCode alone does not pin the clause that
+# matters for a double flag: BCA reads paymentFlagStatus to decide what
+# happened to the customer's money, and 4042518 carrying the wrong flag is a
+# worse answer than the plain rejection it replaced.
+check_flag() { # check_flag <label> <want-flag-status>
+	local label="$1" want="$2" got
+	got="$(printf '%s' "$RESP_BODY" | jq -r '.virtualAccountData.paymentFlagStatus // "«absent»"' 2>/dev/null)"
+	if [[ "$got" == "$want" ]]; then
+		PASS=$((PASS + 1))
+		printf '  \033[32mPASS\033[0m  %-58s flag %s\n' "$label" "$got"
+	else
+		FAIL=$((FAIL + 1))
+		printf '  \033[31mFAIL\033[0m  %-58s got flag %s, want %s\n' "$label" "$got" "$want"
+	fi
+}
+
 # reset clears the per-call overrides so one case cannot leak into the next.
 reset() {
 	SIGN_SECRET=""
@@ -251,7 +278,15 @@ echo "== Fixtures"
 "$SCRIPT_DIR/merchant-create-va.sh" -s "$PARTNER_SERVICE_ID" -c "$PAID_CNO" -n "Neg Paid ${RUN}" \
 	-y 03 -a "$BILL_AMOUNT" -t "trx-neg-paid-${RUN}" -f "$MERCHANT_ENV_FILE" -u "$BASE_URL" >/dev/null 2>&1
 PAID_REQUEST_ID="PAY-NEG-PAID-${RUN}"
-"$SCRIPT_DIR/vendor-payment-va.sh" -s "$PARTNER_SERVICE_ID" -c "$PAID_CNO" -v "$PAID_VA" \
+# vendor-payment-va.sh defaults to hex and takes the encoding as an env
+# override, so it needs the same value read from the vendor config above.
+# Without it the fixture payment 401s — silently, since its output is
+# discarded — and the VA is never actually paid, which turns the three
+# already-paid cases below into failures that look like business-logic bugs.
+paid_fixture_encoder="xxd -p -c 256"
+[[ "$BODY_HASH_ENCODING" == "base64" ]] && paid_fixture_encoder="openssl base64 -A"
+BODY_HASH_ENCODER="$paid_fixture_encoder" "$SCRIPT_DIR/vendor-payment-va.sh" \
+	-s "$PARTNER_SERVICE_ID" -c "$PAID_CNO" -v "$PAID_VA" \
 	-a "$BILL_AMOUNT" -q "$PAID_REQUEST_ID" -f "$VENDOR_ENV_FILE" -u "$BASE_URL" >/dev/null 2>&1
 echo "  unpaid VA: ${UNPAID_VA}"
 echo "  paid VA:   ${PAID_VA} (paymentRequestId ${PAID_REQUEST_ID})"
@@ -413,6 +448,28 @@ check "second payment on an already-paid bill" 404 4042514
 reset
 snap "$PAYMENT_PATH" "$(payment_body "$PAID_CNO" "$PAID_VA" "$PAID_REQUEST_ID" "1.00")"
 check "same paymentRequestId resubmitted with different content" 404 4042518
+
+# BCA's double-flagging clause: "If a system error occurs causing BCA to send
+# double flagging request with the same X-EXTERNAL-ID and paymentRequestId,
+# then partner can send responseCode 4042518 ... with paymentFlagStatus and
+# paymentFlagReason according to the results of the first request."
+#
+# The case that used to be unreachable is a first request that was REJECTED.
+# Duplicate detection ran off the payment row, which only exists once a payment
+# has SETTLED, so a re-flag of a rejected payment found nothing on file and was
+# recomputed — BCA saw the same 404 twice instead of being told the flag had
+# already been answered. Both halves are pinned here: the second answer must be
+# 4042518, and its paymentFlagStatus must still be the "01" of the first.
+reset; EXT_ID="$(date +%Y%m%d%H%M%S)${RANDOM}"
+DOUBLE_FLAG_BODY="$(payment_body "$UNKNOWN_CNO" "$UNKNOWN_VA" "PAY-NEG-${RUN}-8" "${BILL_AMOUNT}")"
+snap "$PAYMENT_PATH" "$DOUBLE_FLAG_BODY"
+check "first flag on an unregistered VA is rejected" 404 4042512
+check_flag "first flag reports paymentFlagStatus 01" "01"
+
+snap "$PAYMENT_PATH" "$DOUBLE_FLAG_BODY"
+check "double flag of that rejection is an Inconsistent Request" 404 4042518
+check_flag "double flag still reports the first request's 01" "01"
+reset
 
 reset
 snap "$STATUS_PATH" "{\"partnerServiceId\":\"${PARTNER_SERVICE_ID}\",\"customerNo\":\"${UNKNOWN_CNO}\",\"virtualAccountNo\":\"${UNKNOWN_VA}\",\"inquiryRequestId\":\"INQ-DOES-NOT-EXIST-${RUN}\",\"additionalInfo\":{}}"

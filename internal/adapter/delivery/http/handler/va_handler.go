@@ -11,6 +11,12 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// headerExternalID is SNAP's per-request identifier. The middleware package
+// keeps its own unexported copy for the idempotency key; this one exists
+// because the payment handler must pass the value on to the usecase, where it
+// forms half of BCA's double-flagging key.
+const headerExternalID = "X-EXTERNAL-ID"
+
 // VAHandler handles vendor Virtual Account HTTP requests
 type VAHandler struct {
 	vaUsecase domain.VAUsecase
@@ -139,7 +145,7 @@ func (h *VAHandler) inquiryError(c echo.Context, err error, echoData domain.VAId
 // @Success 200 {object} domain.VAPaymentResponse "2002500 Successful, paymentFlagStatus=00"
 // @Failure 400 {object} domain.VAPaymentResponse "4002500 Bad Request (unparseable body), 4002501 Invalid Field Format {field}, 4002502 Invalid Mandatory Field {field}"
 // @Failure 401 {object} domain.SNAPErrorResponse "4012500 Unauthorized. [reason] (invalid HMAC signature, or X-TIMESTAMP outside the ±5 minute freshness window), 4012501 Invalid Token (B2B)"
-// @Failure 404 {object} domain.VAPaymentResponse "All with virtualAccountData.paymentFlagStatus=01 unless noted: 4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither the registry nor any transaction; virtualAccountData echoes the request keys with empty paidAmount/totalAmount), 4042513 Invalid Amount, 4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID and paymentRequestId; echoes the ORIGINAL flag status and the payment it collided with), 4042519 Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)"
+// @Failure 404 {object} domain.VAPaymentResponse "All with virtualAccountData.paymentFlagStatus=01 unless noted: 4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither the registry nor any transaction; virtualAccountData echoes the request keys with empty paidAmount/totalAmount), 4042513 Invalid Amount, 4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID and paymentRequestId; echoes the FIRST request's paymentFlagStatus and paymentFlagReason, whether that was 00 settled or 01 rejected), 4042519 Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)"
 // @Failure 409 {object} domain.VAPaymentResponse "4092500 Conflict — same X-EXTERNAL-ID with a different paymentRequestId, or an in-flight request still holding the key"
 // @Failure 500 {object} domain.VAPaymentResponse "5002500 Internal Server Error"
 // @Router /openapi/v1.0/transfer-va/payment [post]
@@ -149,6 +155,12 @@ func (h *VAHandler) Payment(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, domain.NewPaymentErrorResponse(
 			domain.CodePaymentBadRequest, "Bad Request", domain.VAIdentityEcho{}))
 	}
+
+	// X-EXTERNAL-ID is a header, so binding cannot have populated it — but the
+	// usecase needs it: BCA's double-flagging rule is keyed on the PAIR
+	// (X-EXTERNAL-ID, paymentRequestId), and without the header half the
+	// duplicate check can only see payments that succeeded.
+	req.ExternalID = c.Request().Header.Get(headerExternalID)
 
 	echoData := paymentEcho(&req)
 	if v := domain.ValidatePaymentRequest(&req, h.strictMandatoryFor(c)); v != nil {

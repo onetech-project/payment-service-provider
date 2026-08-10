@@ -134,8 +134,19 @@ type memRepo struct {
 	bills        map[string][]domain.BillDetail     // keyed by transaction id
 	cumulative   map[string]float64                 // keyed by transaction id
 	instalments  map[string]string                  // variable-bill dedup: paymentRequestId -> transaction id
+	// paymentFlags mirrors va_payment_flags: every flag outcome, accepted or
+	// rejected, keyed by the (X-EXTERNAL-ID, paymentRequestId) pair BCA's
+	// double-flagging rule names.
+	paymentFlags map[string]*domain.VAPaymentFlag
 
 	savePaymentErr error
+}
+
+// paymentFlagKey mirrors the UNIQUE (external_id, payment_request_id) index.
+// The separator cannot occur in either half — both are header/body scalars
+// with no colon in practice — so distinct pairs cannot collide onto one key.
+func paymentFlagKey(externalID, paymentRequestID string) string {
+	return externalID + "\x00" + paymentRequestID
 }
 
 func newMemRepo() *memRepo {
@@ -146,7 +157,35 @@ func newMemRepo() *memRepo {
 		bills:        map[string][]domain.BillDetail{},
 		cumulative:   map[string]float64{},
 		instalments:  map[string]string{},
+		paymentFlags: map[string]*domain.VAPaymentFlag{},
 	}
+}
+
+func (r *memRepo) FindPaymentFlag(_ context.Context, externalID, paymentRequestID string) (*domain.VAPaymentFlag, error) {
+	if externalID == "" || paymentRequestID == "" {
+		return nil, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paymentFlags[paymentFlagKey(externalID, paymentRequestID)], nil
+}
+
+// RecordPaymentFlag is first-write-wins, matching the production
+// ON CONFLICT DO NOTHING: a double flag must not overwrite the verdict it is
+// supposed to be echoing.
+func (r *memRepo) RecordPaymentFlag(_ context.Context, flag *domain.VAPaymentFlag) error {
+	if flag.ExternalID == "" || flag.PaymentRequestID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := paymentFlagKey(flag.ExternalID, flag.PaymentRequestID)
+	if _, exists := r.paymentFlags[key]; exists {
+		return nil
+	}
+	stored := *flag
+	r.paymentFlags[key] = &stored
+	return nil
 }
 
 func (r *memRepo) putTransaction(rec *domain.VAInquiryRecord) {

@@ -1800,9 +1800,9 @@ paths:
             the registry nor any transaction; virtualAccountData echoes the request
             keys with empty paidAmount/totalAmount), 4042513 Invalid Amount, 4042514
             Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID
-            and paymentRequestId; echoes the ORIGINAL flag status and the payment
-            it collided with), 4042519 Invalid Bill/Virtual Account (expired, feature
-            007-merchant-expiry-callback)'
+            and paymentRequestId; echoes the FIRST request''s paymentFlagStatus and
+            paymentFlagReason, whether that was 00 settled or 01 rejected), 4042519
+            Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)'
           schema:
             $ref: '#/definitions/domain.VAPaymentResponse'
         "409":

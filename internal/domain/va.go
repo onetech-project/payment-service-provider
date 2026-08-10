@@ -131,6 +131,14 @@ type VAPaymentRequest struct {
 	BillDetails             []VAPaymentBillDetail  `json:"billDetails,omitempty"`
 	FreeTexts               []BilingualText        `json:"freeTexts,omitempty"`
 	AdditionalInfo          map[string]interface{} `json:"additionalInfo,omitempty"`
+
+	// ExternalID carries the X-EXTERNAL-ID header down to the usecase, which
+	// needs it to apply BCA's double-flagging rule ("the same X-EXTERNAL-ID and
+	// paymentRequestId"). It is a header, not a body field, so it is never
+	// unmarshalled from or marshalled into the request JSON — the handler sets
+	// it after binding. Empty for callers that do not supply one, which simply
+	// falls back to the paymentRequestId-only duplicate check.
+	ExternalID string `json:"-"`
 }
 
 // VAPaymentBillDetail extends BillDetail with payment-specific fields
@@ -393,6 +401,38 @@ type VARepository interface {
 	ListVAAccounts(ctx context.Context, filter *VAAccountListFilter) ([]VAAccountListItem, int, error)
 	ListVATransactions(ctx context.Context, filter *VAListFilter) ([]VATransactionListItem, int, error)
 	SaveNoBillPayment(ctx context.Context, payment *VAPaymentRecord) error
+	// FindPaymentFlag returns the recorded outcome of an earlier payment-flag
+	// request with this exact (X-EXTERNAL-ID, paymentRequestId) pair, or nil
+	// when none exists. This is the lookup BCA's double-flagging rule needs and
+	// the paymentRequestId-keyed lookups above cannot serve: they only see
+	// payments that SUCCEEDED, so a re-flag of a rejected payment found nothing
+	// and was recomputed as a fresh rejection.
+	FindPaymentFlag(ctx context.Context, externalID, paymentRequestID string) (*VAPaymentFlag, error)
+	// RecordPaymentFlag stores the outcome of a payment-flag request, accepted
+	// or rejected. Idempotent on (externalID, paymentRequestID): a second write
+	// for the same pair is discarded, leaving the FIRST request's verdict on
+	// file — the one the spec says a double flag must echo.
+	RecordPaymentFlag(ctx context.Context, flag *VAPaymentFlag) error
+}
+
+// VAPaymentFlag is the recorded outcome of one payment-flag request, written
+// for every request that reaches the usecase whether it settled or was
+// rejected. It exists so a re-flag of the same (X-EXTERNAL-ID,
+// paymentRequestId) can be answered 4042518 "Inconsistent Request" carrying
+// the paymentFlagStatus and paymentFlagReason of the first request, including
+// the case where that first request was itself a rejection ("01").
+type VAPaymentFlag struct {
+	ID               string
+	ExternalID       string
+	PaymentRequestID string
+	VirtualAccountNo string
+	ResponseCode     string
+	ResponseMessage  string
+	// VirtualAccountData is the block the vendor received the first time,
+	// stored whole rather than reassembled from parts so the replay cannot
+	// drift from the original answer.
+	VirtualAccountData *VAPaymentStatus
+	CreatedAt          time.Time
 }
 
 // VA Registry (feature 013-no-bill-payment-transaction)
