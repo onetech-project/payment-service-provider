@@ -1236,6 +1236,108 @@ func (r *VARepository) SaveNoBillPayment(ctx context.Context, payment *domain.VA
 	return err
 }
 
+// FindPaymentFlag returns the outcome recorded for an earlier flag request
+// with this exact (X-EXTERNAL-ID, paymentRequestId) pair. A missing row is not
+// an error — it is the ordinary "first time we have seen this flag" case — so
+// it returns (nil, nil) rather than pgx.ErrNoRows, which callers would then
+// have to special-case on the happy path.
+func (r *VARepository) FindPaymentFlag(ctx context.Context, externalID, paymentRequestID string) (*domain.VAPaymentFlag, error) {
+	if externalID == "" || paymentRequestID == "" {
+		return nil, nil
+	}
+
+	query := `
+		SELECT id, external_id, payment_request_id, virtual_account_no,
+			response_code, response_message, virtual_account_data, created_at
+		FROM va_payment_flags
+		WHERE external_id = $1 AND payment_request_id = $2`
+
+	flag := &domain.VAPaymentFlag{}
+	var vaData []byte
+	err := r.pool.QueryRow(ctx, query, externalID, paymentRequestID).Scan(
+		&flag.ID,
+		&flag.ExternalID,
+		&flag.PaymentRequestID,
+		&flag.VirtualAccountNo,
+		&flag.ResponseCode,
+		&flag.ResponseMessage,
+		&vaData,
+		&flag.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if len(vaData) > 0 {
+		status := &domain.VAPaymentStatus{}
+		if err := json.Unmarshal(vaData, status); err != nil {
+			return nil, err
+		}
+		flag.VirtualAccountData = status
+	}
+	return flag, nil
+}
+
+// RecordPaymentFlag stores the outcome of one payment-flag request.
+//
+// ON CONFLICT DO NOTHING, not an upsert: the whole point of the row is to
+// preserve what the FIRST request answered, so a later flag with the same pair
+// must leave it exactly as it is. That also makes the concurrent case correct
+// without a transaction — two requests racing past FindPaymentFlag both try to
+// insert, one wins, and the loser's outcome is discarded rather than
+// overwriting the answer the vendor already received.
+func (r *VARepository) RecordPaymentFlag(ctx context.Context, flag *domain.VAPaymentFlag) error {
+	if flag.ExternalID == "" || flag.PaymentRequestID == "" {
+		return nil
+	}
+	if flag.ID == "" {
+		flag.ID = uuid.New().String()
+	}
+	if flag.CreatedAt.IsZero() {
+		flag.CreatedAt = time.Now()
+	}
+
+	// paymentFlagStatus is stored twice — as its own column and inside the
+	// JSONB — so operators can aggregate rejected flags without unpacking the
+	// document. An outcome with no virtualAccountData at all (an internal
+	// error) is recorded with the rejected flag "01", matching what the vendor
+	// was told.
+	paymentFlagStatus := domain.PaymentFlagReject
+	vaData := []byte("{}")
+	if flag.VirtualAccountData != nil {
+		if flag.VirtualAccountData.PaymentFlagStatus != "" {
+			paymentFlagStatus = flag.VirtualAccountData.PaymentFlagStatus
+		}
+		encoded, err := json.Marshal(flag.VirtualAccountData)
+		if err != nil {
+			return err
+		}
+		vaData = encoded
+	}
+
+	query := `
+		INSERT INTO va_payment_flags (id, external_id, payment_request_id, virtual_account_no,
+			response_code, response_message, payment_flag_status, virtual_account_data, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (external_id, payment_request_id) DO NOTHING`
+
+	_, err := r.pool.Exec(ctx, query,
+		flag.ID,
+		flag.ExternalID,
+		flag.PaymentRequestID,
+		flag.VirtualAccountNo,
+		flag.ResponseCode,
+		flag.ResponseMessage,
+		paymentFlagStatus,
+		vaData,
+		flag.CreatedAt,
+	)
+	return err
+}
+
 // ListVAAccounts returns registered VA numbers — one row per VA, with that
 // VA's settled-transaction count and total paid alongside (feature
 // 013-no-bill-payment-transaction, FR-023).

@@ -185,6 +185,27 @@ func (m *MockVARepository) SaveNoBillPayment(ctx context.Context, payment *domai
 	return args.Error(0)
 }
 
+// FindPaymentFlag and RecordPaymentFlag default to "nothing flagged yet" and
+// "recorded" when a test hasn't stubbed them, following the lenient convention
+// above: the double-flag store is invisible to the tests that predate it, and
+// to any test that sends no X-EXTERNAL-ID.
+func (m *MockVARepository) FindPaymentFlag(ctx context.Context, externalID, paymentRequestID string) (*domain.VAPaymentFlag, error) {
+	if !m.hasExpectation("FindPaymentFlag") {
+		return nil, nil
+	}
+	args := m.Called(ctx, externalID, paymentRequestID)
+	flag, _ := args.Get(0).(*domain.VAPaymentFlag)
+	return flag, args.Error(1)
+}
+
+func (m *MockVARepository) RecordPaymentFlag(ctx context.Context, flag *domain.VAPaymentFlag) error {
+	if !m.hasExpectation("RecordPaymentFlag") {
+		return nil
+	}
+	args := m.Called(ctx, flag)
+	return args.Error(0)
+}
+
 // An inquiry for a VA that neither an inquiryRequestId nor a virtualAccountNo
 // lookup can find is answered 4042412 (404). It must NOT persist a row: only
 // the merchant's create-va brings a VA into existence.
@@ -2504,4 +2525,241 @@ func TestVAUsecase_Payment_DeletedBill_ReportsInactiveReason(t *testing.T) {
 	assert.Equal(t, domain.CodePaymentNotFound, domainErr.SNAPCode)
 	require.NotNil(t, domainErr.PaymentData)
 	assert.Equal(t, domain.ReasonForCode(domain.CodePaymentNotFound), domainErr.PaymentData.PaymentFlagReason)
+}
+
+// --- BCA double-flagging: "same X-EXTERNAL-ID and paymentRequestId" ---
+//
+// BCA: "If a system error occurs causing BCA to send double flagging request
+// with the same X-EXTERNAL-ID and paymentRequestId, then partner can send
+// responseCode 4042518 and responseMessage Inconsistent Request, with
+// paymentFlagStatus and paymentFlagReason according to the results of the
+// first request."
+//
+// The clause that used to have no implementation is "the results of the FIRST
+// request" when that result was a REJECTION. Duplicate detection ran off
+// va_transactions.payment_request_id, which is only written when a payment
+// succeeds, so a re-flag of a rejected payment matched nothing and was simply
+// recomputed — the vendor saw the same 404 twice and never the 4042518 that
+// tells it the flag was already answered.
+
+// flagStoreRepo drives the double-flag tests through a real store instead of
+// canned FindPaymentFlag stubs, so what the second request reads is exactly
+// what the first request wrote — the property under test.
+type flagStoreRepo struct {
+	*MockVARepository
+	flags map[string]*domain.VAPaymentFlag
+}
+
+func newFlagStoreRepo() *flagStoreRepo {
+	return &flagStoreRepo{
+		MockVARepository: new(MockVARepository),
+		flags:            map[string]*domain.VAPaymentFlag{},
+	}
+}
+
+func (r *flagStoreRepo) FindPaymentFlag(_ context.Context, externalID, paymentRequestID string) (*domain.VAPaymentFlag, error) {
+	if externalID == "" || paymentRequestID == "" {
+		return nil, nil
+	}
+	return r.flags[externalID+"\x00"+paymentRequestID], nil
+}
+
+// First write wins, mirroring the production ON CONFLICT DO NOTHING.
+func (r *flagStoreRepo) RecordPaymentFlag(_ context.Context, flag *domain.VAPaymentFlag) error {
+	if flag.ExternalID == "" || flag.PaymentRequestID == "" {
+		return nil
+	}
+	key := flag.ExternalID + "\x00" + flag.PaymentRequestID
+	if _, exists := r.flags[key]; exists {
+		return nil
+	}
+	stored := *flag
+	r.flags[key] = &stored
+	return nil
+}
+
+// unknownVAPaymentReq builds a flag for a VA this system never issued — the
+// cheapest way to get a first request that is REJECTED rather than settled.
+func unknownVAPaymentReq(externalID, paymentRequestID string) *domain.VAPaymentRequest {
+	req := noBillPaymentReq(paymentRequestID, "10000.00")
+	req.VirtualAccountNo = "159739999999999"
+	req.ExternalID = externalID
+	return req
+}
+
+// The headline case. The first flag is rejected 4042512 with paymentFlagStatus
+// "01"; the double flag must come back 4042518 still carrying "01" and the
+// original reason — not a second bare 4042512, and not "00".
+func TestVAUsecase_Payment_DoubleFlagAfterRejectionEchoesRejectedStatus(t *testing.T) {
+	repo := newFlagStoreRepo()
+	uc := NewVAUsecase(repo, nil)
+
+	repo.On("GetPayment", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+	repo.On("GetVAByVirtualAccountNo", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+
+	resp1, err1 := uc.Payment(context.Background(), unknownVAPaymentReq("EXT-REJ", "PAY-REJ"))
+
+	assert.Nil(t, resp1)
+	var first *domain.DomainError
+	require.ErrorAs(t, err1, &first)
+	require.Equal(t, domain.CodePaymentNotFound, first.SNAPCode)
+	require.NotNil(t, first.PaymentData)
+	require.Equal(t, domain.PaymentFlagReject, first.PaymentData.PaymentFlagStatus)
+
+	resp2, err2 := uc.Payment(context.Background(), unknownVAPaymentReq("EXT-REJ", "PAY-REJ"))
+
+	assert.Nil(t, resp2)
+	var second *domain.DomainError
+	require.ErrorAs(t, err2, &second)
+	assert.Equal(t, domain.CodePaymentInconsistent, second.SNAPCode)
+	assert.Equal(t, "Inconsistent Request", second.Message)
+	require.NotNil(t, second.PaymentData)
+	assert.Equal(t, domain.PaymentFlagReject, second.PaymentData.PaymentFlagStatus)
+	assert.Equal(t, first.PaymentData.PaymentFlagReason, second.PaymentData.PaymentFlagReason)
+}
+
+// The settled case must keep working through the same store: a double flag of
+// a payment that succeeded still answers 4042518 carrying "00".
+func TestVAUsecase_Payment_DoubleFlagAfterSuccessEchoesSettledStatus(t *testing.T) {
+	repo := newFlagStoreRepo()
+	uc := NewVAUsecase(repo, nil)
+
+	repo.On("GetVAAccount", mock.Anything, "159730001234567").Return(noBillAccount(), nil)
+	repo.On("GetPayment", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+	repo.On("SaveNoBillPayment", mock.Anything, mock.Anything).Return(nil)
+
+	req1 := noBillPaymentReq("PAY-OK", "10000.00")
+	req1.ExternalID = "EXT-OK"
+	resp1, err1 := uc.Payment(context.Background(), req1)
+
+	require.NoError(t, err1)
+	require.NotNil(t, resp1)
+	require.Equal(t, domain.PaymentFlagSuccess, resp1.VirtualAccountData.PaymentFlagStatus)
+
+	req2 := noBillPaymentReq("PAY-OK", "10000.00")
+	req2.ExternalID = "EXT-OK"
+	resp2, err2 := uc.Payment(context.Background(), req2)
+
+	assert.Nil(t, resp2)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err2, &domainErr)
+	assert.Equal(t, domain.CodePaymentInconsistent, domainErr.SNAPCode)
+	require.NotNil(t, domainErr.PaymentData)
+	assert.Equal(t, domain.PaymentFlagSuccess, domainErr.PaymentData.PaymentFlagStatus)
+	assert.Equal(t, "10000.00", domainErr.PaymentData.PaidAmount.Value)
+}
+
+// flagAdvise "Y" is BCA asking "did my flag land?", not double-flagging. The
+// answer is the original verdict — here a rejection — and never 4042518, which
+// would tell BCA its advice request was itself the collision.
+func TestVAUsecase_Payment_AdviceAfterRejectionReplaysOriginalVerdict(t *testing.T) {
+	repo := newFlagStoreRepo()
+	uc := NewVAUsecase(repo, nil)
+
+	repo.On("GetPayment", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+	repo.On("GetVAByVirtualAccountNo", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+
+	_, err1 := uc.Payment(context.Background(), unknownVAPaymentReq("EXT-ADV", "PAY-ADV"))
+	require.Error(t, err1)
+
+	advice := unknownVAPaymentReq("EXT-ADV", "PAY-ADV")
+	advice.FlagAdvise = "Y"
+	resp, err2 := uc.Payment(context.Background(), advice)
+
+	assert.Nil(t, resp)
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err2, &domainErr)
+	assert.Equal(t, domain.CodePaymentNotFound, domainErr.SNAPCode)
+	require.NotNil(t, domainErr.PaymentData)
+	assert.Equal(t, domain.PaymentFlagReject, domainErr.PaymentData.PaymentFlagStatus)
+}
+
+// A 500 decided nothing, so it must not be flagged. BCA's double-flagging rule
+// presumes the first request produced a result to report; recording an
+// internal error would answer BCA's legitimate retry with 4042518 and the
+// payment would never get a second chance to be processed.
+func TestVAUsecase_Payment_InternalErrorIsNotFlagged(t *testing.T) {
+	repo := newFlagStoreRepo()
+	uc := NewVAUsecase(repo, nil)
+
+	repo.On("GetPayment", mock.Anything, mock.Anything).Return(nil, errors.New("connection refused"))
+
+	req := unknownVAPaymentReq("EXT-500", "PAY-500")
+	_, err := uc.Payment(context.Background(), req)
+
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	require.Equal(t, domain.CodeInternalError(domain.ServiceCodePayment), domainErr.SNAPCode)
+	assert.Empty(t, repo.flags, "a request that decided nothing must leave nothing to replay")
+}
+
+// The rule is keyed on the PAIR. A fresh X-EXTERNAL-ID is a new flag as far as
+// BCA is concerned, so it is decided on its own merits — here rejected again,
+// which is correct: 4042518 would claim a collision the vendor did not cause.
+func TestVAUsecase_Payment_DifferentExternalIDIsNotADoubleFlag(t *testing.T) {
+	repo := newFlagStoreRepo()
+	uc := NewVAUsecase(repo, nil)
+
+	repo.On("GetPayment", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+	repo.On("GetVAByVirtualAccountNo", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+
+	_, err1 := uc.Payment(context.Background(), unknownVAPaymentReq("EXT-A", "PAY-SAME"))
+	require.Error(t, err1)
+
+	_, err2 := uc.Payment(context.Background(), unknownVAPaymentReq("EXT-B", "PAY-SAME"))
+
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err2, &domainErr)
+	assert.Equal(t, domain.CodePaymentNotFound, domainErr.SNAPCode)
+}
+
+// A payment with no X-EXTERNAL-ID at all must still be decided normally, and
+// must not write a flag row keyed on an empty id — one such row would collide
+// with every other header-less request under the UNIQUE index.
+func TestVAUsecase_Payment_WithoutExternalIDIsNotFlagged(t *testing.T) {
+	repo := newFlagStoreRepo()
+	uc := NewVAUsecase(repo, nil)
+
+	repo.On("GetVAAccount", mock.Anything, "159730001234567").Return(noBillAccount(), nil)
+	repo.On("GetPayment", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+	repo.On("SaveNoBillPayment", mock.Anything, mock.Anything).Return(nil)
+
+	resp, err := uc.Payment(context.Background(), noBillPaymentReq("PAY-NOEXT", "10000.00"))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Empty(t, repo.flags)
+}
+
+// The advice counterpart of the settled double-flag case: BCA re-sends the
+// identical advice request (same pair, flagAdvise "Y") and must get the
+// original 2002500 back. Answering 4042518 here would tell BCA its "did this
+// land?" question was itself a collision — the opposite of the answer it needs.
+func TestVAUsecase_Payment_AdviceAfterSuccessReplaysSuccess(t *testing.T) {
+	repo := newFlagStoreRepo()
+	uc := NewVAUsecase(repo, nil)
+
+	repo.On("GetVAAccount", mock.Anything, "159730001234567").Return(noBillAccount(), nil)
+	repo.On("GetPayment", mock.Anything, mock.Anything).Return(nil, domain.ErrVAInvalidBill)
+	repo.On("SaveNoBillPayment", mock.Anything, mock.Anything).Return(nil)
+
+	advice := func() *domain.VAPaymentRequest {
+		req := noBillPaymentReq("PAY-ADV-OK", "10000.00")
+		req.ExternalID = "EXT-ADV-OK"
+		req.FlagAdvise = "Y"
+		return req
+	}
+
+	resp1, err1 := uc.Payment(context.Background(), advice())
+	require.NoError(t, err1)
+	require.NotNil(t, resp1)
+	require.Equal(t, domain.CodePaymentSuccess, resp1.ResponseCode)
+
+	resp2, err2 := uc.Payment(context.Background(), advice())
+
+	require.NoError(t, err2)
+	require.NotNil(t, resp2)
+	assert.Equal(t, domain.CodePaymentSuccess, resp2.ResponseCode)
+	assert.Equal(t, domain.PaymentFlagSuccess, resp2.VirtualAccountData.PaymentFlagStatus)
+	assert.Equal(t, "10000.00", resp2.VirtualAccountData.PaidAmount.Value)
 }

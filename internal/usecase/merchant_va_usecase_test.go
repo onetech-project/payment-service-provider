@@ -230,6 +230,17 @@ func (m *MockMerchantVARepository) SaveNoBillPayment(ctx context.Context, paymen
 	return args.Error(0)
 }
 
+func (m *MockMerchantVARepository) FindPaymentFlag(ctx context.Context, externalID, paymentRequestID string) (*domain.VAPaymentFlag, error) {
+	args := m.Called(ctx, externalID, paymentRequestID)
+	flag, _ := args.Get(0).(*domain.VAPaymentFlag)
+	return flag, args.Error(1)
+}
+
+func (m *MockMerchantVARepository) RecordPaymentFlag(ctx context.Context, flag *domain.VAPaymentFlag) error {
+	args := m.Called(ctx, flag)
+	return args.Error(0)
+}
+
 // --- CreateVA Tests ---
 
 func TestMerchantVAUsecase_CreateVA_Success(t *testing.T) {

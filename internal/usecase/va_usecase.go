@@ -657,12 +657,134 @@ func duplicatePaymentError(existing *domain.VAPaymentRecord) error {
 	)
 }
 
-// Payment handles VA payment notification from vendor.
+// Payment handles VA payment notification from vendor, wrapping the payment
+// decision in BCA's double-flagging rule: "If a system error occurs causing
+// BCA to send a double flagging request with the same X-EXTERNAL-ID and
+// paymentRequestId, then partner can send responseCode 4042518 ... with
+// paymentFlagStatus and paymentFlagReason according to the results of the
+// first request."
+//
+// The decision tree inside payment() cannot implement that on its own. It
+// resolves duplicates through va_transactions.payment_request_id, which is
+// only written when a payment SUCCEEDS — so a re-flag of a REJECTED payment
+// found nothing on file and was recomputed from scratch, answering the same
+// 404 twice instead of 4042518 carrying the original "01". Recording every
+// outcome here, accepted or rejected, is what closes that gap.
+func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (*domain.VAPaymentResponse, error) {
+	if flag := u.findPaymentFlag(ctx, req); flag != nil {
+		return replayPaymentFlag(req, flag)
+	}
+
+	resp, err := u.payment(ctx, req)
+	u.recordPaymentFlag(ctx, req, resp, err)
+	return resp, err
+}
+
+// findPaymentFlag looks up an earlier outcome for this exact (X-EXTERNAL-ID,
+// paymentRequestId) pair.
+//
+// A lookup failure is logged and treated as "no earlier flag" rather than
+// propagated: the guard exists to improve the answer to a repeat request, and
+// failing the payment outright because the audit lookup was unavailable would
+// be a worse outcome than falling through to the ordinary decision tree — a
+// genuine first-time payment must not be rejected because Postgres hiccuped.
+func (u *VAUsecase) findPaymentFlag(ctx context.Context, req *domain.VAPaymentRequest) *domain.VAPaymentFlag {
+	if req.ExternalID == "" || req.PaymentRequestID == "" {
+		return nil
+	}
+	flag, err := u.repo.FindPaymentFlag(ctx, req.ExternalID, req.PaymentRequestID)
+	if err != nil {
+		log.Printf("event=va_payment_flag_lookup_failed external_id=%s payment_request_id=%s error=%v",
+			req.ExternalID, req.PaymentRequestID, err)
+		return nil
+	}
+	return flag
+}
+
+// replayPaymentFlag answers a request whose (X-EXTERNAL-ID, paymentRequestId)
+// pair has already been flagged.
+//
+// flagAdvise "Y" is BCA asking "did my earlier flag land?", so it gets the
+// original verdict back verbatim — including a rejection, which is just as
+// much an answer as a settlement. Anything else is the double flag, and
+// carries the original virtualAccountData under responseCode 4042518, so
+// paymentFlagStatus/paymentFlagReason describe the first request whether that
+// was "00" or "01".
+func replayPaymentFlag(req *domain.VAPaymentRequest, flag *domain.VAPaymentFlag) (*domain.VAPaymentResponse, error) {
+	if strings.EqualFold(req.FlagAdvise, flagAdviseRetry) {
+		if flag.ResponseCode == domain.CodePaymentSuccess {
+			return &domain.VAPaymentResponse{
+				ResponseCode:       flag.ResponseCode,
+				ResponseMessage:    flag.ResponseMessage,
+				VirtualAccountData: flag.VirtualAccountData,
+			}, nil
+		}
+		return nil, domain.NewPaymentError(
+			flag.ResponseCode, flag.ResponseMessage, domain.ErrVAPaymentDuplicate, flag.VirtualAccountData)
+	}
+
+	return nil, domain.NewPaymentError(
+		domain.CodePaymentInconsistent,
+		snapMsgInconsistentRequest,
+		domain.ErrVAPaymentDuplicate,
+		flag.VirtualAccountData,
+	)
+}
+
+// recordPaymentFlag persists what this request was answered, so a re-flag of
+// the same pair can echo it.
+//
+// Internal errors are deliberately NOT recorded. BCA's rule is about a double
+// flag that follows a system error, and it presumes the first request produced
+// a result to report; a 500 produced none. Recording it would turn BCA's
+// legitimate retry into a 4042518 replay of a failure that never decided
+// anything, and the payment would never get a second chance to be processed.
+//
+// A write failure is logged and swallowed for the same reason the lookup is: a
+// payment that has already been decided — and, when it settled, already
+// notified the merchant — must not be reported as failed because its audit row
+// could not be written.
+func (u *VAUsecase) recordPaymentFlag(ctx context.Context, req *domain.VAPaymentRequest, resp *domain.VAPaymentResponse, outcome error) {
+	if req.ExternalID == "" || req.PaymentRequestID == "" {
+		return
+	}
+
+	flag := &domain.VAPaymentFlag{
+		ExternalID:       req.ExternalID,
+		PaymentRequestID: req.PaymentRequestID,
+		VirtualAccountNo: req.VirtualAccountNo,
+	}
+
+	switch {
+	case outcome == nil && resp != nil:
+		flag.ResponseCode = resp.ResponseCode
+		flag.ResponseMessage = resp.ResponseMessage
+		flag.VirtualAccountData = resp.VirtualAccountData
+	default:
+		var domainErr *domain.DomainError
+		if !errors.As(outcome, &domainErr) {
+			return
+		}
+		if strings.HasPrefix(domainErr.SNAPCode, "5") {
+			return
+		}
+		flag.ResponseCode = domainErr.SNAPCode
+		flag.ResponseMessage = domainErr.Message
+		flag.VirtualAccountData = domainErr.PaymentData
+	}
+
+	if err := u.repo.RecordPaymentFlag(ctx, flag); err != nil {
+		log.Printf("event=va_payment_flag_record_failed external_id=%s payment_request_id=%s response_code=%s error=%v",
+			req.ExternalID, req.PaymentRequestID, flag.ResponseCode, err)
+	}
+}
+
+// payment is the payment decision tree proper.
 //
 // Field-level validation (mandatory fields, lengths, amount format, currency
 // agreement) runs in the handler via domain.ValidatePaymentRequest, so what is
 // left here is the business decision tree, in BCA's documented precedence.
-func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (*domain.VAPaymentResponse, error) {
+func (u *VAUsecase) payment(ctx context.Context, req *domain.VAPaymentRequest) (*domain.VAPaymentResponse, error) {
 	// A payment already recorded under this paymentRequestId is either BCA
 	// retrying deliberately (flagAdvise "Y" — advice request) or BCA
 	// double-flagging after a system error. BCA documents the two outcomes
