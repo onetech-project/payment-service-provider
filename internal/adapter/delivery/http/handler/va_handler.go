@@ -202,7 +202,6 @@ func (h *VAHandler) paymentError(c echo.Context, err error, req *domain.VAPaymen
 	// rejection — BCA's PaymentResponse marks these Mandatory, and a rejection
 	// that omits them gives the channel nothing to display.
 	resp.VirtualAccountData.VirtualAccountName = req.VirtualAccountName
-	resp.VirtualAccountData.TrxID = req.TrxID
 	resp.VirtualAccountData.TrxDateTime = req.TrxDateTime
 	resp.VirtualAccountData.ReferenceNo = req.ReferenceNo
 	if req.PaidAmount != nil {

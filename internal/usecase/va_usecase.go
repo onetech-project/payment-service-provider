@@ -516,26 +516,19 @@ func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequ
 		ResponseCode:    domain.CodePaymentSuccess,
 		ResponseMessage: "Successful",
 		VirtualAccountData: &domain.VAPaymentStatus{
-			PartnerServiceID:    account.PartnerServiceID,
-			CustomerNo:          account.CustomerNo,
-			VirtualAccountNo:    account.VirtualAccountNo,
-			VirtualAccountName:  customerName,
-			VirtualAccountEmail: customerEmail,
-			VirtualAccountPhone: customerPhone,
-			TrxID:               account.TrxID,
-			PaymentRequestID:    req.PaymentRequestID,
-			PaidAmount:          req.PaidAmount,
-			PaidBills:           req.PaidBills,
-			TotalAmount:         &domain.Amount{Value: req.PaidAmount.Value, Currency: req.PaidAmount.Currency},
-			TrxDateTime:         &transactionDate,
-			ReferenceNo:         req.ReferenceNo,
-			JournalNum:          req.JournalNum,
-			PaymentType:         req.PaymentType,
-			FlagAdvise:          req.FlagAdvise,
-			PaymentFlagStatus:   "00",
-			PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
-			BillDetails:         echoPaymentBillDetails(req.BillDetails),
-			FreeTexts:           req.FreeTexts,
+			PartnerServiceID:   account.PartnerServiceID,
+			CustomerNo:         account.CustomerNo,
+			VirtualAccountNo:   account.VirtualAccountNo,
+			VirtualAccountName: customerName,
+			PaymentRequestID:   req.PaymentRequestID,
+			PaidAmount:         req.PaidAmount,
+			TotalAmount:        &domain.Amount{Value: req.PaidAmount.Value, Currency: req.PaidAmount.Currency},
+			TrxDateTime:        &transactionDate,
+			ReferenceNo:        req.ReferenceNo,
+			PaymentFlagStatus:  "00",
+			PaymentFlagReason:  &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+			BillDetails:        echoPaymentBillDetails(req.BillDetails),
+			FreeTexts:          req.FreeTexts,
 		},
 	}, nil
 }
@@ -556,24 +549,17 @@ func paymentResponseFromRecord(existing *domain.VAPaymentRecord) *domain.VAPayme
 		ResponseCode:    domain.CodePaymentSuccess,
 		ResponseMessage: "Successful",
 		VirtualAccountData: &domain.VAPaymentStatus{
-			PartnerServiceID:    existing.PartnerServiceID,
-			CustomerNo:          existing.CustomerNo,
-			VirtualAccountNo:    existing.VirtualAccountNo,
-			VirtualAccountName:  existing.CustomerName,
-			VirtualAccountEmail: existing.CustomerEmail,
-			VirtualAccountPhone: existing.CustomerPhone,
-			TrxID:               existing.TrxID,
-			PaymentRequestID:    existing.PaymentRequestID,
-			PaidAmount:          &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
-			PaidBills:           existing.PaidBills,
-			TotalAmount:         &domain.Amount{Value: totalAmount, Currency: existing.Currency},
-			TrxDateTime:         &txDate,
-			ReferenceNo:         existing.ReferenceNo,
-			JournalNum:          existing.JournalNum,
-			PaymentType:         existing.PaymentType,
-			FlagAdvise:          existing.FlagAdvise,
-			PaymentFlagStatus:   "00",
-			PaymentFlagReason:   &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
+			PartnerServiceID:   existing.PartnerServiceID,
+			CustomerNo:         existing.CustomerNo,
+			VirtualAccountNo:   existing.VirtualAccountNo,
+			VirtualAccountName: existing.CustomerName,
+			PaymentRequestID:   existing.PaymentRequestID,
+			PaidAmount:         &domain.Amount{Value: existing.PaidAmount, Currency: existing.Currency},
+			TotalAmount:        &domain.Amount{Value: totalAmount, Currency: existing.Currency},
+			TrxDateTime:        &txDate,
+			ReferenceNo:        existing.ReferenceNo,
+			PaymentFlagStatus:  "00",
+			PaymentFlagReason:  &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
 		},
 	}
 }
@@ -626,7 +612,6 @@ func paymentRejectionData(req *domain.VAPaymentRequest, record *domain.VAInquiry
 		CustomerNo:         record.CustomerNo,
 		VirtualAccountNo:   record.VirtualAccountNo,
 		VirtualAccountName: record.CustomerName,
-		TrxID:              record.TrxID,
 		PaymentRequestID:   req.PaymentRequestID,
 		PaidAmount:         &domain.Amount{},
 		TotalAmount:        &domain.Amount{Value: record.TotalAmount, Currency: currency},
@@ -646,7 +631,6 @@ func accountRejectionData(req *domain.VAPaymentRequest, account *domain.VAAccoun
 		CustomerNo:         account.CustomerNo,
 		VirtualAccountNo:   account.VirtualAccountNo,
 		VirtualAccountName: account.CustomerName,
-		TrxID:              account.TrxID,
 		PaymentRequestID:   req.PaymentRequestID,
 		PaidAmount:         &domain.Amount{},
 		TotalAmount:        &domain.Amount{},
@@ -859,26 +843,19 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 			ResponseCode:    responseCode,
 			ResponseMessage: responseMessage,
 			VirtualAccountData: &domain.VAPaymentStatus{
-				PartnerServiceID:    req.PartnerServiceID,
-				CustomerNo:          req.CustomerNo,
-				VirtualAccountNo:    req.VirtualAccountNo,
-				VirtualAccountName:  req.VirtualAccountName,
-				VirtualAccountEmail: req.VirtualAccountEmail,
-				VirtualAccountPhone: req.VirtualAccountPhone,
-				TrxID:               trxID,
-				PaymentRequestID:    req.PaymentRequestID,
-				PaidAmount:          &domain.Amount{Value: paidAmount, Currency: req.PaidAmount.Currency},
-				PaidBills:           req.PaidBills,
-				TotalAmount:         paymentTotalAmount(req),
-				TrxDateTime:         &transactionDate,
-				ReferenceNo:         req.ReferenceNo,
-				JournalNum:          req.JournalNum,
-				PaymentType:         req.PaymentType,
-				FlagAdvise:          req.FlagAdvise,
-				PaymentFlagStatus:   paymentFlagStatus,
-				PaymentFlagReason:   getPaymentFlagReason(paymentFlagStatus),
-				BillDetails:         echoPaymentBillDetails(req.BillDetails),
-				FreeTexts:           req.FreeTexts,
+				PartnerServiceID:   req.PartnerServiceID,
+				CustomerNo:         req.CustomerNo,
+				VirtualAccountNo:   req.VirtualAccountNo,
+				VirtualAccountName: req.VirtualAccountName,
+				PaymentRequestID:   req.PaymentRequestID,
+				PaidAmount:         &domain.Amount{Value: paidAmount, Currency: req.PaidAmount.Currency},
+				TotalAmount:        paymentTotalAmount(req),
+				TrxDateTime:        &transactionDate,
+				ReferenceNo:        req.ReferenceNo,
+				PaymentFlagStatus:  paymentFlagStatus,
+				PaymentFlagReason:  getPaymentFlagReason(paymentFlagStatus),
+				BillDetails:        echoPaymentBillDetails(req.BillDetails),
+				FreeTexts:          req.FreeTexts,
 			},
 		}, nil
 	}
@@ -976,25 +953,18 @@ func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (
 		ResponseCode:    domain.CodePaymentSuccess,
 		ResponseMessage: "Successful",
 		VirtualAccountData: &domain.VAPaymentStatus{
-			PartnerServiceID:    req.PartnerServiceID,
-			CustomerNo:          req.CustomerNo,
-			VirtualAccountNo:    req.VirtualAccountNo,
-			VirtualAccountName:  customerName,
-			VirtualAccountEmail: req.VirtualAccountEmail,
-			VirtualAccountPhone: req.VirtualAccountPhone,
-			TrxID:               trxID,
-			PaymentRequestID:    req.PaymentRequestID,
-			PaidAmount:          req.PaidAmount,
-			PaidBills:           req.PaidBills,
+			PartnerServiceID:   req.PartnerServiceID,
+			CustomerNo:         req.CustomerNo,
+			VirtualAccountNo:   req.VirtualAccountNo,
+			VirtualAccountName: customerName,
+			PaymentRequestID:   req.PaymentRequestID,
+			PaidAmount:         req.PaidAmount,
 			// totalAmount and trxDateTime are Mandatory on BCA's
 			// PaymentResponse; echoing the request's nil pointer straight
 			// through dropped them from the wire entirely via omitempty.
 			TotalAmount:       paymentTotalAmount(req),
 			TrxDateTime:       &transactionDate,
 			ReferenceNo:       req.ReferenceNo,
-			JournalNum:        req.JournalNum,
-			PaymentType:       req.PaymentType,
-			FlagAdvise:        req.FlagAdvise,
 			PaymentFlagStatus: "00",
 			PaymentFlagReason: &domain.BilingualText{English: "Success", Indonesia: "Sukses"},
 			BillDetails:       echoPaymentBillDetails(req.BillDetails),
@@ -1045,22 +1015,15 @@ func (u *VAUsecase) replayVariableInstalment(
 		ResponseCode:    responseCode,
 		ResponseMessage: responseMessage,
 		VirtualAccountData: &domain.VAPaymentStatus{
-			PartnerServiceID:    req.PartnerServiceID,
-			CustomerNo:          req.CustomerNo,
-			VirtualAccountNo:    req.VirtualAccountNo,
-			VirtualAccountName:  req.VirtualAccountName,
-			VirtualAccountEmail: req.VirtualAccountEmail,
-			VirtualAccountPhone: req.VirtualAccountPhone,
-			TrxID:               trxID,
-			PaymentRequestID:    req.PaymentRequestID,
-			PaidAmount:          &domain.Amount{Value: cumulativePaid, Currency: req.PaidAmount.Currency},
-			PaidBills:           req.PaidBills,
-			TotalAmount:         paymentTotalAmount(req),
-			TrxDateTime:         &transactionDate,
-			ReferenceNo:         req.ReferenceNo,
-			JournalNum:          req.JournalNum,
-			PaymentType:         req.PaymentType,
-			FlagAdvise:          req.FlagAdvise,
+			PartnerServiceID:   req.PartnerServiceID,
+			CustomerNo:         req.CustomerNo,
+			VirtualAccountNo:   req.VirtualAccountNo,
+			VirtualAccountName: req.VirtualAccountName,
+			PaymentRequestID:   req.PaymentRequestID,
+			PaidAmount:         &domain.Amount{Value: cumulativePaid, Currency: req.PaidAmount.Currency},
+			TotalAmount:        paymentTotalAmount(req),
+			TrxDateTime:        &transactionDate,
+			ReferenceNo:        req.ReferenceNo,
 			// The instalment was accepted when it was first recorded, so the
 			// flag it replays is that acceptance.
 			PaymentFlagStatus: domain.PaymentFlagSuccess,
@@ -1177,11 +1140,11 @@ func paymentBillDetailsToBillDetail(bills []domain.VAPaymentBillDetail) []domain
 // echoPaymentBillDetails echoes the vendor's bill details back in the
 // response per ASPI PaymentResponse.virtualAccountData.billDetails,
 // defaulting status/reason/billerReferenceId for a successful payment.
-func echoPaymentBillDetails(bills []domain.VAPaymentBillDetail) []domain.VAPaymentBillDetail {
+func echoPaymentBillDetails(bills []domain.VAPaymentBillDetail) []domain.VAPaymentResponseBillDetail {
 	if len(bills) == 0 {
 		return nil
 	}
-	out := make([]domain.VAPaymentBillDetail, 0, len(bills))
+	out := make([]domain.VAPaymentResponseBillDetail, 0, len(bills))
 	for _, b := range bills {
 		// BCA's PaymentResponse table is explicit about what this field must
 		// carry: "billerReferenceId ... From Payment Request. This field value
@@ -1205,10 +1168,20 @@ func echoPaymentBillDetails(bills []domain.VAPaymentBillDetail) []domain.VAPayme
 		if reason == nil {
 			reason = &domain.BilingualText{English: "Success", Indonesia: "Sukses"}
 		}
-		b.BillerReferenceID = billerReferenceID
-		b.Status = status
-		b.Reason = reason
-		out = append(out, b)
+		// Only the fields BCA's Response table defines are carried across;
+		// billCode/billName/billShortName/billReferenceNo stay on the request
+		// side, which is why this maps between the two types rather than
+		// mutating the inbound one.
+		out = append(out, domain.VAPaymentResponseBillDetail{
+			BillerReferenceID: billerReferenceID,
+			BillNo:            b.BillNo,
+			BillDescription:   b.BillDescription,
+			BillSubCompany:    b.BillSubCompany,
+			BillAmount:        b.BillAmount,
+			AdditionalInfo:    b.AdditionalInfo,
+			Status:            status,
+			Reason:            reason,
+		})
 	}
 	return out
 }

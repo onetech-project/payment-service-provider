@@ -2,8 +2,10 @@ package domain
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,4 +198,76 @@ func TestVAInquiryRequest_BindsEveryDocumentedField(t *testing.T) {
 	assert.Equal(t, "secret", req.PassApp)
 	assert.Equal(t, "202202110909311234500001136962", req.InquiryRequestID)
 	assert.NotNil(t, req.AdditionalInfo)
+}
+
+// The payment response must carry the Response table of Tech. Doc. OpenAPI
+// VA-Payment-Flag v2.3 and nothing beyond it. The REQUEST table is wider —
+// trxId, flagAdvise, virtualAccountEmail/Phone, paidBills, journalNum,
+// paymentType — and those were being echoed straight back into a response
+// whose schema does not define them.
+//
+// Asserted on the marshalled keys rather than the struct so the check survives
+// a field being re-added with omitempty: a field that is absent only because
+// this fixture left it blank is exactly the regression that would slip past.
+func TestVAPaymentStatus_EmitsOnlyDocumentedResponseFields(t *testing.T) {
+	trxDateTime := time.Date(2022, 2, 12, 17, 29, 57, 0, time.UTC)
+	status := VAPaymentStatus{
+		PartnerServiceID:   "   12345",
+		CustomerNo:         "123456789012345678",
+		VirtualAccountNo:   "   12345123456789012345678",
+		VirtualAccountName: "Jokul Doe",
+		PaymentRequestID:   "202202111031031234500001136962",
+		PaidAmount:         &Amount{Value: "100000.00", Currency: "IDR"},
+		TotalAmount:        &Amount{Value: "100000.00", Currency: "IDR"},
+		TrxDateTime:        &trxDateTime,
+		ReferenceNo:        "00113696201",
+		PaymentFlagStatus:  "00",
+		PaymentFlagReason:  &BilingualText{English: "Success", Indonesia: "Sukses"},
+		BillDetails: []VAPaymentResponseBillDetail{{
+			BillerReferenceID: "00113696201",
+			BillNo:            "123456789012345678",
+			BillDescription:   &BilingualText{English: "Maintenance", Indonesia: "Pemeliharaan"},
+			BillSubCompany:    "00000",
+			BillAmount:        &Amount{Value: "100000.00", Currency: "IDR"},
+			Status:            "00",
+			Reason:            &BilingualText{English: "Success", Indonesia: "Sukses"},
+		}},
+		FreeTexts: []BilingualText{{English: "Free text", Indonesia: "Tulisan bebas"}},
+	}
+
+	encoded, err := json.Marshal(status)
+	require.NoError(t, err)
+
+	var decoded map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	keys := make([]string, 0, len(decoded))
+	for k := range decoded {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	assert.Equal(t, []string{
+		"billDetails", "customerNo", "freeTexts", "paidAmount", "partnerServiceId",
+		"paymentFlagReason", "paymentFlagStatus", "paymentRequestId", "referenceNo",
+		"totalAmount", "trxDateTime", "virtualAccountName", "virtualAccountNo",
+	}, keys)
+
+	var bills []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(decoded["billDetails"], &bills))
+	require.Len(t, bills, 1)
+
+	billKeys := make([]string, 0, len(bills[0]))
+	for k := range bills[0] {
+		billKeys = append(billKeys, k)
+	}
+	sort.Strings(billKeys)
+
+	// billReferenceNo in particular carried no omitempty on the shared type,
+	// so every response emitted it — a request-side field BCA does not read
+	// back.
+	assert.Equal(t, []string{
+		"billAmount", "billDescription", "billNo", "billSubCompany",
+		"billerReferenceId", "reason", "status",
+	}, billKeys)
 }

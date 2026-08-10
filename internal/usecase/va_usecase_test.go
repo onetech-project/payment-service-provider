@@ -701,7 +701,6 @@ func TestVAUsecase_Payment_DuplicatePaymentRequestID_EchoesPersistedFields(t *te
 	assert.Equal(t, "00", domainErr.PaymentData.PaymentFlagStatus)
 	assert.Equal(t, existing.PartnerServiceID, domainErr.PaymentData.PartnerServiceID)
 	assert.Equal(t, existing.VirtualAccountNo, domainErr.PaymentData.VirtualAccountNo)
-	assert.Equal(t, existing.TrxID, domainErr.PaymentData.TrxID)
 	assert.Equal(t, existing.PaymentRequestID, domainErr.PaymentData.PaymentRequestID)
 	assert.Equal(t, existing.PaidAmount, domainErr.PaymentData.PaidAmount.Value)
 	mockRepo.AssertNotCalled(t, "SavePayment")

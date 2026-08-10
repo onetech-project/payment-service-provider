@@ -171,33 +171,52 @@ func (r VAPaymentResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// VAPaymentStatus contains payment flag status and echoes back the
-// identity/amount fields from PaymentResponse.virtualAccountData per ASPI spec.
+// VAPaymentStatus is PaymentResponse.virtualAccountData, and carries exactly
+// the fields listed in the Response table of Tech. Doc. OpenAPI VA-Payment-Flag
+// v2.3 — no more.
+//
+// The REQUEST table is the wider of the two: trxId, flagAdvise,
+// virtualAccountEmail/Phone, paidBills, journalNum and paymentType appear there
+// but NOT in the Response table, and echoing them back put fields on the wire
+// that BCA's response schema does not define. They are still bound inbound on
+// VAPaymentRequest, and still drive the flow (flagAdvise decides 2002500 vs
+// 4042518, trxId identifies the merchant transaction) — they are simply not
+// reported back.
 type VAPaymentStatus struct {
 	PartnerServiceID string `json:"partnerServiceId"`
 	CustomerNo       string `json:"customerNo"`
 	VirtualAccountNo string `json:"virtualAccountNo"`
 	// VirtualAccountName carries no omitempty: it is reported even when empty,
 	// including on the not-found rejection where there is no stored holder to
-	// name. Email/phone below stay omitempty — those are genuinely optional
-	// and vendors do not expect placeholders for them.
-	VirtualAccountName  string                `json:"virtualAccountName"`
-	VirtualAccountEmail string                `json:"virtualAccountEmail,omitempty"`
-	VirtualAccountPhone string                `json:"virtualAccountPhone,omitempty"`
-	TrxID               string                `json:"trxId,omitempty"`
-	PaymentRequestID    string                `json:"paymentRequestId"`
-	PaidAmount          *Amount               `json:"paidAmount"`
-	PaidBills           string                `json:"paidBills,omitempty"`
-	TotalAmount         *Amount               `json:"totalAmount,omitempty"`
-	TrxDateTime         *time.Time            `json:"trxDateTime,omitempty"`
-	ReferenceNo         string                `json:"referenceNo,omitempty"`
-	JournalNum          string                `json:"journalNum,omitempty"`
-	PaymentType         string                `json:"paymentType,omitempty"`
-	FlagAdvise          string                `json:"flagAdvise,omitempty"`
-	PaymentFlagStatus   string                `json:"paymentFlagStatus"`
-	PaymentFlagReason   *BilingualText        `json:"paymentFlagReason"`
-	BillDetails         []VAPaymentBillDetail `json:"billDetails"`
-	FreeTexts           []BilingualText       `json:"freeTexts"`
+	// name.
+	VirtualAccountName string                        `json:"virtualAccountName"`
+	PaymentRequestID   string                        `json:"paymentRequestId"`
+	PaidAmount         *Amount                       `json:"paidAmount"`
+	TotalAmount        *Amount                       `json:"totalAmount,omitempty"`
+	TrxDateTime        *time.Time                    `json:"trxDateTime,omitempty"`
+	ReferenceNo        string                        `json:"referenceNo,omitempty"`
+	PaymentFlagStatus  string                        `json:"paymentFlagStatus"`
+	PaymentFlagReason  *BilingualText                `json:"paymentFlagReason"`
+	BillDetails        []VAPaymentResponseBillDetail `json:"billDetails"`
+	FreeTexts          []BilingualText               `json:"freeTexts"`
+}
+
+// VAPaymentResponseBillDetail is one entry of
+// PaymentResponse.virtualAccountData.billDetails. It is deliberately a
+// different type from VAPaymentBillDetail, which models the REQUEST: the two
+// tables do not agree. billCode, billName, billShortName and billReferenceNo
+// are request-side only — billReferenceNo especially, which has no omitempty
+// there and so was emitted on every response — while billerReferenceId, status
+// and reason are response-side only.
+type VAPaymentResponseBillDetail struct {
+	BillerReferenceID string                 `json:"billerReferenceId"`
+	BillNo            string                 `json:"billNo"`
+	BillDescription   *BilingualText         `json:"billDescription"`
+	BillSubCompany    string                 `json:"billSubCompany"`
+	BillAmount        *Amount                `json:"billAmount"`
+	AdditionalInfo    map[string]interface{} `json:"additionalInfo,omitempty"`
+	Status            string                 `json:"status"`
+	Reason            *BilingualText         `json:"reason"`
 }
 
 // MarshalJSON guarantees billDetails and freeTexts are always emitted as
@@ -208,7 +227,7 @@ func (s VAPaymentStatus) MarshalJSON() ([]byte, error) {
 	type alias VAPaymentStatus
 	out := alias(s)
 	if out.BillDetails == nil {
-		out.BillDetails = []VAPaymentBillDetail{}
+		out.BillDetails = []VAPaymentResponseBillDetail{}
 	}
 	if out.FreeTexts == nil {
 		out.FreeTexts = []BilingualText{}
