@@ -596,26 +596,40 @@ definitions:
       virtualAccountData:
         $ref: '#/definitions/domain.VAPaymentStatus'
     type: object
+  domain.VAPaymentResponseBillDetail:
+    properties:
+      additionalInfo:
+        additionalProperties: true
+        type: object
+      billAmount:
+        $ref: '#/definitions/domain.Amount'
+      billDescription:
+        $ref: '#/definitions/domain.BilingualText'
+      billNo:
+        type: string
+      billSubCompany:
+        type: string
+      billerReferenceId:
+        type: string
+      reason:
+        $ref: '#/definitions/domain.BilingualText'
+      status:
+        type: string
+    type: object
   domain.VAPaymentStatus:
     properties:
       billDetails:
         items:
-          $ref: '#/definitions/domain.VAPaymentBillDetail'
+          $ref: '#/definitions/domain.VAPaymentResponseBillDetail'
         type: array
       customerNo:
-        type: string
-      flagAdvise:
         type: string
       freeTexts:
         items:
           $ref: '#/definitions/domain.BilingualText'
         type: array
-      journalNum:
-        type: string
       paidAmount:
         $ref: '#/definitions/domain.Amount'
-      paidBills:
-        type: string
       partnerServiceId:
         type: string
       paymentFlagReason:
@@ -624,28 +638,19 @@ definitions:
         type: string
       paymentRequestId:
         type: string
-      paymentType:
-        type: string
       referenceNo:
         type: string
       totalAmount:
         $ref: '#/definitions/domain.Amount'
       trxDateTime:
         type: string
-      trxId:
-        type: string
-      virtualAccountEmail:
-        type: string
       virtualAccountName:
         description: |-
           VirtualAccountName carries no omitempty: it is reported even when empty,
           including on the not-found rejection where there is no stored holder to
-          name. Email/phone below stay omitempty — those are genuinely optional
-          and vendors do not expect placeholders for them.
+          name.
         type: string
       virtualAccountNo:
-        type: string
-      virtualAccountPhone:
         type: string
     type: object
   domain.VAStatusBillDetail:

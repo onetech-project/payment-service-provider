@@ -2328,19 +2328,46 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.VAPaymentResponseBillDetail": {
+            "type": "object",
+            "properties": {
+                "additionalInfo": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "billAmount": {
+                    "$ref": "#/definitions/domain.Amount"
+                },
+                "billDescription": {
+                    "$ref": "#/definitions/domain.BilingualText"
+                },
+                "billNo": {
+                    "type": "string"
+                },
+                "billSubCompany": {
+                    "type": "string"
+                },
+                "billerReferenceId": {
+                    "type": "string"
+                },
+                "reason": {
+                    "$ref": "#/definitions/domain.BilingualText"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.VAPaymentStatus": {
             "type": "object",
             "properties": {
                 "billDetails": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/domain.VAPaymentBillDetail"
+                        "$ref": "#/definitions/domain.VAPaymentResponseBillDetail"
                     }
                 },
                 "customerNo": {
-                    "type": "string"
-                },
-                "flagAdvise": {
                     "type": "string"
                 },
                 "freeTexts": {
@@ -2349,14 +2376,8 @@ const docTemplate = `{
                         "$ref": "#/definitions/domain.BilingualText"
                     }
                 },
-                "journalNum": {
-                    "type": "string"
-                },
                 "paidAmount": {
                     "$ref": "#/definitions/domain.Amount"
-                },
-                "paidBills": {
-                    "type": "string"
                 },
                 "partnerServiceId": {
                     "type": "string"
@@ -2370,9 +2391,6 @@ const docTemplate = `{
                 "paymentRequestId": {
                     "type": "string"
                 },
-                "paymentType": {
-                    "type": "string"
-                },
                 "referenceNo": {
                     "type": "string"
                 },
@@ -2382,20 +2400,11 @@ const docTemplate = `{
                 "trxDateTime": {
                     "type": "string"
                 },
-                "trxId": {
-                    "type": "string"
-                },
-                "virtualAccountEmail": {
-                    "type": "string"
-                },
                 "virtualAccountName": {
-                    "description": "VirtualAccountName carries no omitempty: it is reported even when empty,\nincluding on the not-found rejection where there is no stored holder to\nname. Email/phone below stay omitempty — those are genuinely optional\nand vendors do not expect placeholders for them.",
+                    "description": "VirtualAccountName carries no omitempty: it is reported even when empty,\nincluding on the not-found rejection where there is no stored holder to\nname.",
                     "type": "string"
                 },
                 "virtualAccountNo": {
-                    "type": "string"
-                },
-                "virtualAccountPhone": {
                     "type": "string"
                 }
             }
