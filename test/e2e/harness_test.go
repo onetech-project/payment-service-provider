@@ -42,7 +42,86 @@ const (
 	testChannelID = "95231"
 	testPartnerID = "12345"
 	testSecret    = "vendor-client-secret"
+	// testClientID mirrors VENDOR_CLIENT_ID in .env.bca.va: the real BCA
+	// vendor is onboarded ClientID-first, so every request it sends carries
+	// `Authorization: Bearer <accessToken>` and binds that token into
+	// stringToSign. Leaving it empty here would silently put the whole suite
+	// on the legacy no-token convention and record a transcript that does not
+	// look like production traffic.
+	testClientID = "e2e-vendor-client"
 )
+
+// testPartnerServiceID is testPartnerID as it goes into a PAYLOAD. The header
+// and the body carry the same company code in two different shapes, and
+// conflating them is why this suite spent so long sending a format BCA never
+// sends.
+var testPartnerServiceID = padPartnerServiceID(testPartnerID)
+
+// padPartnerServiceID renders a company code the way partnerServiceId is
+// specified across all three service docs: String(8) Fixed, "using space
+// padding “ “ on the left if it doesn't reach 8 characters".
+//
+// X-PARTNER-ID carries the same code UNPADDED — every BCA sample sends
+// `X-PARTNER-ID: 12345` next to `"partnerServiceId": "   12345"` — so the two
+// are derived from one value here rather than being the same string.
+//
+// virtualAccountNo keeps the padding too: it is documented as "partnerServiceId
+// (8 digit left padding space “ “) + customerNo", and BCA's samples show
+// `"virtualAccountNo": "   12345123456789012345678"` at 26 characters. Trimming
+// it would produce a VA number 3 characters shorter than the one BCA sends.
+func padPartnerServiceID(partnerID string) string {
+	if len(partnerID) >= 8 {
+		return partnerID
+	}
+	return strings.Repeat(" ", 8-len(partnerID)) + partnerID
+}
+
+// --- vendor access token -------------------------------------------------
+
+// stubJWTIssuer mints and validates the vendor access tokens this suite sends.
+// Real JWT signing is not what these tests are about — the header plumbing and
+// the AccessToken component of stringToSign are — and the token's own
+// cryptography is pinned in middleware/snap_auth_test.go and
+// usecase/token_usecase_test.go.
+type stubJWTIssuer struct {
+	mu     sync.Mutex
+	issued map[string]string // token -> clientID
+}
+
+func newStubJWTIssuer() *stubJWTIssuer {
+	return &stubJWTIssuer{issued: map[string]string{}}
+}
+
+func (i *stubJWTIssuer) GenerateB2BToken(clientID string, _ time.Duration) (string, string, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	token := "e2e-token-" + clientID
+	i.issued[token] = clientID
+	return token, "jti-" + clientID, nil
+}
+
+func (i *stubJWTIssuer) ValidateToken(token string) (*domain.TokenClaims, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	clientID, ok := i.issued[token]
+	if !ok {
+		return nil, fmt.Errorf("unknown token %q", token)
+	}
+	return &domain.TokenClaims{ClientID: clientID, JTI: "jti-" + clientID}, nil
+}
+
+// tokenFor returns the bearer token a vendor presents. A vendor with no
+// ClientID has not migrated to ClientID-based onboarding, and signs under the
+// legacy empty-AccessToken convention with no Authorization header at all.
+func (s *server) tokenFor(t *testing.T, clientID string) string {
+	t.Helper()
+	if clientID == "" {
+		return ""
+	}
+	token, _, err := s.issuer.GenerateB2BToken(clientID, time.Hour)
+	require.NoError(t, err)
+	return token
+}
 
 // --- in-memory repository ----------------------------------------------
 
@@ -364,12 +443,14 @@ type server struct {
 	repo     *memRepo
 	notifier *recordingNotifier
 	vendors  map[string]*config.VendorConfig
+	issuer   *stubJWTIssuer
 }
 
 func defaultVendorConfig() *config.VendorConfig {
 	return &config.VendorConfig{
 		Vendor:                "bca",
 		Channel:               "va",
+		ClientID:              testClientID,
 		ClientSecret:          testSecret,
 		ChannelID:             testChannelID,
 		PartnerID:             testPartnerID,
@@ -392,6 +473,7 @@ func newServer(t *testing.T, vendors ...vendor) *server {
 	repo := newMemRepo()
 	notifier := &recordingNotifier{}
 	uc := usecase.NewVAUsecase(repo, notifier)
+	issuer := newStubJWTIssuer()
 
 	e := echo.New()
 	store := newMemIdempotencyStore()
@@ -411,13 +493,13 @@ func newServer(t *testing.T, vendors ...vendor) *server {
 		group := e.Group(basePath + "/transfer-va")
 		group.Use(customMiddleware.IdempotencyMiddleware(store, time.Minute, time.Hour))
 		vendorGroup := group.Group("")
-		vendorGroup.Use(customMiddleware.MultiVendorSNAPAuth(configs, nil, true))
+		vendorGroup.Use(customMiddleware.MultiVendorSNAPAuth(configs, issuer, true))
 		vendorGroup.POST("/inquiry", vh.Inquiry)
 		vendorGroup.POST("/payment", vh.Payment)
 		vendorGroup.POST("/status", vh.Status)
 	}
 
-	return &server{echo: e, repo: repo, notifier: notifier, vendors: registered}
+	return &server{echo: e, repo: repo, notifier: notifier, vendors: registered, issuer: issuer}
 }
 
 type response struct {
@@ -451,6 +533,13 @@ type requestOptions struct {
 	secret       string // signs with a different secret
 	rawBody      string // sent verbatim, e.g. malformed JSON
 	bodyEncoding string
+	// accessToken is both the Authorization bearer and the AccessToken
+	// component of stringToSign — the two must agree or the signature does not
+	// verify. Empty means the legacy convention: no header, empty component.
+	accessToken string
+	// clientID selects which vendor the default accessToken is minted for.
+	// Ignored once accessToken is set explicitly.
+	clientID string
 	// extraHeaders are sent on top of the documented set, to prove the
 	// service ignores anything BCA does not publish.
 	extraHeaders map[string]string
@@ -468,9 +557,15 @@ func (s *server) call(t *testing.T, path string, payload any, opts ...func(*requ
 		timestamp:    time.Now().Format(time.RFC3339),
 		secret:       testSecret,
 		bodyEncoding: crypto.BodyHashHex,
+		clientID:     testClientID,
 	}
 	for _, apply := range opts {
 		apply(&o)
+	}
+	// Minted after the options are applied so withAccessToken/withClientID can
+	// steer it, and so a test that clears the clientID gets no token at all.
+	if o.accessToken == "" {
+		o.accessToken = s.tokenFor(t, o.clientID)
 	}
 
 	body := o.rawBody
@@ -483,7 +578,7 @@ func (s *server) call(t *testing.T, path string, payload any, opts ...func(*requ
 	signature := o.signature
 	if signature == "" {
 		bodyHash := crypto.HashRequestBody([]byte(body), o.bodyEncoding)
-		stringToSign := crypto.BuildStringToSign(http.MethodPost, path, "", bodyHash, o.timestamp)
+		stringToSign := crypto.BuildStringToSign(http.MethodPost, path, o.accessToken, bodyHash, o.timestamp)
 		signature = crypto.NewHMACSigner(o.secret, "HMAC-SHA512").Sign(stringToSign)
 	}
 
@@ -491,6 +586,9 @@ func (s *server) call(t *testing.T, path string, payload any, opts ...func(*requ
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	req.Header.Set("X-TIMESTAMP", o.timestamp)
 	req.Header.Set("X-SIGNATURE", signature)
+	if o.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+o.accessToken)
+	}
 	if o.externalID != "" {
 		req.Header.Set("X-EXTERNAL-ID", o.externalID)
 	}
@@ -552,6 +650,28 @@ func withBodyEncoding(encoding string) func(*requestOptions) {
 	return func(o *requestOptions) { o.bodyEncoding = encoding }
 }
 
+// withClientID mints the request's accessToken for a different vendor client —
+// the multi-vendor tests use it so each vendor presents its own token.
+func withClientID(clientID string) func(*requestOptions) {
+	return func(o *requestOptions) { o.clientID = clientID }
+}
+
+// withAccessToken sends a token the issuer never minted, to prove the
+// middleware validates it rather than trusting the header.
+func withAccessToken(token string) func(*requestOptions) {
+	return func(o *requestOptions) { o.accessToken = token }
+}
+
+// withoutAccessToken drops the Authorization header and signs under the legacy
+// empty-AccessToken convention — which a ClientID-onboarded vendor must be
+// rejected for.
+func withoutAccessToken() func(*requestOptions) {
+	return func(o *requestOptions) {
+		o.clientID = ""
+		o.accessToken = ""
+	}
+}
+
 func withExtraHeader(name, value string) func(*requestOptions) {
 	return func(o *requestOptions) {
 		if o.extraHeaders == nil {
@@ -567,7 +687,7 @@ func inquiryPayload(partnerServiceID, customerNo, inquiryRequestID string) map[s
 	return map[string]any{
 		"partnerServiceId": partnerServiceID,
 		"customerNo":       customerNo,
-		"virtualAccountNo": strings.TrimSpace(partnerServiceID) + customerNo,
+		"virtualAccountNo": partnerServiceID + customerNo,
 		"trxDateInit":      time.Now().Format(time.RFC3339),
 		"channelCode":      6011,
 		"inquiryRequestId": inquiryRequestID,
@@ -580,7 +700,7 @@ func paymentPayload(partnerServiceID, customerNo, paymentRequestID, amount strin
 	return map[string]any{
 		"partnerServiceId":   partnerServiceID,
 		"customerNo":         customerNo,
-		"virtualAccountNo":   strings.TrimSpace(partnerServiceID) + customerNo,
+		"virtualAccountNo":   partnerServiceID + customerNo,
 		"virtualAccountName": "Budi Manjo",
 		"paymentRequestId":   paymentRequestID,
 		"channelCode":        6011,
@@ -597,7 +717,7 @@ func statusPayload(partnerServiceID, customerNo, inquiryRequestID string) map[st
 	return map[string]any{
 		"partnerServiceId": partnerServiceID,
 		"customerNo":       customerNo,
-		"virtualAccountNo": strings.TrimSpace(partnerServiceID) + customerNo,
+		"virtualAccountNo": partnerServiceID + customerNo,
 		"inquiryRequestId": inquiryRequestID,
 		"additionalInfo":   map[string]any{},
 	}

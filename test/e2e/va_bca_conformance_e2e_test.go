@@ -24,10 +24,10 @@ func TestE2E_PaymentReusingInquiryRequestID_IsAFirstPaymentNotADoubleFlag(t *tes
 	s := newServer(t)
 
 	const (
-		partnerServiceID = testPartnerID
-		customerNo       = "678901234567890900"
-		sharedRequestID  = "202202111031031234500900"
+		customerNo      = "678901234567890900"
+		sharedRequestID = "202202111031031234500900"
 	)
+	partnerServiceID := testPartnerServiceID
 	seedFixedBill(s, partnerServiceID, customerNo, "150000.00")
 
 	// 1. Inquiry claims sharedRequestID onto the transaction.
