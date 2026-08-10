@@ -29,6 +29,8 @@
 #   -r  inquiryRequestId (inquiry/status)
 #   -C  channelCode (inquiry/payment, default 6011 = ATM)
 #   -A  flagAdvise (payment, default N; Y = advice/retry)
+#   -H  body-hash encoding: hex | base64 (default: the env file's
+#       VENDOR_BODY_HASH_ENCODING, else base64)
 #
 # The generated X-TIMESTAMP is only accepted within ±5 minutes of server time,
 # and the accessToken expires after 15 minutes. Generate one request at a time,
@@ -60,9 +62,10 @@ PARTNER_ID="1-MANJO-SNAP"
 # too, so the same value serves both.
 CHANNEL_CODE="6011"
 FLAG_ADVISE="N"
+BODY_HASH_ENCODING=""
 
 usage() {
-	echo "Usage: $0 -e <token|create-va|inquiry|payment|status|delete-va> -f <env-file> [-u <base-url>] [-s <partnerServiceId>] [-c <customerNo>] [-v <virtualAccountNo>] [-n <name>] [-a <amount>] [-t <trxId>] [-q <paymentRequestId>] [-r <inquiryRequestId>] [-C <channelCode>] [-A <flagAdvise>]" >&2
+	echo "Usage: $0 -e <token|create-va|inquiry|payment|status|delete-va> -f <env-file> [-u <base-url>] [-s <partnerServiceId>] [-c <customerNo>] [-v <virtualAccountNo>] [-n <name>] [-a <amount>] [-t <trxId>] [-q <paymentRequestId>] [-r <inquiryRequestId>] [-C <channelCode>] [-A <flagAdvise>] [-H <hex|base64>]" >&2
 	exit 1
 }
 
@@ -81,7 +84,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:C:A:h" opt; do
+while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:C:A:H:h" opt; do
 	case "$opt" in
 	e) ENDPOINT_NAME="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
@@ -98,6 +101,7 @@ while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:C:A:h" opt; do
 	p) PARTNER_ID="$OPTARG" ;;
 	C) CHANNEL_CODE="$OPTARG" ;;
 	A) FLAG_ADVISE="$OPTARG" ;;
+	H) BODY_HASH_ENCODING="$OPTARG" ;;
 	h | *) usage ;;
 	esac
 done
@@ -113,6 +117,36 @@ PRIVATE_KEY_PATH="$(read_env_var "$ENV_FILE" MERCHANT_PRIVATE_KEY_PATH || read_e
 
 [[ -z "$CLIENT_ID" ]] && { echo "!! ${ENV_FILE}: no MERCHANT_CLIENT_ID / VENDOR_CLIENT_ID" >&2; exit 1; }
 [[ -z "$PRIVATE_KEY_PATH" || ! -f "$PRIVATE_KEY_PATH" ]] && { echo "!! private key not found (MERCHANT_PRIVATE_KEY_PATH / VENDOR_PRIVATE_KEY_PATH): ${PRIVATE_KEY_PATH:-<unset>}" >&2; exit 1; }
+
+# The RequestBody component of stringToSign is encoded as lowercase hex per
+# BCA's Signature Symmetric spec, or base64 per feature 012-base64-hash-encoding
+# — whichever the side verifying this request was onboarded with. That is a
+# property of the counterparty, not of the endpoint, so it is chosen explicitly
+# here. Picking the wrong one surfaces as a permanent
+# "Unauthorized. [Invalid signature]" and never as a field error, which is why
+# -H exists: flipping it is the first thing to try against such a 401.
+#
+# Precedence: -H, then the env file's own VENDOR_BODY_HASH_ENCODING (so a
+# vendor file signs the way that vendor is configured to verify), then base64 —
+# what MerchantAuthMiddleware always uses for create-va/delete-va, and what
+# .env.bca.va sets. X-SIGNATURE itself is always base64, regardless.
+#
+# Resolved before the token fetch below so a bad -H fails instantly rather than
+# after a network round trip.
+[[ -z "$BODY_HASH_ENCODING" ]] && BODY_HASH_ENCODING="$(read_env_var "$ENV_FILE" VENDOR_BODY_HASH_ENCODING || true)"
+BODY_HASH_ENCODING="${BODY_HASH_ENCODING:-base64}"
+# Matched case-insensitively, the way crypto.HashRequestBody compares it. An
+# unrecognized value is rejected rather than silently defaulted: the server
+# would fall back to hex, and a typo that quietly changes the digest is the
+# hardest possible way to debug a 401.
+case "${BODY_HASH_ENCODING,,}" in
+hex)    BODY_HASH_ENCODER="xxd -p -c 256" ;;
+base64) BODY_HASH_ENCODER="openssl base64 -A" ;;
+*)
+	echo "!! unknown body-hash encoding: ${BODY_HASH_ENCODING} (expected hex or base64)" >&2
+	exit 1
+	;;
+esac
 
 TIMESTAMP="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 [[ -z "$CUSTOMER_NO" ]] && CUSTOMER_NO="$(date +%H%M%S)$((RANDOM % 90 + 10))"
@@ -220,31 +254,12 @@ delete-va)
 	;;
 esac
 
-# The RequestBody component's encoding is not the same on both sides of this
-# gateway, so it is chosen per endpoint rather than fixed:
-#
-#   vendor   (inquiry/payment/status)  lowercase hex, per BCA's Signature
-#                                      Symmetric spec — matches
-#                                      VENDOR_BODY_HASH_ENCODING=hex.
-#   merchant (create-va/delete-va)     base64 — MerchantAuthMiddleware hashes
-#                                      with crypto.BodyHashBase64 (feature
-#                                      012-base64-hash-encoding), and hex here
-#                                      produced a permanent
-#                                      "Unauthorized. [Invalid signature]".
-#
-# BODY_HASH_ENCODER still overrides both, for a vendor onboarded with the
-# non-default encoding. X-SIGNATURE itself is always base64.
-case "$ENDPOINT_NAME" in
-create-va | delete-va) DEFAULT_BODY_HASH_ENCODER="openssl base64 -A" ;;
-*)                     DEFAULT_BODY_HASH_ENCODER="xxd -p -c 256" ;;
-esac
-
 # SNAP symmetric signature over the exact minified body emitted below.
 # `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
 # minified body, so hashing $BODY raw (it is pretty-printed here) yields a
 # different digest and every request comes back 401. -j (not just -c)
 # suppresses jq's trailing newline, which would otherwise be hashed too.
-BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER:-$DEFAULT_BODY_HASH_ENCODER})"
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${BODY_HASH_ENCODER})"
 STRING_TO_SIGN="${METHOD}:${EP}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 
@@ -262,5 +277,5 @@ emit "$METHOD" "${BASE_URL}${EP}" "$BODY" \
 	"CHANNEL-ID: ${CHANNEL_ID}"
 
 echo
-echo "stringToSign (for debugging a signature mismatch):"
+echo "stringToSign (for debugging a signature mismatch, body hash encoded as ${BODY_HASH_ENCODING,,}):"
 echo "${STRING_TO_SIGN}"
