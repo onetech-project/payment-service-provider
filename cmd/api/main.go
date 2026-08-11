@@ -160,12 +160,14 @@ func main() {
 	// doesn't get rejected. Never skipped in prod.
 	skipTimestampSkewCheck := appEnv == "dev" || appEnv == "uat"
 
-	// Merchant signatures now hash the MINIFIED body, matching the vendor side
-	// and SNAP. Defaults to also accepting the previous raw-body digest so the
-	// change cannot break a merchant at deploy time; set
-	// MERCHANT_LEGACY_BODY_HASH=false once every merchant has migrated. Only
-	// merchants sending whitespace-bearing JSON are affected at all — for a
-	// compact body the two digests are identical.
+	// Merchant signatures now use the SNAP body-hash rule in full:
+	// Lowercase(HexEncode(SHA-256(MinifyJson(body)))), identical to the vendor
+	// side. Defaults to also accepting the two superseded conventions — base64
+	// of the minified body, and base64 of the raw body — so the change cannot
+	// break a merchant at deploy time; set MERCHANT_LEGACY_BODY_HASH=false
+	// once every merchant signs the hex form. Every merchant is affected by
+	// the encoding change, unlike the earlier minification change which only
+	// moved the digest for whitespace-bearing JSON.
 	acceptLegacyMerchantBodyHash := getEnvOrDefault("MERCHANT_LEGACY_BODY_HASH", "true") != "false"
 
 	// 1. Initialize Telemetry

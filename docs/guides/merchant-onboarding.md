@@ -115,7 +115,7 @@ For every request to `create-va`, `list`, or `delete-va`:
 
 1. **Build the request body** as a JSON object per the request's schema.
 2. **Compute the timestamp**: current time in ISO 8601.
-3. **Hash the body**: `bodyHash = base64(SHA256(minify(body)))`.
+3. **Hash the body**: `bodyHash = lowercase(hex(SHA256(minify(body))))`.
 
    **Minify first.** `minify` means the JSON with all insignificant whitespace
    removed — the same `MinifyJson` step SNAP specifies and the vendor
@@ -125,12 +125,17 @@ For every request to `create-va`, `list`, or `delete-va`:
    `[Invalid signature]`. In `jq` terms the pipeline is `jq -cj .` — the `-j`
    matters, because `jq -c` alone appends a newline that would be hashed too.
 
-   > **Transitional**: we currently *also* accept a signature computed over
-   > the un-minified body, so integrations written against the previous
-   > behaviour keep working. That fallback will be switched off
-   > (`MERCHANT_LEGACY_BODY_HASH=false`) once all merchants have migrated —
-   > move to the minified form at your earliest convenience. Only merchants
-   > sending whitespace-bearing JSON are affected at all.
+   **Encode as lowercase hex**, not base64 — this is the digest encoding SNAP
+   specifies and the one the vendor endpoints have always used. Note the
+   signature itself (step 5) is still base64; only this digest is hex.
+
+   > **Transitional**: we currently *also* accept two superseded forms — the
+   > base64 digest, and a digest computed over the un-minified body — so
+   > integrations written against the previous behaviour keep working. Both
+   > fallbacks will be switched off (`MERCHANT_LEGACY_BODY_HASH=false`) once
+   > all merchants have migrated, so move to the hex form at your earliest
+   > convenience. Unlike the earlier minification change, this one affects
+   > **every** merchant, not just those sending whitespace-bearing JSON.
 4. **Build `stringToSign`**:
    ```
    stringToSign = "{METHOD}:{PATH}:{accessToken}:{bodyHash}:{timestamp}"
@@ -169,21 +174,23 @@ For every request to `create-va`, `list`, or `delete-va`:
 
 ### How this compares to the vendor side
 
-Both sides use the same `stringToSign` shape and the same minify-then-hash
-rule for the body. Only three things differ, and none of them is a difference
-in *algorithm*:
+Both sides use the same `stringToSign` shape and now derive the body digest
+identically — same rule, same encoding, same code path
+(`symmetricSignature` in `internal/adapter/delivery/http/middleware`). What
+still differs is only what each side *carries*:
 
 | | Merchant (`create-va`/`list`/`delete-va`) | Vendor (`inquiry`/`payment`/`status`) |
 |---|---|---|
-| Body digest | `SHA-256(minify(body))` | `SHA-256(minify(body))` — same rule |
-| Digest encoding | **base64** | lowercase **hex** (or base64 per that vendor's config) |
+| Body digest | `lowercase(hex(SHA-256(minify(body))))` | same rule (or base64 per that vendor's config) |
 | `{accessToken}` slot | always the real token | empty on the legacy path, the real token once migrated |
 | `CHANNEL-ID` / `X-PARTNER-ID` | not enforced | required |
 
-The body rule was **not** always the same — these endpoints previously hashed
-the raw, un-minified body while the vendor endpoints minified, so an identical
-body produced two different valid signatures depending on which endpoint it
-went to. That is now unified; see the transitional note in step 3 above.
+The body rule was **not** always the same. These endpoints first hashed the
+raw, un-minified body while the vendor endpoints minified; then, once that was
+fixed, they still encoded the digest as base64 while the vendor side used hex.
+Either way an identical body produced two different valid signatures depending
+on which endpoint it went to. Both are now unified; see the transitional note
+in step 3 above.
 
 ### Timestamp freshness
 
