@@ -13,6 +13,11 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// merchantSignatureAlgorithm is fixed, unlike the vendor side's per-vendor
+// setting: merchants are onboarded by us, so there is no counterparty whose
+// existing integration could pin anything but SNAP's HMAC-SHA512.
+const merchantSignatureAlgorithm = "HMAC-SHA512"
+
 // MerchantAuthMiddleware requires a valid, unexpired accessToken (bearer
 // JWT issued by POST /openapi/v1.0/access-token/b2b) AND a valid HMAC-SHA512
 // X-SIGNATURE (feature 010-merchant-hmac-signature) on every request. It
@@ -22,8 +27,8 @@ import (
 // always enforced; only the ±5 minute X-TIMESTAMP freshness check can be
 // disabled, via skipSkewCheck (intended for APP_ENV=dev/uat only).
 //
-// acceptLegacyBodyHash keeps pre-minification merchant signatures working
-// during the cutover — see verifyMerchantSignature.
+// acceptLegacyBodyHash keeps the superseded base64 body-hash conventions
+// working during the cutover to the spec's hex — see verifyMerchantSignature.
 func MerchantAuthMiddleware(jwtIssuer domain.JWTIssuer, clientRepo domain.ClientRepository, skipSkewCheck, acceptLegacyBodyHash bool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -99,40 +104,34 @@ func MerchantAuthMiddleware(jwtIssuer domain.JWTIssuer, clientRepo domain.Client
 	}
 }
 
-// verifyMerchantSignature checks X-SIGNATURE against the merchant stringToSign.
+// verifyMerchantSignature checks X-SIGNATURE against the merchant
+// stringToSign, derived by the same symmetricSignature the vendor side uses.
 //
-// The RequestBody component is base64(SHA-256(MinifyJson(body))) — the same
-// minify-then-hash rule SNAPAuthMiddleware applies on the vendor side, and the
-// one SNAP specifies. The two middlewares previously disagreed: the vendor
-// side minified while this one hashed the raw bytes, so the identical request
-// body produced two different valid signatures depending on which endpoint it
-// was sent to. That is not a difference anyone can discover from a 401, and it
-// cost real debugging time.
+// The canonical RequestBody component is Lowercase(HexEncode(SHA-256(
+// MinifyJson(body)))) — what SNAP specifies and what the vendor side has
+// always sent. This side reached it in two steps, each found the expensive
+// way: it hashed the raw body while the vendor side minified, and then it
+// encoded the digest as base64 while the vendor side used hex. The same
+// request body therefore had two different valid signatures depending on
+// which endpoint received it, with nothing in the 401 to say so.
 //
-// acceptLegacyBodyHash additionally accepts the old raw-body digest. It exists
-// because the change is only observable for merchants that send
-// whitespace-bearing JSON — for compact bodies MinifyJson is a no-op and the
-// two digests are identical — so switching outright would have broken exactly
-// those merchants, silently, at deploy time. Operations turns it off
-// (MERCHANT_LEGACY_BODY_HASH=false) once every merchant has migrated.
+// acceptLegacyBodyHash keeps both superseded conventions working during the
+// cutover: base64 of the minified body, and base64 of the raw body. Neither
+// is a form a merchant can be moved off at deploy time without warning, so
+// operations turns them off (MERCHANT_LEGACY_BODY_HASH=false) once every
+// merchant signs the hex form. Note the raw-body digest only differs for
+// whitespace-bearing JSON — for a compact body MinifyJson is a no-op — so
+// bodyHashCandidates drops it as a duplicate rather than verifying twice.
 func verifyMerchantSignature(c echo.Context, secret, token, timestamp string, bodyBytes []byte, acceptLegacyBodyHash bool) bool {
-	signer := crypto.NewHMACSigner(secret, "HMAC-SHA512")
-	provided := c.Request().Header.Get("X-SIGNATURE")
+	signature := signatureFromRequest(c, token, timestamp, bodyBytes)
+	signature.Secret = secret
+	signature.Algorithm = merchantSignatureAlgorithm
+	signature.BodyHashEncodings = []string{crypto.BodyHashHex}
 
-	minified := crypto.HashRequestBody(bodyBytes, crypto.BodyHashBase64)
-	if signer.Verify(crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, token, minified, timestamp), provided) {
-		return true
-	}
-	if !acceptLegacyBodyHash {
-		return false
+	if acceptLegacyBodyHash {
+		signature.BodyHashEncodings = append(signature.BodyHashEncodings, crypto.BodyHashBase64)
+		signature.ExtraBodyHashes = []string{crypto.HashSHA256Base64(string(bodyBytes))}
 	}
 
-	legacy := crypto.HashSHA256Base64(string(bodyBytes))
-	// Identical digests mean the body was already compact, so the legacy path
-	// adds nothing and the signature is simply wrong. Skipping the second
-	// Verify keeps that the single, unambiguous outcome.
-	if legacy == minified {
-		return false
-	}
-	return signer.Verify(crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, token, legacy, timestamp), provided)
+	return signature.verify(c.Request().Header.Get("X-SIGNATURE"))
 }

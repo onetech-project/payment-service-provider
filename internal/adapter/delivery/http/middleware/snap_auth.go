@@ -9,7 +9,6 @@ import (
 
 	"backbone-new/internal/domain"
 	"backbone-new/internal/infrastructure/config"
-	"backbone-new/internal/infrastructure/crypto"
 
 	"github.com/labstack/echo/v4"
 )
@@ -175,16 +174,17 @@ func authenticateVendor(
 		return errResp
 	}
 
-	// stringToSign per BCA "Signature Symmetric":
-	//   HTTPMethod:RelativeUrl:AccessToken:
-	//   Lowercase(HexEncode(SHA-256(MinifyJson(RequestBody)))):Timestamp
-	// The minify step and the hash encoding both live in HashRequestBody; the
-	// encoding is per-vendor so vendors onboarded under feature
-	// 012-base64-hash-encoding keep working.
-	bodyHash := crypto.HashRequestBody(bodyBytes, vendorConfig.BodyHashEncoding)
-	stringToSign := crypto.BuildStringToSign(c.Request().Method, c.Request().URL.Path, accessToken, bodyHash, timestamp)
-	signer := crypto.NewHMACSigner(vendorConfig.ClientSecret, vendorConfig.SignatureAlgorithm)
-	if vendorConfig.ClientSecret == "" || !signer.Verify(stringToSign, c.Request().Header.Get(headerSignature)) {
+	// stringToSign per BCA "Signature Symmetric" — derived by
+	// symmetricSignature, the same type the merchant side verifies through.
+	// Only the credentials and the body-hash encoding are vendor-specific:
+	// the encoding stays per-vendor so vendors onboarded under feature
+	// 012-base64-hash-encoding keep working, while everyone else gets the
+	// spec's hex.
+	signature := signatureFromRequest(c, accessToken, timestamp, bodyBytes)
+	signature.Secret = vendorConfig.ClientSecret
+	signature.Algorithm = vendorConfig.SignatureAlgorithm
+	signature.BodyHashEncodings = []string{vendorConfig.BodyHashEncoding}
+	if !signature.verify(c.Request().Header.Get(headerSignature)) {
 		return snapUnauthorizedFn(service, "Unauthorized. [Signature]")
 	}
 

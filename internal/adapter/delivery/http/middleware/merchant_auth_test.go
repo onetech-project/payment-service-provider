@@ -88,8 +88,8 @@ func (m *MockMerchantClientRepository) RevokeClientSecret(ctx context.Context, c
 func newSignedMerchantRequest(t *testing.T, path, body, token, secret, timestamp string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	// Minified body, matching the vendor side and SNAP.
-	bodyHash := crypto.HashRequestBody([]byte(body), crypto.BodyHashBase64)
+	// Hex digest over the minified body, matching the vendor side and SNAP.
+	bodyHash := crypto.HashRequestBody([]byte(body), crypto.BodyHashHex)
 	stringToSign := crypto.BuildStringToSign(http.MethodPost, path, token, bodyHash, timestamp)
 	signature := crypto.NewHMACSigner(secret, "HMAC-SHA512").Sign(stringToSign)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -224,10 +224,13 @@ func TestMerchantAuthMiddleware_ValidTokenInvalidSignature_Rejected(t *testing.T
 	assert.False(t, called)
 }
 
-func TestMerchantAuthMiddleware_HexEncodedSignature_Rejected(t *testing.T) {
-	// Feature 012-base64-hash-encoding: a request signed with the old hex
-	// convention (both bodyHash and HMAC signature) must be rejected now
-	// that the server only accepts base64.
+func TestMerchantAuthMiddleware_HexEncodedSignatureOutput_Rejected(t *testing.T) {
+	// The two encodings in a SNAP signature are not the same decision. The
+	// body hash is hex — this request gets that right — but the HMAC output
+	// is base64, and a hex-encoded one must still be rejected. Worth pinning
+	// separately: hex digits are all valid base64 characters, so a hex
+	// signature of this length decodes rather than erroring, and only the
+	// length of the decoded bytes tells it apart.
 	e := echo.New()
 	timestamp := time.Now().Format(time.RFC3339)
 	body := `{"partnerServiceId":"088899"}`
@@ -263,7 +266,7 @@ func TestMerchantAuthMiddleware_HexEncodedSignature_Rejected(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.False(t, called, "handler must not be invoked for a hex-signed (pre-migration) request")
+	assert.False(t, called, "handler must not be invoked for a hex-encoded HMAC output")
 }
 
 func TestMerchantAuthMiddleware_ValidTokenMissingSignature_Rejected(t *testing.T) {

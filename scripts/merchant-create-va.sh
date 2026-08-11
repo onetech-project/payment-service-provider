@@ -229,13 +229,14 @@ JSON
 )
 
 # SNAP symmetric signature: HMAC_SHA512(clientSecret, stringToSign)
-# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Base64(SHA-256(minify(body))):Timestamp
-# bodyHash/signature are base64-encoded (feature 012-base64-hash-encoding), not hex.
+# stringToSign = HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp
+# The body digest is lowercase hex, per SNAP and identical to the vendor side.
+# The signature itself stays base64 — the two encodings are separate decisions.
 # `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
 # minified body, so hashing $BODY raw (it is pretty-printed here) yields a
 # different digest and every request comes back 401. -j (not just -c)
 # suppresses jq's trailing newline, which would otherwise be hashed too.
-BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | openssl base64 -A)"
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -hex -r | cut -d' ' -f1)"
 STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 

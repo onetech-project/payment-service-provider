@@ -96,12 +96,13 @@ TIMESTAMP="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 # 010-merchant-hmac-signature): AccessToken component is the REAL bearer
 # token (unlike the vendor-side convention in vendor-inquiry-va.sh, which
 # always uses an empty string there since no header ever carries it).
-# bodyHash/signature are base64-encoded (feature 012-base64-hash-encoding), not hex.
+# The body digest is lowercase hex, per SNAP and identical to the vendor side.
+# The signature itself stays base64 — the two encodings are separate decisions.
 # `jq -cj .` is the MinifyJson step and is load-bearing: the server hashes the
 # minified body, so hashing $BODY raw (it is pretty-printed here) yields a
 # different digest and every request comes back 401. -j (not just -c)
 # suppresses jq's trailing newline, which would otherwise be hashed too.
-BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | openssl base64 -A)"
+BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -hex -r | cut -d' ' -f1)"
 STRING_TO_SIGN="POST:${ENDPOINT}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$MERCHANT_SECRET" -binary | openssl base64 -A)"
 
