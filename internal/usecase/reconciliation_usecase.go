@@ -233,18 +233,16 @@ func classifyVendorStatus(resp *domain.VAStatusResponse) string {
 	}
 
 	switch resp.VirtualAccountData.PaymentFlagStatus {
-	case domain.PaymentFlagSuccess:
+	// "02 = Timeout payment flag between switcher to partner. If company's
+	// reconciliation type is reversal or force settle, transaction with status
+	// 02 will be considered as success transaction." This deployment is
+	// registered as force settle, so "02" is read as a payment exactly like
+	// "00" — the raw flag stays on the audit row, so which transactions
+	// settled on a timeout is still answerable afterwards.
+	case domain.PaymentFlagSuccess, domain.PaymentFlagTimeout:
 		return domain.ReconcileOutcomeSettled
 	case domain.PaymentFlagPending:
 		return domain.ReconcileOutcomePending
-	case domain.PaymentFlagTimeout:
-		// "02 = Timeout payment flag between switcher to partner. If company's
-		// reconciliation type is reversal or force settle, transaction with
-		// status 02 will be considered as success transaction." Whether it
-		// settles is a property registered at BCA, not visible from here.
-		// Guessing would either credit a merchant for reversed money or strand
-		// a real payment, so an operator decides.
-		return domain.ReconcileOutcomeAmbiguous
 	default:
 		// "01" reject, or anything unrecognised.
 		return domain.ReconcileOutcomeNotPaid
