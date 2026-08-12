@@ -44,13 +44,17 @@ const (
 	// this VA — either no record at all (4042601) or a rejected flag ("01").
 	// The transaction is correctly still pending.
 	ReconcileOutcomeNotPaid = "not_paid"
-	// ReconcileOutcomeAmbiguous means the vendor reported "02" (timeout
-	// between switcher and partner). BCA resolves this by the company's
-	// reconciliation type — "if company's reconciliation type is reversal or
+	// ReconcileOutcomeAmbiguous is no longer produced. It used to mean the
+	// vendor reported "02" (timeout between switcher and partner) and the
+	// reconciler declined to read it either way. This company is registered at
+	// BCA as force settle — "if company's reconciliation type is reversal or
 	// force settle, transaction with status 02 will be considered as success
-	// transaction" — which is registered at BCA, not knowable here. Settling
-	// on a guess would credit a merchant for money that may have been
-	// reversed, so it is surfaced for an operator instead.
+	// transaction" — so a "02" now settles like a "00".
+	//
+	// The constant stays because rows written before that change still carry
+	// the value, and the audit trail must remain readable. Anything settled on
+	// a timeout is identifiable by
+	// va_status_inquiry_attempts.bca_payment_flag_status = '02'.
 	ReconcileOutcomeAmbiguous = "ambiguous"
 	// ReconcileOutcomeAlreadySettled means the transaction stopped being
 	// pending between selection and the call (a real /payment landed, or a

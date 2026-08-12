@@ -1,0 +1,981 @@
+{
+  "info": {
+    "_postman_id": "e2f27c87-6e90-426c-84af-d7d91f89e3b9",
+    "name": "BCA SNAP VA - Inquiry & Payment",
+    "description": "Collection for testing BCA SNAP Virtual Account endpoints.\n\n**Setup:**\n1. Import this collection\n2. Fill in `private_key` collection variable with your full PEM content\n3. Run requests in order: Token → Inquiry → Payment → Status\n\n**Signature is auto-computed** by the pre-request scripts — no manual signing needed.\n\nInquiry sets the `inquiry_request_id` variable that Status then reuses, so running them in order needs no copy-pasting. To check a VA that was not created in this run, edit `inquiry_request_id` by hand before running Status.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "53625894",
+    "_collection_link": "https://go.postman.co/collection/53625894-e2f27c87-6e90-426c-84af-d7d91f89e3b9?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "4. Resend Callback",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const resp = pm.response.json();",
+                  "console.log('Resend callback response:', JSON.stringify(resp, null, 2));",
+                  "",
+                  "pm.test('Resend returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    console.log('eventType:', resp.eventType, '| deliveryStatus:', resp.deliveryStatus);",
+                  "}"
+                ],
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {}
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Admin-API-Key",
+                "value": "{{admin_api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/transactions/{{virtual_account_no}}/resend-callback",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "transactions",
+                "{{virtual_account_no}}",
+                "resend-callback"
+              ]
+            },
+            "description": "Redelivers the **most recent** callback event already on record for this VA (`payment.received` or `va.expired`) to the merchant's registered notification URL.\n\nNo request body. The payload is rebuilt from the VA's **current** state, using the event type of the latest delivery record. Transaction state is never mutated — this only re-sends.\n\n`virtualAccountNo` is matched exactly as stored; if yours carries leading spaces, URL-encode them as `%20`.\n\n**Responses**\n\n| Code | Meaning |\n|---|---|\n| `200` | Resend enqueued — body carries `virtualAccountNo`, `eventType`, `resentAt`, `deliveryStatus` |\n| `401` | Missing/invalid `X-Admin-API-Key` (or `ADMIN_API_KEY` unset on the server) |\n| `404` | Transaction not found |\n| `422` | No callback delivery on record for this transaction, or the VA has no registered notification URL |\n\n**Success example**\n\n```json\n{\n  \"virtualAccountNo\": \"1597366666666\",\n  \"eventType\": \"payment.received\",\n  \"resentAt\": \"2026-08-12T09:15:22Z\",\n  \"deliveryStatus\": \"pending\"\n}\n```"
+          },
+          "response": []
+        },
+        {
+          "name": "5. Reconcile Transaction",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const resp = pm.response.json();",
+                  "console.log('Reconcile response:', JSON.stringify(resp, null, 2));",
+                  "",
+                  "pm.test('Reconcile returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    console.log('outcome:', resp.outcome, '| settled:', resp.settled);",
+                  "    console.log('vendor said:', resp.vendorResponseCode, '/', resp.vendorPaymentFlagStatus);",
+                  "} else if (pm.response.code === 503) {",
+                  "    console.log('⚠️ Reconciliation is not configured on this deployment (RECONCILE_ENABLED / vendor outbound credentials).');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Admin-API-Key",
+                "value": "{{admin_api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/transactions/{{virtual_account_no}}/reconcile",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "transactions",
+                "{{virtual_account_no}}",
+                "reconcile"
+              ]
+            },
+            "description": "On-demand counterpart of the periodic reconciliation sweep: calls the **vendor's** SNAP Inquiry Status service (code 26) to ask what really happened to a transaction this service still records as pending.\n\nIf the vendor reports the payment as successful, the transaction is settled here and the merchant payment callback is sent. Safe to call repeatedly — an already-settled transaction is reported back without firing a second callback.\n\nNo request body. Reach for this when a customer says they paid and the merchant says they did not, rather than waiting for the next sweep.\n\n**Responses**\n\n| Code | Meaning |\n|---|---|\n| `200` | Vendor answered — see `outcome` / `settled` |\n| `401` | Missing/invalid `X-Admin-API-Key` |\n| `404` | Transaction not found |\n| `503` | Reconciliation not configured (`RECONCILE_ENABLED` and the vendor's outbound credentials) |\n\n**Success example**\n\n```json\n{\n  \"virtualAccountNo\": \"1597366666666\",\n  \"outcome\": \"settled\",\n  \"settled\": true,\n  \"vendorResponseCode\": \"2002600\",\n  \"vendorPaymentFlagStatus\": \"00\",\n  \"paidAmount\": { \"value\": \"150000.00\", \"currency\": \"IDR\" },\n  \"reconciledAt\": \"2026-08-12T09:20:41Z\"\n}\n```\n\n`vendorResponseCode` and `vendorPaymentFlagStatus` echo the vendor's raw answer so the outcome can be checked against what it was inferred from."
+          },
+          "response": []
+        }
+      ],
+      "description": "Operator endpoints behind `AdminAuthMiddleware`. They authenticate with the `X-Admin-API-Key` header (the server's `ADMIN_API_KEY`) — NOT with the SNAP access token or signature — so they need no pre-request script.\n\nIf `ADMIN_API_KEY` is unset on the server, every `/admin/*` route is disabled and answers 401."
+    },
+    {
+      "name": "1. Get Access Token",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ==========================",
+              "// CONFIG",
+              "// ==========================",
+              "const clientId = pm.collectionVariables.get('client_id');",
+              "const privateKeyBase64 = pm.collectionVariables.get('private_key').replace(/\\s+/g, \"\");",
+              "",
+              "if (!privateKeyBase64) {",
+              "    throw new Error('Please set the private_key collection variable with your base64 key');",
+              "}",
+              "",
+              "console.log(clientId, privateKeyBase64);",
+              "",
+              "// ==========================",
+              "// GENERATE X-TIMESTAMP",
+              "// ==========================",
+              "const now = new Date();",
+              "const xTimestamp = now.toISOString().replace('Z', '+07:00');",
+              "pm.collectionVariables.set('timestamp', xTimestamp);",
+              "",
+              "// ==========================",
+              "// Construct",
+              "// ==========================",
+              "const message = clientId + \"|\" + xTimestamp;",
+              "",
+              "const binaryDer = Uint8Array.from(atob(privateKeyBase64), c => c.charCodeAt(0));",
+              "const key = await crypto.subtle.importKey(",
+              "    \"pkcs8\",",
+              "    binaryDer.buffer,",
+              "    { name: \"RSASSA-PKCS1-v1_5\", hash: \"SHA-256\" },",
+              "    false,",
+              "    [\"sign\"]",
+              ");",
+              "",
+              "const encoder = new TextEncoder();",
+              "const signature = await crypto.subtle.sign(",
+              "    \"RSASSA-PKCS1-v1_5\",",
+              "    key,",
+              "    encoder.encode(message)",
+              ");",
+              "",
+              "// ==========================",
+              "// Convert signature to Base64",
+              "// ==========================",
+              "const signatureBase64 = btoa(",
+              "    String.fromCharCode(...new Uint8Array(signature))",
+              ");",
+              "",
+              "// ==========================",
+              "// SET REQUEST HEADERS",
+              "// ==========================",
+              "pm.request.headers.upsert({ key: 'X-TIMESTAMP', value: xTimestamp });",
+              "pm.request.headers.upsert({ key: 'X-SIGNATURE', value: signatureBase64 });",
+              "",
+              "console.log(\"stringToSign:\", message);",
+              "console.log(\"X-TIMESTAMP:\", xTimestamp);",
+              "console.log(\"X-SIGNATURE:\", signatureBase64);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Auto-save access token to collection variable",
+              "const resp = pm.response.json();",
+              "if (resp.accessToken) {",
+              "    pm.collectionVariables.set('access_token', resp.accessToken);",
+              "    console.log('✅ Access token saved to collection variable!');",
+              "} else {",
+              "    console.log('❌ No accessToken in response:', JSON.stringify(resp));",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-CLIENT-KEY",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "X-TIMESTAMP",
+            "value": "{{timestamp}}"
+          },
+          {
+            "key": "X-SIGNATURE",
+            "value": "auto-set-by-pre-request-script"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"grantType\": \"client_credentials\",\n  \"additionalInfo\": {}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/openapi/v1.0/access-token/b2b",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "openapi",
+            "v1.0",
+            "access-token",
+            "b2b"
+          ]
+        },
+        "description": "Get a Bearer access token (valid for 15 minutes).\n\nThe pre-request script auto-computes the RSA-SHA256 signature.\nThe test script auto-saves the token to `access_token` collection variable."
+      },
+      "response": []
+    },
+    {
+      "name": "2. Inquiry VA",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- SNAP Symmetric Signature (HMAC-SHA512) ----",
+              "",
+              "// WIB (+07:00). Jam harus digeser DULU baru diformat: toISOString() selalu",
+              "// membaca UTC, jadi menempelkan '+07:00' ke hasil mentahnya menghasilkan",
+              "// instant 7 jam di masa lalu -- lolos di dev (APP_ENV=dev melewati cek skew),",
+              "// ditolak 4010000 di produksi.",
+              "const wib = new Date(Date.now() + 7 * 60 * 60 * 1000);",
+              "const timestamp = wib.toISOString().slice(0, 19) + '+07:00';",
+              "",
+              "// String(), bukan +, di kedua id di bawah. Date.now() dan Math.floor() sama-sama",
+              "// Number, jadi 'a + b' menjumlahkannya dan JSON.stringify menulis hasilnya TANPA",
+              "// kutip -- server menolak seluruh body dengan 4002400 \"Bad Request\", karena",
+              "// inquiryRequestId dan externalId dideklarasikan sebagai string.",
+              "const rand4 = String(Math.floor(Math.random() * 9000 + 1000));",
+              "const externalId = String(Date.now()) + rand4;",
+              "const inquiryRequestId = 'INQ-' + String(Date.now()) + rand4;",
+              "",
+              "pm.collectionVariables.set('timestamp', timestamp);",
+              "pm.collectionVariables.set('inquiry_request_id', inquiryRequestId);",
+              "",
+              "// Variabel yang belum diisi akan hilang dari body tanpa jejak (JSON.stringify",
+              "// membuang key ber-nilai undefined), dan server hanya menjawab \"Invalid",
+              "// Mandatory Field\" tanpa menyebut field mana. Lebih baik gagal di sini.",
+              "const vars = {",
+              "    partner_service_id: pm.collectionVariables.get('partner_service_id'),",
+              "    customer_no: pm.collectionVariables.get('customer_no'),",
+              "    virtual_account_no: pm.collectionVariables.get('virtual_account_no'),",
+              "    amount: pm.collectionVariables.get('amount'),",
+              "    client_secret: pm.collectionVariables.get('client_secret'),",
+              "    access_token: pm.collectionVariables.get('access_token'),",
+              "};",
+              "const missing = Object.keys(vars).filter(function (k) { return !vars[k]; });",
+              "if (missing.length) {",
+              "    throw new Error('Collection variable belum diisi: ' + missing.join(', ') +",
+              "        (missing.indexOf('access_token') >= 0 ? ' — jalankan \"1. Get Access Token\" dulu' : ''));",
+              "}",
+              "",
+              "// Body yang PERSIS akan dikirim (JSON minified). Semua nilai wajib string.",
+              "const body = JSON.stringify({",
+              "    partnerServiceId: String(vars.partner_service_id),",
+              "    customerNo: String(vars.customer_no),",
+              "    virtualAccountNo: String(vars.virtual_account_no),",
+              "    trxDateInit: timestamp,",
+              "    channelCode: 6011,",
+              "    amount: { value: String(vars.amount), currency: 'IDR' },",
+              "    inquiryRequestId: inquiryRequestId,",
+              "    additionalInfo: {},",
+              "});",
+              "",
+              "// SHA-256 dari body, base64 standar",
+              "const bodyHash = CryptoJS.SHA256(body).toString(CryptoJS.enc.Base64);",
+              "",
+              "// stringToSign = METHOD:ENDPOINT:ACCESS_TOKEN:SHA256(BODY):TIMESTAMP",
+              "const endpoint = '/openapi/v1.0/transfer-va/inquiry';",
+              "const stringToSign = 'POST:' + endpoint + ':' + vars.access_token + ':' + bodyHash + ':' + timestamp;",
+              "",
+              "// HMAC-SHA512, base64 standar",
+              "const signature = CryptoJS.HmacSHA512(stringToSign, vars.client_secret).toString(CryptoJS.enc.Base64);",
+              "",
+              "pm.request.headers.upsert({ key: 'X-TIMESTAMP', value: timestamp });",
+              "pm.request.headers.upsert({ key: 'X-SIGNATURE', value: signature });",
+              "pm.request.headers.upsert({ key: 'X-EXTERNAL-ID', value: externalId });",
+              "",
+              "// WAJIB: body tab ditimpa dengan byte yang persis ditandatangani. Konsekuensinya",
+              "// apa pun yang Anda ketik di tab Body request ini DIBUANG -- ubah collection",
+              "// variable di atas, bukan tab Body.",
+              "pm.request.body.raw = body;",
+              "",
+              "console.log('body:', body);",
+              "console.log('inquiryRequestId:', inquiryRequestId);",
+              "console.log('stringToSign:', stringToSign);",
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const resp = pm.response.json();",
+              "console.log('Inquiry response:', JSON.stringify(resp, null, 2));",
+              "",
+              "pm.test('Inquiry returns 200xx', function () {",
+              "    pm.expect(resp.responseCode).to.match(/^200/);",
+              "});"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "X-TIMESTAMP",
+            "value": "{{timestamp}}"
+          },
+          {
+            "key": "X-SIGNATURE",
+            "value": "{{Signature}}"
+          },
+          {
+            "key": "X-PARTNER-ID",
+            "value": "{{partner_id}}"
+          },
+          {
+            "key": "X-EXTERNAL-ID",
+            "value": "auto-set-by-pre-request-script"
+          },
+          {
+            "key": "CHANNEL-ID",
+            "value": "{{channel_id}}"
+          },
+          {
+            "key": "X-CLIENT-KEY",
+            "value": "",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"additionalInfo\": {},\n  \"channelCode\": 6011,\n  \"customerNo\": \"{{customer_no}}\",\n  \"inquiryRequestId\": \"{{inquiry_request_id}}\",\n  \"partnerServiceId\": \"{{partner_service_id}}\",\n  \"trxDateInit\": \"{{timestamp}}\",\n  \"virtualAccountNo\": \"{{virtual_account_no}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/openapi/v1.0/transfer-va/inquiry",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "openapi",
+            "v1.0",
+            "transfer-va",
+            "inquiry"
+          ]
+        },
+        "description": "Inquiry VA bill details before payment.\n\nThe pre-request script:\n1. Generates unique inquiryRequestId\n2. Builds the minified JSON body\n3. Computes SHA-256 hash of the body\n4. Signs with HMAC-SHA512\n5. Overwrites the body with exact signed bytes\n\n⚠️ Do NOT manually edit the Body tab — the pre-request script overwrites it."
+      },
+      "response": []
+    },
+    {
+      "name": "3. Payment VA",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- SNAP Symmetric Signature (HMAC-SHA512) ----",
+              "const now = new Date();",
+              "const wibOffset = 7 * 60 * 60 * 1000; // 7 jam dalam ms",
+              "const wibTime = new Date(now.getTime() + wibOffset);",
+              "const timestamp = wibTime.toISOString().replace(/\\.\\d{3}Z$/, '+07:00');",
+              "const externalId = Date.now().toString() + Math.floor(Math.random() * 9000 + 1000);",
+              "const paymentRequestId = Date.now().toString() + Math.floor(Math.random() * 9000 + 1000);",
+              "const referenceNo = Date.now().toString().slice(-9);",
+              "",
+              "pm.collectionVariables.set('timestamp', timestamp);",
+              "pm.collectionVariables.set('payment_request_id', paymentRequestId);",
+              "pm.collectionVariables.set('reference_no', referenceNo);",
+              "",
+              "const partnerServiceId = pm.collectionVariables.get('partner_service_id');",
+              "const customerNo = pm.collectionVariables.get('customer_no');",
+              "const virtualAccountNo = pm.collectionVariables.get('virtual_account_no');",
+              "const trxId = pm.collectionVariables.get('trx_id');",
+              "const amount = pm.collectionVariables.get('amount');",
+              "",
+              "// Build the EXACT body that will be sent (minified JSON)",
+              "const body = JSON.stringify({",
+              "    partnerServiceId: partnerServiceId,",
+              "    customerNo: customerNo,",
+              "    virtualAccountNo: virtualAccountNo,",
+              "    virtualAccountName: \"Budi Manjo\",",
+              "    paymentRequestId: paymentRequestId,",
+              "    channelCode: 6011,",
+              "    paidAmount: { value: amount, currency: 'IDR' },",
+              "    totalAmount: { value: amount, currency: 'IDR' },",
+              "    flagAdvise: \"N\",",
+              "    trxDateTime: timestamp,",
+              "    referenceNo: referenceNo,",
+              "    additionalInfo: {}",
+              "});",
+              "",
+              "// SHA-256 hash of the body (standard base64)",
+              "const bodyHash = CryptoJS.SHA256(body).toString(CryptoJS.enc.Base64);",
+              "",
+              "// stringToSign = METHOD:ENDPOINT:ACCESS_TOKEN:SHA256(BODY):TIMESTAMP",
+              "const accessToken = pm.collectionVariables.get('access_token');",
+              "if (!accessToken) {",
+              "    throw new Error('No access_token — run \"1. Get Access Token\" first');",
+              "}",
+              "const endpoint = '/openapi/v1.0/transfer-va/payment';",
+              "const stringToSign = 'POST:' + endpoint + ':' + accessToken + ':' + bodyHash + ':' + timestamp;",
+              "",
+              "// HMAC-SHA512 signature (standard base64)",
+              "const clientSecret = pm.collectionVariables.get('client_secret');",
+              "const signature = CryptoJS.HmacSHA512(stringToSign, clientSecret).toString(CryptoJS.enc.Base64);",
+              "",
+              "pm.request.headers.upsert({ key: 'X-TIMESTAMP', value: timestamp });",
+              "pm.request.headers.upsert({ key: 'X-SIGNATURE', value: signature });",
+              "pm.request.headers.upsert({ key: 'X-EXTERNAL-ID', value: externalId });",
+              "",
+              "// CRITICAL: overwrite the body with the exact bytes that were signed",
+              "pm.request.body.raw = body;",
+              "",
+              "console.log('paymentRequestId:', paymentRequestId);",
+              "console.log('bodyHash:', bodyHash);",
+              "console.log('stringToSign:', stringToSign);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const resp = pm.response.json();",
+              "console.log('Payment response:', JSON.stringify(resp, null, 2));",
+              "",
+              "pm.test('Payment returns 200xx', function () {",
+              "    pm.expect(resp.responseCode).to.match(/^200/);",
+              "});"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "X-TIMESTAMP",
+            "value": "{{timestamp}}"
+          },
+          {
+            "key": "X-SIGNATURE",
+            "value": "auto-set-by-pre-request-script"
+          },
+          {
+            "key": "X-PARTNER-ID",
+            "value": "{{partner_id}}"
+          },
+          {
+            "key": "X-EXTERNAL-ID",
+            "value": "auto-set-by-pre-request-script"
+          },
+          {
+            "key": "CHANNEL-ID",
+            "value": "{{channel_id}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"additionalInfo\": {},\n  \"channelCode\": 6011,\n  \"customerNo\": \"{{customer_no}}\",\n  \"flagAdvise\": \"N\",\n  \"paidAmount\": {\n    \"currency\": \"IDR\",\n    \"value\": \"150000.00\"\n  },\n  \"partnerServiceId\": \"{{partner_service_id}}\",\n  \"paymentRequestId\": \"{{payment_request_id}}\",\n  \"referenceNo\": \"{{reference_no}}\",\n  \"totalAmount\": {\n    \"currency\": \"IDR\",\n    \"value\": \"150000.00\"\n  },\n  \"trxDateTime\": \"{{timestamp}}\",\n  \"virtualAccountName\": \"Budi Manjo\",\n  \"virtualAccountNo\": \"{{virtual_account_no}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/openapi/v1.0/transfer-va/payment",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "openapi",
+            "v1.0",
+            "transfer-va",
+            "payment"
+          ]
+        },
+        "description": "Send payment notification against a VA.\n\nThe pre-request script:\n1. Generates unique paymentRequestId & referenceNo\n2. Builds the minified JSON body\n3. Computes SHA-256 hash of the body\n4. Signs with HMAC-SHA512\n5. Overwrites the body with exact signed bytes\n\n⚠️ Do NOT manually edit the Body tab — the pre-request script overwrites it.\n\n**Note:** If the VA was already paid, you'll get 4092500 Conflict. Create a new VA first."
+      },
+      "response": []
+    },
+    {
+      "name": "4. Inquiry Status VA",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- SNAP Symmetric Signature (HMAC-SHA512) ----",
+              "const now = new Date();",
+              "const wibOffset = 7 * 60 * 60 * 1000; // 7 jam dalam ms",
+              "const wibTime = new Date(now.getTime() + wibOffset);",
+              "const timestamp = wibTime.toISOString().replace(/\\.\\d{3}Z$/, '+07:00');",
+              "const externalId = Date.now().toString() + Math.floor(Math.random() * 9000 + 1000);",
+              "",
+              "pm.collectionVariables.set('timestamp', timestamp);",
+              "",
+              "const partnerServiceId = pm.collectionVariables.get('partner_service_id');",
+              "const customerNo = pm.collectionVariables.get('customer_no');",
+              "const virtualAccountNo = pm.collectionVariables.get('virtual_account_no');",
+              "",
+              "// inquiryRequestId both resolves the stored transaction here AND is what",
+              "// gets forwarded to BCA. '2. Inquiry VA' sets it; to check a different VA,",
+              "// edit the inquiry_request_id collection variable by hand.",
+              "const inquiryRequestId = pm.collectionVariables.get('inquiry_request_id');",
+              "if (!inquiryRequestId) {",
+              "    throw new Error('No inquiry_request_id — run \"2. Inquiry VA\" first, or set the variable by hand');",
+              "}",
+              "",
+              "// Build the EXACT body that will be sent (minified JSON)",
+              "const body = JSON.stringify({",
+              "    partnerServiceId: partnerServiceId,",
+              "    customerNo: customerNo,",
+              "    virtualAccountNo: virtualAccountNo,",
+              "    inquiryRequestId: inquiryRequestId",
+              "});",
+              "",
+              "// SHA-256 hash of the body (standard base64)",
+              "const bodyHash = CryptoJS.SHA256(body).toString(CryptoJS.enc.Base64);",
+              "",
+              "// stringToSign = METHOD:ENDPOINT:ACCESS_TOKEN:SHA256(BODY):TIMESTAMP",
+              "const accessToken = pm.collectionVariables.get('access_token');",
+              "if (!accessToken) {",
+              "    throw new Error('No access_token — run \"1. Get Access Token\" first');",
+              "}",
+              "const endpoint = '/openapi/v1.0/transfer-va/status';",
+              "const stringToSign = 'POST:' + endpoint + ':' + accessToken + ':' + bodyHash + ':' + timestamp;",
+              "",
+              "// HMAC-SHA512 signature (standard base64).",
+              "// NOTE: do NOT use POST /api/v1/utilities/signature-service to produce this.",
+              "// That helper base64-decodes the client secret whenever it happens to be",
+              "// decodable, and a 64-char hex secret always is — so it signs with different",
+              "// bytes than the server verifies with, and every request 401s.",
+              "const clientSecret = pm.collectionVariables.get('client_secret');",
+              "const signature = CryptoJS.HmacSHA512(stringToSign, clientSecret).toString(CryptoJS.enc.Base64);",
+              "",
+              "pm.request.headers.upsert({ key: 'X-TIMESTAMP', value: timestamp });",
+              "pm.request.headers.upsert({ key: 'X-SIGNATURE', value: signature });",
+              "pm.request.headers.upsert({ key: 'X-EXTERNAL-ID', value: externalId });",
+              "",
+              "// CRITICAL: overwrite the body with the exact bytes that were signed",
+              "pm.request.body.raw = body;",
+              "",
+              "console.log('inquiryRequestId:', inquiryRequestId);",
+              "console.log('bodyHash:', bodyHash);",
+              "console.log('stringToSign:', stringToSign);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const resp = pm.response.json();",
+              "console.log('Status response:', JSON.stringify(resp, null, 2));",
+              "",
+              "pm.test('Status returns 200xx', function () {",
+              "    pm.expect(resp.responseCode).to.match(/^200/);",
+              "});",
+              "",
+              "const data = resp.virtualAccountData || {};",
+              "const flag = data.paymentFlagStatus;",
+              "",
+              "let meaning = 'UNKNOWN — not one of the four documented flags';",
+              "if (flag === '00') { meaning = 'Success payment flag'; }",
+              "if (flag === '01') { meaning = 'Reject payment flag by partner'; }",
+              "if (flag === '02') { meaning = 'Timeout switcher-to-partner (stored as 00 when this partner reconciliation type is reversal / force_settle)'; }",
+              "if (flag === '03') { meaning = 'Pending between BCA and the partner'; }",
+              "console.log('paymentFlagStatus:', flag, '->', meaning);",
+              "",
+              "pm.test('paymentFlagStatus is one of 00/01/02/03', function () {",
+              "    pm.expect(['00', '01', '02', '03']).to.include(flag);",
+              "});",
+              "",
+              "// The response deliberately says NOTHING about whether BCA was reached — a",
+              "// bank outage degrades to the stored answer by design, so a 200 here is not",
+              "// evidence the bank was consulted. Read the server log for that:",
+              "//   docker compose logs -f app | grep reconcile"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "X-TIMESTAMP",
+            "value": "{{timestamp}}"
+          },
+          {
+            "key": "X-SIGNATURE",
+            "value": "auto-set-by-pre-request-script"
+          },
+          {
+            "key": "X-PARTNER-ID",
+            "value": "{{partner_id}}"
+          },
+          {
+            "key": "X-EXTERNAL-ID",
+            "value": "auto-set-by-pre-request-script"
+          },
+          {
+            "key": "CHANNEL-ID",
+            "value": "{{channel_id}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"partnerServiceId\": \"{{partner_service_id}}\",\n  \"customerNo\": \"{{customer_no}}\",\n  \"virtualAccountNo\": \"{{virtual_account_no}}\",\n  \"inquiryRequestId\": \"{{inquiry_request_id}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{local_url}}/openapi/v1.0/transfer-va/status",
+          "host": [
+            "{{local_url}}"
+          ],
+          "path": [
+            "openapi",
+            "v1.0",
+            "transfer-va",
+            "status"
+          ]
+        },
+        "description": "Ask the gateway for the payment status of a VA (SNAP service code 26).\n\nThe pre-request script signs exactly like Inquiry and Payment do — see those for the mechanics.\n\n**What is different about this endpoint**\n\nBefore answering, the gateway verifies any NOT-yet-settled account against BCA's own Inquiry Status service and corrects its stored record when BCA knows better. So one call here can exercise the whole outbound path: B2B token acquisition, the signed call to BCA, and the reconciliation write.\n\n- A stored status of `00` is final — BCA is never consulted again.\n- Any other stored status (`01`, `02`, `03`) is re-verified on every request.\n- An account whose row has no `inquiryRequestId` cannot be reconciled at all: BCA generates that identifier, and a fabricated one matches nothing on their side.\n\n**The response never tells you whether BCA was reached.** A bank outage degrades to the stored answer on purpose, so a 200 is not evidence the bank answered. Read the server log instead:\n\n```\ndocker compose logs -f app | grep reconcile\n```\n\n| log event | meaning |\n|---|---|\n| `reconcile_applied` | the stored record was corrected |\n| `reconcile_failed` | BCA unreachable — answer came from storage |\n| `reconcile_unusable` | BCA answered with something unreadable |\n| `reconcile_skipped` | no stored inquiryRequestId, so BCA cannot be asked |\n| *(no line)* | stored status already `00` — final |\n\n**paymentFlagStatus**\n\n- `00` Success payment flag\n- `01` Reject payment flag by partner\n- `02` Timeout between switcher and partner. Counts as success when the company's reconciliation type is reversal or force settle — configured per vendor as `VENDOR_RECONCILIATION_TYPE`, in which case it is stored as `00`.\n- `03` Pending between BCA and the partner\n\n⚠️ Do NOT manually edit the Body tab — the pre-request script overwrites it."
+      },
+      "response": []
+    },
+    {
+      "name": "5. Create VA",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- SNAP Symmetric Signature (HMAC-SHA512) ----",
+              "const timestamp = new Date().toISOString().replace(/\\.\\d{3}Z$/, '+07:00');",
+              "const externalId = Date.now().toString() + Math.floor(Math.random() * 9000 + 1000);",
+              "const inquiryRequestId = 'INQ-' + Date.now() + Math.floor(Math.random() * 9000 + 1000);",
+              "",
+              "pm.collectionVariables.set('timestamp', timestamp);",
+              "pm.collectionVariables.set('inquiry_request_id', inquiryRequestId);",
+              "",
+              "const partnerServiceId = pm.collectionVariables.get('partner_service_id');",
+              "const customerNo = pm.collectionVariables.get('customer_no');",
+              "const virtualAccountNo = pm.collectionVariables.get('virtual_account_no');",
+              "const amount = pm.collectionVariables.get('amount');",
+              "",
+              "// Build the EXACT body that will be sent (minified JSON)",
+              "const body = JSON.stringify({",
+              "    partnerServiceId: partnerServiceId,",
+              "    customerNo: customerNo,",
+              "    virtualAccountNo: virtualAccountNo,",
+              "    txnDateInit: timestamp,",
+              "    amount: { value: amount, currency: 'IDR' },",
+              "    inquiryRequestId: inquiryRequestId",
+              "});",
+              "",
+              "// SHA-256 hash of the body (standard base64)",
+              "const bodyHash = CryptoJS.SHA256(body).toString(CryptoJS.enc.Base64);",
+              "",
+              "// stringToSign = METHOD:ENDPOINT:ACCESS_TOKEN:SHA256(BODY):TIMESTAMP",
+              "const accessToken = pm.collectionVariables.get('access_token');",
+              "if (!accessToken) {",
+              "    throw new Error('No access_token — run \"1. Get Access Token\" first');",
+              "}",
+              "const endpoint = '/openapi/v1.0/transfer-va/create-va';",
+              "const stringToSign = 'POST:' + endpoint + ':' + accessToken + ':' + bodyHash + ':' + timestamp;",
+              "",
+              "// HMAC-SHA512 signature (standard base64)",
+              "const clientSecret = pm.collectionVariables.get('client_secret');",
+              "const signature = CryptoJS.HmacSHA512(stringToSign, clientSecret).toString(CryptoJS.enc.Base64);",
+              "",
+              "pm.request.headers.upsert({ key: 'X-TIMESTAMP', value: timestamp });",
+              "pm.request.headers.upsert({ key: 'X-SIGNATURE', value: signature });",
+              "pm.request.headers.upsert({ key: 'X-EXTERNAL-ID', value: externalId });",
+              "",
+              "// CRITICAL: overwrite the body with the exact bytes that were signed",
+              "pm.request.body.raw = body;",
+              "",
+              "console.log('inquiryRequestId:', inquiryRequestId);",
+              "console.log('bodyHash:', bodyHash);",
+              "console.log('stringToSign:', stringToSign);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const resp = pm.response.json();",
+              "console.log('Inquiry response:', JSON.stringify(resp, null, 2));",
+              "",
+              "pm.test('Inquiry returns 200xx', function () {",
+              "    pm.expect(resp.responseCode).to.match(/^200/);",
+              "});"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "X-TIMESTAMP",
+            "value": "{{timestamp}}"
+          },
+          {
+            "key": "X-SIGNATURE",
+            "value": "{{Signature}}"
+          },
+          {
+            "key": "X-PARTNER-ID",
+            "value": "{{partner_id}}"
+          },
+          {
+            "key": "X-EXTERNAL-ID",
+            "value": "auto-set-by-pre-request-script"
+          },
+          {
+            "key": "CHANNEL-ID",
+            "value": "{{channel_id}}"
+          },
+          {
+            "key": "X-CLIENT-KEY",
+            "value": "",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"partnerServiceId\": \"   15975\",\n    \"customerNo\": \"123123121\",\n    \"virtualAccountNo\": \"   15975123123121\",\n    \"virtualAccountName\": \"Test STATIC CLOSED\",\n    \"trxId\": \"INV-20260728-1215\",\n    \"totalAmount\": {\n        \"value\": \"150000.00\",\n        \"currency\": \"IDR\"\n    },\n    \"additionalInfo\": {\n        \"vaType\": \"03\",\n        \"goodsNm\": \"tt\",\n        \"dbUrlProcess\": \"http://host.docker.internal:10325/api/v1.0/transfer-va/payment\",\n        \"vacctValidDt\": \"20260807\",\n        \"vacctValidTm\": \"152223\"\n    }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{local_url}}/openapi/v1.0/transfer-va/create-va",
+          "host": [
+            "{{local_url}}"
+          ],
+          "path": [
+            "openapi",
+            "v1.0",
+            "transfer-va",
+            "create-va"
+          ]
+        },
+        "description": "Inquiry VA bill details before payment.\n\nThe pre-request script:\n1. Generates unique inquiryRequestId\n2. Builds the minified JSON body\n3. Computes SHA-256 hash of the body\n4. Signs with HMAC-SHA512\n5. Overwrites the body with exact signed bytes\n\n⚠️ Do NOT manually edit the Body tab — the pre-request script overwrites it."
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://uatbca.manjo.co.id"
+    },
+    {
+      "key": "client_id",
+      "value": "a9612651-9181-4461-af20-4ef6598a93f5"
+    },
+    {
+      "key": "client_secret",
+      "value": "1c19e3313badc5068995ca0b42a4938e96ae57ca1c57ad13cfeed728a9ceb15a"
+    },
+    {
+      "key": "private_key",
+      "value": "PASTE_YOUR_PRIVATE_KEY_PEM_HERE"
+    },
+    {
+      "key": "access_token",
+      "secret": true
+    },
+    {
+      "key": "partner_id",
+      "value": "1-MANJO-SNAP"
+    },
+    {
+      "key": "channel_id",
+      "value": "95231"
+    },
+    {
+      "key": "partner_service_id",
+      "value": "   12345"
+    },
+    {
+      "key": "customer_no",
+      "value": "66666666"
+    },
+    {
+      "key": "virtual_account_no",
+      "value": "1597366666666"
+    },
+    {
+      "key": "trx_id",
+      "value": "cmscyczsl00061wryys7zli68"
+    },
+    {
+      "key": "amount",
+      "value": "150000.00"
+    },
+    {
+      "key": "timestamp",
+      "value": ""
+    },
+    {
+      "key": "inquiry_request_id",
+      "value": ""
+    },
+    {
+      "key": "payment_request_id",
+      "value": ""
+    },
+    {
+      "key": "reference_no",
+      "value": ""
+    },
+    {
+      "key": "local_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "channel_code",
+      "value": "6011"
+    }
+  ]
+}

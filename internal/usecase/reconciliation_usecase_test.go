@@ -177,15 +177,6 @@ func TestReconcile_NonSettlingVendorAnswers(t *testing.T) {
 			wantOutcome: domain.ReconcileOutcomeNotPaid,
 		},
 		{
-			// "02 = Timeout ... If company's reconciliation type is reversal or
-			// force settle, transaction with status 02 will be considered as
-			// success" — that property lives at BCA, so settling here would be
-			// a guess about money.
-			name:        "timeout flag is ambiguous, never auto-settled",
-			resp:        statusResponse(domain.CodeStatusSuccess, domain.PaymentFlagTimeout, "150000.00"),
-			wantOutcome: domain.ReconcileOutcomeAmbiguous,
-		},
-		{
 			// A real answer: the vendor has no such transaction.
 			name:        "transaction not found",
 			resp:        &domain.VAStatusResponse{ResponseCode: domain.CodeStatusNotFound, VirtualAccountData: &domain.VAStatusData{}},
@@ -213,6 +204,39 @@ func TestReconcile_NonSettlingVendorAnswers(t *testing.T) {
 			require.Len(t, repo.attempts, 1, "every attempt is audited, including the ones that changed nothing")
 		})
 	}
+}
+
+// --- the timeout flag settles too ---------------------------------------
+
+// "02 = Timeout payment flag between switcher to partner. If company's
+// reconciliation type is reversal or force settle, transaction with status 02
+// will be considered as success transaction." This company is registered as
+// force settle, so a "02" must settle and notify on exactly the same terms as
+// a "00" — for it, the two mean the same thing.
+func TestReconcile_TimeoutFlag_SettlesLikeSuccess(t *testing.T) {
+	repo := &fakeReconcileRepo{record: pendingRecord(), settleReturns: true}
+	gw := &fakeGateway{resp: statusResponse(domain.CodeStatusSuccess, domain.PaymentFlagTimeout, "150000.00")}
+	notifier := &fakeNotifier{}
+
+	result, err := newReconciler(repo, gw, notifier).
+		Reconcile(context.Background(), " 12345123456789012345678", domain.ReconcileTriggerAdmin)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.ReconcileOutcomeSettled, result.Outcome)
+	assert.True(t, result.Settled)
+
+	require.Len(t, repo.settled, 1, "the transaction must be written to the ledger")
+	assert.Equal(t, "150000.00", repo.settled[0].PaidAmount)
+
+	require.Len(t, notifier.payloads, 1, "the merchant hears about it like any other recovered payment")
+	assert.Equal(t, domain.NotificationEventPaymentReceived, notifier.payloads[0].EventType)
+
+	// The raw flag stays on the audit row: an operator asking "which of these
+	// settled on a timeout rather than a real success?" must still be able to
+	// answer it after the fact.
+	require.Len(t, repo.attempts, 1)
+	assert.Equal(t, domain.ReconcileOutcomeSettled, repo.attempts[0].Outcome)
+	assert.Equal(t, "02", repo.attempts[0].VendorPaymentFlagStatus)
 }
 
 // A "00" flag with no amount is not something to write into a ledger.
