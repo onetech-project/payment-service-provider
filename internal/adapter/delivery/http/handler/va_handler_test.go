@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,6 +226,42 @@ func TestVAHandler_Payment_ResponseAlwaysCarriesObjectAndArrays(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw["virtualAccountData"], &vaData))
 	assert.JSONEq(t, `[]`, string(vaData["billDetails"]))
 	assert.JSONEq(t, `[]`, string(vaData["freeTexts"]))
+}
+
+// `"billDetails": [null]` is a vendor saying "no bills" in the clumsiest way
+// available: encoding/json leaves a one-element slice of blanks behind, which
+// would otherwise be persisted and echoed back as a bill that never existed.
+// The handler must hand the usecase an empty billDetails instead.
+func TestVAHandler_Payment_NullBillDetailEntriesTreatedAsAbsent(t *testing.T) {
+	for _, body := range []string{
+		`{"partnerServiceId":" 12345","customerNo":"123456789012345678","virtualAccountNo":" 12345123456789012345678","virtualAccountName":"Budi Manjo","trxId":"202607221000001234500001","paymentRequestId":"202607221000001234500001","paidAmount":{"value":"100000.00","currency":"IDR"},"totalAmount":{"value":"100000.00","currency":"IDR"},"flagAdvise":"N","channelCode":6011,"trxDateTime":"2026-07-22T10:00:00+07:00","billDetails":[null]}`,
+		`{"partnerServiceId":" 12345","customerNo":"123456789012345678","virtualAccountNo":" 12345123456789012345678","virtualAccountName":"Budi Manjo","trxId":"202607221000001234500001","paymentRequestId":"202607221000001234500001","paidAmount":{"value":"100000.00","currency":"IDR"},"totalAmount":{"value":"100000.00","currency":"IDR"},"flagAdvise":"N","channelCode":6011,"trxDateTime":"2026-07-22T10:00:00+07:00","billDetails":[null,null]}`,
+		`{"partnerServiceId":" 12345","customerNo":"123456789012345678","virtualAccountNo":" 12345123456789012345678","virtualAccountName":"Budi Manjo","trxId":"202607221000001234500001","paymentRequestId":"202607221000001234500001","paidAmount":{"value":"100000.00","currency":"IDR"},"totalAmount":{"value":"100000.00","currency":"IDR"},"flagAdvise":"N","channelCode":6011,"trxDateTime":"2026-07-22T10:00:00+07:00","billDetails":[{}]}`,
+	} {
+		e := echo.New()
+		httpReq := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", strings.NewReader(body))
+		httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(httpReq, rec)
+
+		mockUsecase := new(MockVAUsecase)
+		mockUsecase.On("Payment", mock.Anything, mock.MatchedBy(func(r *domain.VAPaymentRequest) bool {
+			return len(r.BillDetails) == 0
+		})).Return(&domain.VAPaymentResponse{
+			ResponseCode:       "2002500",
+			ResponseMessage:    "Successful",
+			VirtualAccountData: &domain.VAPaymentStatus{PaymentFlagStatus: "00"},
+		}, nil)
+
+		require.NoError(t, NewVAHandler(mockUsecase).Payment(c))
+		mockUsecase.AssertExpectations(t)
+
+		var raw map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+		var vaData map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(raw["virtualAccountData"], &vaData))
+		assert.JSONEq(t, `[]`, string(vaData["billDetails"]), body)
+	}
 }
 
 // A resubmitted paymentRequestId is rejected 404/4042518, and the rejection

@@ -671,6 +671,11 @@ func duplicatePaymentError(existing *domain.VAPaymentRecord) error {
 // 404 twice instead of 4042518 carrying the original "01". Recording every
 // outcome here, accepted or rejected, is what closes that gap.
 func (u *VAUsecase) Payment(ctx context.Context, req *domain.VAPaymentRequest) (*domain.VAPaymentResponse, error) {
+	// Idempotent with the handler's own call: blank billDetails entries must
+	// never reach the persistence or echo paths, whichever door the request
+	// came in through.
+	req.NormalizeBillDetails()
+
 	if flag := u.findPaymentFlag(ctx, req); flag != nil {
 		return replayPaymentFlag(req, flag)
 	}

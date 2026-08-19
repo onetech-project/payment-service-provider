@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -435,4 +436,55 @@ func TestValidatePaymentRequest_FreeTextEntryLength(t *testing.T) {
 	// The Indonesian side is bounded by the same limit, not just the English.
 	req.FreeTexts = []BilingualText{{English: "ok", Indonesia: strings.Repeat("b", MaxFreeTextLength+1)}}
 	assert.NotNil(t, ValidatePaymentRequest(req, true))
+}
+
+// A vendor sending `"billDetails": [null]` means "no bills"; encoding/json
+// turns that into a one-element slice of zero-value structs, so the request
+// must be normalized back to absence before anything branches on len().
+func TestNormalizeBillDetails_AllNullEntriesTreatedAsAbsent(t *testing.T) {
+	cases := map[string]string{
+		"single null":     `{"billDetails":[null]}`,
+		"several nulls":   `{"billDetails":[null,null]}`,
+		"empty objects":   `{"billDetails":[{},{}]}`,
+		"hollow pointers": `{"billDetails":[{"billAmount":{},"billDescription":{},"reason":{}}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			var req VAPaymentRequest
+			require.NoError(t, json.Unmarshal([]byte(body), &req))
+			require.NotEmpty(t, req.BillDetails, "precondition: json decodes nulls into blank entries")
+
+			req.NormalizeBillDetails()
+
+			assert.Nil(t, req.BillDetails)
+			assert.Len(t, req.BillDetails, 0)
+		})
+	}
+}
+
+func TestNormalizeBillDetails_KeepsRealEntriesAndDropsBlanks(t *testing.T) {
+	var req VAPaymentRequest
+	require.NoError(t, json.Unmarshal([]byte(
+		`{"billDetails":[null,{"billNo":"INV-0001","billAmount":{"value":"10000.00","currency":"IDR"}},null]}`,
+	), &req))
+
+	req.NormalizeBillDetails()
+
+	require.Len(t, req.BillDetails, 1)
+	assert.Equal(t, "INV-0001", req.BillDetails[0].BillNo)
+}
+
+// A bill carrying only one populated field is still a bill.
+func TestNormalizeBillDetails_KeepsSparseButMeaningfulEntry(t *testing.T) {
+	for _, body := range []string{
+		`{"billDetails":[{"billNo":"INV-1"}]}`,
+		`{"billDetails":[{"status":"01"}]}`,
+		`{"billDetails":[{"billAmount":{"value":"1.00","currency":"IDR"}}]}`,
+		`{"billDetails":[{"additionalInfo":{"k":"v"}}]}`,
+	} {
+		var req VAPaymentRequest
+		require.NoError(t, json.Unmarshal([]byte(body), &req))
+		req.NormalizeBillDetails()
+		assert.Len(t, req.BillDetails, 1, body)
+	}
 }

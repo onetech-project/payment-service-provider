@@ -162,6 +162,12 @@ func (h *VAHandler) Payment(c echo.Context) error {
 	// duplicate check can only see payments that succeeded.
 	req.ExternalID = c.Request().Header.Get(headerExternalID)
 
+	// A vendor that sends `"billDetails": [null]` means "no bills", but binding
+	// turns it into a one-element slice of blanks. Collapse it here, at the
+	// boundary, so validation, persistence and the echoed response all see the
+	// same absence the vendor intended.
+	req.NormalizeBillDetails()
+
 	echoData := paymentEcho(&req)
 	if v := domain.ValidatePaymentRequest(&req, h.strictMandatoryFor(c)); v != nil {
 		code, message := violationCode(domain.ServiceCodePayment, v)

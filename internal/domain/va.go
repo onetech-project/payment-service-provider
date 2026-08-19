@@ -157,6 +157,70 @@ type VAPaymentBillDetail struct {
 	Reason            *BilingualText         `json:"reason"`
 }
 
+// NormalizeBillDetails drops billDetails entries that carry no data, so a
+// request whose array holds nothing but blanks is treated exactly like one that
+// never sent billDetails at all.
+//
+// `"billDetails": [null]` — and its cousins `[{}]` and `[null, null]` — decode
+// into a slice of ZERO-VALUE VAPaymentBillDetail: a JSON null unmarshalled into
+// a non-pointer struct element leaves the element untouched rather than
+// removing it, so len() reports 1 where the vendor meant 0. Everything
+// downstream branches on that len: SaveBillDetails would persist a blank bill
+// row, and echoPaymentBillDetails would answer with a fabricated
+// {status:"00", reason:"Success"} bill the vendor never sent. Collapsing the
+// slice to nil keeps those checks honest.
+//
+// A mixed array keeps its real entries — only the blanks are removed, since a
+// null alongside a genuine bill is noise in the same way.
+func (r *VAPaymentRequest) NormalizeBillDetails() {
+	if len(r.BillDetails) == 0 {
+		return
+	}
+	kept := make([]VAPaymentBillDetail, 0, len(r.BillDetails))
+	for _, b := range r.BillDetails {
+		if b.IsEmpty() {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	if len(kept) == 0 {
+		r.BillDetails = nil
+		return
+	}
+	r.BillDetails = kept
+}
+
+// IsEmpty reports whether the bill detail carries no field the payment flow can
+// act on. Pointer fields are judged by their content rather than merely by
+// nil-ness, so an explicitly sent but hollow `{"billAmount": {}}` counts as
+// empty too.
+func (b VAPaymentBillDetail) IsEmpty() bool {
+	return b.BillCode == "" &&
+		b.BillNo == "" &&
+		b.BillName == "" &&
+		b.BillShortName == "" &&
+		b.BillSubCompany == "" &&
+		b.BillReferenceNo == "" &&
+		b.BillerReferenceID == "" &&
+		b.Status == "" &&
+		b.BillDescription.isBlank() &&
+		b.Reason.isBlank() &&
+		b.BillAmount.isBlank() &&
+		len(b.AdditionalInfo) == 0
+}
+
+// isBlank reports whether the text is absent or carries no words in either
+// language. Nil-safe so callers can chain it on optional fields.
+func (t *BilingualText) isBlank() bool {
+	return t == nil || (t.English == "" && t.Indonesia == "")
+}
+
+// isBlank reports whether the amount is absent or carries neither a value nor a
+// currency. Nil-safe, for the same reason as BilingualText.isBlank.
+func (a *Amount) isBlank() bool {
+	return a == nil || (a.Value == "" && a.Currency == "")
+}
+
 // VAPaymentResponse represents response to vendor payment notification
 type VAPaymentResponse struct {
 	ResponseCode       string                 `json:"responseCode"`
