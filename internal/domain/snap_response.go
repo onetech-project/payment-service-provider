@@ -57,7 +57,7 @@ func NewInquiryErrorResponse(code, message string, echo VAIdentityEcho) VAInquir
 		ResponseMessage: message,
 		VirtualAccountData: &VAAccountData{
 			InquiryStatus:    FlagStatusForCode(code),
-			InquiryReason:    ReasonForCode(code),
+			InquiryReason:    ReasonForCodeMessage(code, message),
 			PartnerServiceID: echo.PartnerServiceID,
 			CustomerNo:       echo.CustomerNo,
 			VirtualAccountNo: echo.VirtualAccountNo,
@@ -75,7 +75,7 @@ func NewPaymentErrorResponse(code, message string, echo VAIdentityEcho) VAPaymen
 		ResponseMessage: message,
 		VirtualAccountData: &VAPaymentStatus{
 			PaymentFlagStatus: FlagStatusForCode(code),
-			PaymentFlagReason: ReasonForCode(code),
+			PaymentFlagReason: ReasonForCodeMessage(code, message),
 			PartnerServiceID:  echo.PartnerServiceID,
 			CustomerNo:        echo.CustomerNo,
 			VirtualAccountNo:  echo.VirtualAccountNo,
@@ -93,7 +93,7 @@ func NewStatusErrorResponse(code, message string, echo VAIdentityEcho) VAStatusR
 		ResponseMessage: message,
 		VirtualAccountData: &VAStatusData{
 			PaymentFlagStatus: FlagStatusForCode(code),
-			PaymentFlagReason: ReasonForCode(code),
+			PaymentFlagReason: ReasonForCodeMessage(code, message),
 			PartnerServiceID:  echo.PartnerServiceID,
 			CustomerNo:        echo.CustomerNo,
 			VirtualAccountNo:  echo.VirtualAccountNo,

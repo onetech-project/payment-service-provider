@@ -112,9 +112,15 @@ const (
 	CodePaymentBadRequest   = "4002500"
 
 	// Status (service 26)
-	CodeStatusSuccess     = "2002600"
-	CodeStatusNotFound    = "4042601"
-	CodeStatusBadRequest  = "4002600"
+	CodeStatusSuccess    = "2002600"
+	CodeStatusNotFound   = "4042601"
+	CodeStatusBadRequest = "4002600"
+	// CodeStatusConflict completes the 409xx00 set. The status endpoint sits
+	// behind the same idempotency middleware as inquiry and payment
+	// (cmd/api/main.go), so CodeConflict("26") is reachable there too, and
+	// VA-Payment-Status V2 v1.0 lists it: 409 / 4092600 / "Conflict" /
+	// "Cannot use same X-EXTERNAL-ID in the same day".
+	CodeStatusConflict    = "4092600"
 	CodeStatusInternalErr = "5002601"
 
 	// Access token (service 73). These come from the Errors table in
@@ -193,13 +199,95 @@ var snapReason = map[string]BilingualText{
 		English:   "Cannot use the same X-EXTERNAL-ID",
 		Indonesia: "Tidak bisa menggunakan X-EXTERNAL-ID yang sama",
 	},
+	// Same wording as the other two: all three 409xx00 codes describe one
+	// condition, and a vendor reading the reason should not have to notice
+	// which endpoint it came back from.
+	CodeStatusConflict: {
+		English:   "Cannot use the same X-EXTERNAL-ID",
+		Indonesia: "Tidak bisa menggunakan X-EXTERNAL-ID yang sama",
+	},
 	CodeStatusNotFound: {English: "Transaction Not Found", Indonesia: "Transaksi Tidak Ditemukan"},
+}
+
+// maxReasonLength is the tightest cap the three services put on their reason
+// text, applied uniformly. The tables disagree: VA-BillPresentment v2.4 types
+// inquiryReason.english/.indonesia String(64) Max, while VA-Payment-Flag v2.3
+// and VA-Payment-Status V2 v1.0 allow String(200) for paymentFlagReason. 64
+// satisfies all three, and the longest reason this service can build — the
+// deepest field name, "billDetails.billAmount.currency" — comes to 58, so the
+// cap is a backstop rather than something a real rejection meets.
+//
+// A reason built from a message that would exceed it is abandoned in favour of
+// the generic one: an over-length reason is out of contract, and truncating
+// would cut the field name mid-word, which is the one part the vendor needs
+// intact.
+const maxReasonLength = 64
+
+// fieldViolationReasons translates the two field-level rejection messages BCA
+// defines in Appendix A ("Invalid Field Format {field name}" and "Invalid
+// Mandatory Field {field name}") into Indonesian. Only the fixed prefix is
+// translated — what follows is the offending field's JSON name, which is an
+// identifier and stays verbatim in both languages.
+var fieldViolationReasons = []struct{ english, indonesia string }{
+	{"Invalid Field Format", "Format Field Tidak Valid"},
+	{"Invalid Mandatory Field", "Field Wajib Tidak Valid"},
+}
+
+// ReasonForCodeMessage returns the bilingual reason for a rejection, using the
+// responseMessage when the code is one BCA parameterises by field name.
+//
+// The 400xx01 / 400xx02 codes are the only ones whose message is not fixed:
+// Appendix A spells them "Invalid Field Format {field name}" and "Invalid
+// Mandatory Field {field name}", so the field name — the single piece of
+// information that tells the vendor WHAT to fix — lives in the message alone.
+// Routing those through the code-keyed table collapsed every one of them to
+// "Rejected"/"Ditolak" and threw that field name away, while BCA's own sample
+// rejection mirrors the message into the reason. Every other code has exactly
+// one message, so the table remains the right source for them.
+func ReasonForCodeMessage(code, message string) *BilingualText {
+	if !isFieldViolationCode(code) {
+		return ReasonForCode(code)
+	}
+	for _, t := range fieldViolationReasons {
+		rest, ok := strings.CutPrefix(message, t.english)
+		if !ok {
+			continue
+		}
+		reason := BilingualText{English: message, Indonesia: t.indonesia + rest}
+		if len(reason.English) > maxReasonLength || len(reason.Indonesia) > maxReasonLength {
+			return ReasonForCode(code)
+		}
+		return &reason
+	}
+	// A 400xx01/02 carrying some other wording has no translation to offer;
+	// the generic reason is still a valid one, and a half-translated pair
+	// would not be.
+	return ReasonForCode(code)
+}
+
+// isFieldViolationCode reports whether code is one of BCA's field-level
+// rejections — 400xx01 (invalid format) or 400xx02 (missing mandatory) — for
+// any service code xx.
+func isFieldViolationCode(code string) bool {
+	if len(code) != 7 || !strings.HasPrefix(code, "400") {
+		return false
+	}
+	switch code[5:] {
+	case caseInvalidFormat, caseMissingMandatory:
+		return true
+	default:
+		return false
+	}
 }
 
 // ReasonForCode returns the bilingual reason for a responseCode. Unknown codes
 // fall back to a generic rejection rather than an empty object: BCA rejects a
 // response whose reason fields are empty, so "no entry" must never render as
 // "no reason".
+//
+// Prefer ReasonForCodeMessage at any call site that has the responseMessage to
+// hand: it answers identically here and additionally carries the field name on
+// the 400xx01/400xx02 codes.
 func ReasonForCode(code string) *BilingualText {
 	if r, ok := snapReason[code]; ok {
 		reason := r

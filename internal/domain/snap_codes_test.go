@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -162,4 +163,129 @@ func TestBillingForVAType(t *testing.T) {
 	// never issued under.
 	assert.Equal(t, VATypeBilling(""), BillingForVAType(""))
 	assert.Equal(t, VATypeBilling(""), BillingForVAType("99"))
+}
+
+// BCA parameterises 400xx01 / 400xx02 by field name — Appendix A spells them
+// "Invalid Field Format {field name}" / "Invalid Mandatory Field {field name}"
+// — so the reason must carry that name rather than collapse to the generic
+// rejection, and its Indonesian half must be a translation of the same text.
+func TestReasonForCodeMessage_FieldViolationsMirrorTheMessage(t *testing.T) {
+	cases := []struct {
+		code, message  string
+		wantEN, wantID string
+	}{
+		{CodeInvalidField(ServiceCodeInquiry), "Invalid Field Format [customerNo]",
+			"Invalid Field Format [customerNo]", "Format Field Tidak Valid [customerNo]"},
+		{CodeMissingMandatory(ServiceCodeInquiry), "Invalid Mandatory Field [inquiryRequestId]",
+			"Invalid Mandatory Field [inquiryRequestId]", "Field Wajib Tidak Valid [inquiryRequestId]"},
+		{CodeInvalidField(ServiceCodePayment), "Invalid Field Format [billDetails.billAmount.currency]",
+			"Invalid Field Format [billDetails.billAmount.currency]", "Format Field Tidak Valid [billDetails.billAmount.currency]"},
+		{CodeMissingMandatory(ServiceCodePayment), "Invalid Mandatory Field [virtualAccountName]",
+			"Invalid Mandatory Field [virtualAccountName]", "Field Wajib Tidak Valid [virtualAccountName]"},
+		{CodeMissingMandatory(ServiceCodeStatus), "Invalid Mandatory Field [X-EXTERNAL-ID]",
+			"Invalid Mandatory Field [X-EXTERNAL-ID]", "Field Wajib Tidak Valid [X-EXTERNAL-ID]"},
+	}
+	for _, c := range cases {
+		got := ReasonForCodeMessage(c.code, c.message)
+		assert.Equal(t, c.wantEN, got.English, c.code)
+		assert.Equal(t, c.wantID, got.Indonesia, c.code)
+	}
+}
+
+// Every other code keeps the code-keyed table: their message is fixed, and the
+// table's wording is what the contracts and BCA's samples pin.
+func TestReasonForCodeMessage_NonFieldCodesKeepTheTable(t *testing.T) {
+	cases := []struct{ code, message string }{
+		{CodeInquiryNotFound, "Invalid Bill/Virtual Account [Not Found]"},
+		{CodeInquiryPaidBill, "Paid Bill"},
+		{CodeInquiryExpired, "Invalid Bill/Virtual Account"},
+		{CodeInquiryConflict, "Conflict"},
+		{CodeInquiryBadRequest, "Bad Request"},
+		{CodeInternalError(ServiceCodeInquiry), "Internal Server Error"},
+		{CodePaymentInconsistent, "Inconsistent Request"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, ReasonForCode(c.code), ReasonForCodeMessage(c.code, c.message), c.code)
+	}
+}
+
+// A 400xx01/02 whose wording is not one of the two Appendix A templates has no
+// translation available, so it falls back rather than emitting an English
+// string in the Indonesian field.
+func TestReasonForCodeMessage_UntranslatableFieldViolationFallsBack(t *testing.T) {
+	got := ReasonForCodeMessage(CodeInvalidField(ServiceCodeInquiry), "Something Else Entirely")
+	assert.Equal(t, ReasonForCode(CodeInvalidField(ServiceCodeInquiry)), got)
+}
+
+// BCA types both reason halves String(64) Max. The longest field name the
+// validators can name must still fit, in both languages.
+func TestReasonForCodeMessage_StaysWithinBCAsSixtyFourCharLimit(t *testing.T) {
+	const longestField = "billDetails.billAmount.currency"
+	for _, c := range []struct{ code, message string }{
+		{CodeInvalidField(ServiceCodePayment), "Invalid Field Format [" + longestField + "]"},
+		{CodeMissingMandatory(ServiceCodePayment), "Invalid Mandatory Field [" + longestField + "]"},
+	} {
+		got := ReasonForCodeMessage(c.code, c.message)
+		assert.LessOrEqual(t, len(got.English), maxReasonLength, c.message)
+		assert.LessOrEqual(t, len(got.Indonesia), maxReasonLength, c.message)
+		assert.Contains(t, got.Indonesia, longestField, "the field name must survive translation")
+	}
+}
+
+// An over-length message would put an out-of-contract reason on the wire; the
+// generic one is still valid, a truncated field name is not.
+func TestReasonForCodeMessage_OverLongMessageFallsBack(t *testing.T) {
+	code := CodeInvalidField(ServiceCodeInquiry)
+	got := ReasonForCodeMessage(code, "Invalid Field Format ["+strings.Repeat("x", maxReasonLength)+"]")
+	assert.Equal(t, ReasonForCode(code), got)
+}
+
+func TestIsFieldViolationCode(t *testing.T) {
+	for _, code := range []string{"4002401", "4002402", "4002501", "4002502", "4002601", "4002602"} {
+		assert.True(t, isFieldViolationCode(code), code)
+	}
+	for _, code := range []string{"4002400", "2002400", "4042412", "4092400", "5002400", "4012400", "", "400240"} {
+		assert.False(t, isFieldViolationCode(code), code)
+	}
+}
+
+// The three 409xx00 codes describe one condition — a reused X-EXTERNAL-ID —
+// and all three endpoints sit behind the same idempotency middleware, so all
+// three must answer with the same reason. 4092600 was the one missing from the
+// table, and fell through to the generic "Rejected" that says nothing about
+// what the vendor did wrong.
+func TestReasonForCode_ConflictIsCoveredOnEveryService(t *testing.T) {
+	want := &BilingualText{
+		English:   "Cannot use the same X-EXTERNAL-ID",
+		Indonesia: "Tidak bisa menggunakan X-EXTERNAL-ID yang sama",
+	}
+	generic := &BilingualText{English: "Rejected", Indonesia: "Ditolak"}
+
+	for _, service := range []string{ServiceCodeInquiry, ServiceCodePayment, ServiceCodeStatus} {
+		code := CodeConflict(service)
+		got := ReasonForCode(code)
+		assert.Equal(t, want, got, code)
+		assert.NotEqual(t, generic, got, "%s must not fall back to the generic reason", code)
+		assert.Equal(t, InquiryStatusFailed, FlagStatusForCode(code), code)
+	}
+}
+
+// Transcribed from the Appendix A / response-code tables of the three BCA
+// tech docs.
+func TestConflictCodesMatchBCAsTables(t *testing.T) {
+	assert.Equal(t, CodeInquiryConflict, CodeConflict(ServiceCodeInquiry))
+	assert.Equal(t, CodePaymentConflict, CodeConflict(ServiceCodePayment))
+	assert.Equal(t, CodeStatusConflict, CodeConflict(ServiceCodeStatus))
+	assert.Equal(t, "4092400", CodeInquiryConflict)
+	assert.Equal(t, "4092500", CodePaymentConflict)
+	assert.Equal(t, "4092600", CodeStatusConflict)
+}
+
+// 409xx00 carries a fixed message, so it stays on the code-keyed table rather
+// than mirroring responseMessage the way the 400xx01/02 codes do.
+func TestReasonForCodeMessage_ConflictKeepsTheTable(t *testing.T) {
+	for _, service := range []string{ServiceCodeInquiry, ServiceCodePayment, ServiceCodeStatus} {
+		code := CodeConflict(service)
+		assert.Equal(t, ReasonForCode(code), ReasonForCodeMessage(code, "Conflict"), code)
+	}
 }
