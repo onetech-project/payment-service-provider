@@ -530,7 +530,14 @@ func newServer(t *testing.T, vendors ...vendor) *server {
 	vh := handler.NewVAHandler(uc)
 	for _, basePath := range []string{"/openapi/v1.0", "/openapi/v2.0"} {
 		group := e.Group(basePath + "/transfer-va")
-		group.Use(customMiddleware.IdempotencyMiddleware(store, time.Minute, time.Hour))
+		// Mirrors main.go including the payment exemption. Without it the
+		// harness ran a rule production never had — a repeated
+		// X-EXTERNAL-ID on /payment was answered from the middleware instead
+		// of reaching the usecase that owns the 4042518 double-flag rule.
+		group.Use(customMiddleware.IdempotencyMiddleware(store, time.Minute, time.Hour,
+			customMiddleware.WithDoubleFlagPassthroughFor(func(c echo.Context) bool {
+				return strings.HasSuffix(c.Request().URL.Path, "/transfer-va/payment")
+			})))
 		vendorGroup := group.Group("")
 		vendorGroup.Use(customMiddleware.MultiVendorSNAPAuth(configs, issuer, true))
 		vendorGroup.POST("/inquiry", vh.Inquiry)

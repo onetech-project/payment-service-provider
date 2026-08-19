@@ -212,6 +212,11 @@ func main() {
 	// replayed for a repeated X-EXTERNAL-ID.
 	idempotencyLockTTL := getEnvDurationSeconds("IDEMPOTENCY_LOCK_TTL_SECONDS", 30)
 	idempotencyCacheTTL := getEnvDurationSeconds("IDEMPOTENCY_CACHE_TTL_SECONDS", 86400)
+	// Where the X-EXTERNAL-ID day boundary falls. BCA operates in WIB, so that
+	// is the default; DayTimezone falls back to it for an unset, misspelled or
+	// unloadable zone rather than silently drawing the boundary in UTC.
+	idempotencyDayZone := customMiddleware.DayTimezone(os.Getenv("IDEMPOTENCY_DAY_TIMEZONE"))
+	log.Printf("Idempotency day boundary measured in %s", idempotencyDayZone)
 
 	// 4. Crypto & JWT Setup
 	privPEM, pubPEM, err := generateDefaultRSAKeys()
@@ -448,13 +453,16 @@ func main() {
 
 		// Register vendor-specific routes (unified under {snapBasePath}/transfer-va/*)
 		transferVAGroup := e.Group(snapBasePath + "/transfer-va")
-		// Payment is exempt from cached-response replay: a resubmit of the same
-		// X-EXTERNAL-ID + paymentRequestId must reach the handler so it can
-		// answer 4042518 Inconsistent Request against the stored payment,
-		// rather than replaying the original 2002500 as a second success.
+		// One X-EXTERNAL-ID, one request: a repeat is 409 Conflict whether or
+		// not the body changed, since BCA types the header "unique in the same
+		// day". Payment carries the one exemption BCA documents — a repeat
+		// with the SAME paymentRequestId is its post-system-error double flag
+		// and must reach the handler to be answered 4042518 against the stored
+		// payment.
 		transferVAGroup.Use(customMiddleware.IdempotencyMiddleware(
 			redisClient, idempotencyLockTTL, idempotencyCacheTTL,
-			customMiddleware.WithReplaySuppressedFor(func(c echo.Context) bool {
+			customMiddleware.WithDayBoundaryIn(idempotencyDayZone),
+			customMiddleware.WithDoubleFlagPassthroughFor(func(c echo.Context) bool {
 				return strings.HasSuffix(c.Path(), "/transfer-va/payment")
 			}),
 		))
@@ -500,7 +508,8 @@ func main() {
 	// identically.
 	for _, statusBasePath := range statusBasePaths {
 		statusGroup := e.Group(statusBasePath + "/transfer-va")
-		statusGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL))
+		statusGroup.Use(customMiddleware.IdempotencyMiddleware(redisClient, idempotencyLockTTL, idempotencyCacheTTL,
+			customMiddleware.WithDayBoundaryIn(idempotencyDayZone)))
 
 		if len(vendorConfigs) > 0 {
 			vendorStatusGroup := statusGroup.Group("")

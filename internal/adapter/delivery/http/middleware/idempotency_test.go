@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeIdempotencyStore is an in-memory stand-in for redis.Client, scoped to
@@ -124,7 +125,7 @@ func TestIdempotencyMiddleware_MissingKey(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "Invalid Mandatory Field [X-EXTERNAL-ID]")
 }
 
-func TestIdempotencyMiddleware_FirstRequestCachesResponse(t *testing.T) {
+func TestIdempotencyMiddleware_FirstRequestRecordsTheKey(t *testing.T) {
 	e := echo.New()
 	body := `{"foo":"bar"}`
 	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
@@ -133,7 +134,8 @@ func TestIdempotencyMiddleware_FirstRequestCachesResponse(t *testing.T) {
 	c := e.NewContext(req, rec)
 
 	store := newFakeIdempotencyStore()
-	mw := IdempotencyMiddleware(store, time.Second, time.Second)
+	mw := IdempotencyMiddleware(store, time.Second, time.Second,
+		WithDayStamp(func() string { return "20260817" }))
 	handler := mw(func(c echo.Context) error {
 		return c.JSON(http.StatusCreated, map[string]string{"status": "created"})
 	})
@@ -145,56 +147,59 @@ func TestIdempotencyMiddleware_FirstRequestCachesResponse(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "created")
 
 	store.mu.Lock()
-	_, cached := store.cache["key-1"]
-	_, stillLocked := store.locked["key-1"]
+	_, cached := store.cache["20260817:key-1"]
+	_, stillLocked := store.locked["20260817:key-1"]
 	store.mu.Unlock()
-	assert.True(t, cached, "response should be cached after successful completion")
+	assert.True(t, cached, "the key must be recorded as spent after a completed request")
 	assert.False(t, stillLocked, "lock should be released after the request completes")
 }
 
-func TestIdempotencyMiddleware_ReplaysCachedResponseOnMatchingPayload(t *testing.T) {
+// X-EXTERNAL-ID is typed "unique in the same day" on all three services, so
+// one key buys one request. An identical repeat used to be replayed from
+// cache; it is a conflict like any other re-use, and the handler must not see
+// it twice.
+func TestIdempotencyMiddleware_IdenticalRepeatIsAConflict(t *testing.T) {
 	e := echo.New()
 	body := `{"foo":"bar"}`
 
 	store := newFakeIdempotencyStore()
-
-	// First request populates the cache.
-	req1 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
-	req1.Header.Set("X-EXTERNAL-ID", "key-2")
-	rec1 := httptest.NewRecorder()
-	c1 := e.NewContext(req1, rec1)
 	mw := IdempotencyMiddleware(store, time.Second, time.Second)
 	calls := 0
 	handler := mw(func(c echo.Context) error {
 		calls++
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	newReq := func() (echo.Context, *httptest.ResponseRecorder) {
+		r := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
+		r.Header.Set("X-EXTERNAL-ID", "key-2")
+		rec := httptest.NewRecorder()
+		return e.NewContext(r, rec), rec
+	}
+
+	c1, _ := newReq()
 	assert.NoError(t, handler(c1))
 	assert.Equal(t, 1, calls)
 
-	// Second request with the same key and payload should replay the cache
-	// without invoking the handler again.
-	req2 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
-	req2.Header.Set("X-EXTERNAL-ID", "key-2")
-	rec2 := httptest.NewRecorder()
-	c2 := e.NewContext(req2, rec2)
+	c2, rec2 := newReq()
 	assert.NoError(t, handler(c2))
 
-	assert.Equal(t, 1, calls, "handler must not run again on a cache replay")
-	assert.Equal(t, http.StatusOK, rec2.Code)
-	assert.Equal(t, "true", rec2.Header().Get("X-Cache-Replay"))
-	assert.Contains(t, rec2.Body.String(), "ok")
+	assert.Equal(t, 1, calls, "a repeated key must not reach the handler again")
+	assert.Equal(t, http.StatusConflict, rec2.Code)
+	assert.Contains(t, rec2.Body.String(), "Conflict")
+	assert.Empty(t, rec2.Header().Get("X-Cache-Replay"), "nothing is replayed any more")
 }
 
-// WithReplaySuppressedFor lets the VA payment endpoint see its own duplicates
-// so it can answer 4042518 instead of replaying the original success.
-func TestIdempotencyMiddleware_SuppressedReplayReachesHandlerAgain(t *testing.T) {
+// BCA's post-system-error double flag repeats BOTH the X-EXTERNAL-ID and the
+// paymentRequestId, and must be answered 4042518 by the handler — a 409 here
+// would make BCA book an already-settled payment as failed.
+func TestIdempotencyMiddleware_DoubleFlagReachesHandler(t *testing.T) {
 	e := echo.New()
 	body := `{"paymentRequestId":"PAY-1"}`
 
 	store := newFakeIdempotencyStore()
 	mw := IdempotencyMiddleware(store, time.Second, time.Second,
-		WithReplaySuppressedFor(func(c echo.Context) bool {
+		WithDoubleFlagPassthroughFor(func(c echo.Context) bool {
 			return strings.HasSuffix(c.Request().URL.Path, "/transfer-va/payment")
 		}))
 
@@ -218,47 +223,87 @@ func TestIdempotencyMiddleware_SuppressedReplayReachesHandlerAgain(t *testing.T)
 	assert.NoError(t, handler(c1))
 	assert.Equal(t, 1, calls)
 
-	// Same X-EXTERNAL-ID, same payload — normally a replay, here it must reach
-	// the handler so the duplicate can be rejected on its merits.
 	c2, rec2 := newReq()
 	assert.NoError(t, handler(c2))
 
-	assert.Equal(t, 2, calls, "suppressed replay must re-invoke the handler")
-	assert.Empty(t, rec2.Header().Get("X-Cache-Replay"))
+	assert.Equal(t, 2, calls, "the double flag must re-invoke the handler")
 	assert.Equal(t, http.StatusNotFound, rec2.Code)
 	assert.Contains(t, rec2.Body.String(), "4042518")
 }
 
-// Suppressing the replay must not weaken the payload-mismatch guard: a reused
-// X-EXTERNAL-ID carrying a different body is still a conflict, not a handler
-// call.
-func TestIdempotencyMiddleware_SuppressedReplayStillRejectsPayloadMismatch(t *testing.T) {
-	e := echo.New()
-	store := newFakeIdempotencyStore()
-	mw := IdempotencyMiddleware(store, time.Second, time.Second,
-		WithReplaySuppressedFor(func(echo.Context) bool { return true }))
+// The exemption is scoped to the double flag alone: a reused key carrying a
+// DIFFERENT paymentRequestId is the case BCA spells 4092500, and one carrying
+// no paymentRequestId at all is not a double flag either — two blanks matching
+// must not open the passthrough.
+func TestIdempotencyMiddleware_DoubleFlagPassthroughRejectsEverythingElse(t *testing.T) {
+	for _, tc := range []struct{ name, first, second string }{
+		{"different paymentRequestId", `{"paymentRequestId":"PAY-1"}`, `{"paymentRequestId":"PAY-2"}`},
+		{"paymentRequestId dropped", `{"paymentRequestId":"PAY-1"}`, `{"foo":"bar"}`},
+		{"no paymentRequestId either side", `{"foo":"bar"}`, `{"foo":"bar"}`},
+		{"unparseable body", `{"paymentRequestId":"PAY-1"}`, `not json`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := echo.New()
+			store := newFakeIdempotencyStore()
+			mw := IdempotencyMiddleware(store, time.Second, time.Second,
+				WithDoubleFlagPassthroughFor(func(echo.Context) bool { return true }))
 
-	calls := 0
-	handler := mw(func(c echo.Context) error {
-		calls++
-		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
-	})
+			calls := 0
+			handler := mw(func(c echo.Context) error {
+				calls++
+				return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+			})
 
-	req1 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"foo":"bar"}`))
-	req1.Header.Set("X-EXTERNAL-ID", "extid-mismatch")
-	assert.NoError(t, handler(e.NewContext(req1, httptest.NewRecorder())))
+			req1 := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", strings.NewReader(tc.first))
+			req1.Header.Set("X-EXTERNAL-ID", "extid-mismatch")
+			assert.NoError(t, handler(e.NewContext(req1, httptest.NewRecorder())))
 
-	req2 := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"foo":"different"}`))
-	req2.Header.Set("X-EXTERNAL-ID", "extid-mismatch")
-	rec2 := httptest.NewRecorder()
-	assert.NoError(t, handler(e.NewContext(req2, rec2)))
+			req2 := httptest.NewRequest(http.MethodPost, "/openapi/v1.0/transfer-va/payment", strings.NewReader(tc.second))
+			req2.Header.Set("X-EXTERNAL-ID", "extid-mismatch")
+			rec2 := httptest.NewRecorder()
+			assert.NoError(t, handler(e.NewContext(req2, rec2)))
 
-	assert.Equal(t, 1, calls, "payload mismatch must not reach the handler")
-	assert.Equal(t, http.StatusConflict, rec2.Code)
-	assert.Contains(t, rec2.Body.String(), "4097300")
+			assert.Equal(t, 1, calls, "only the double flag may reach the handler")
+			assert.Equal(t, http.StatusConflict, rec2.Code)
+			assert.Contains(t, rec2.Body.String(), "4092500")
+		})
+	}
 }
 
-func TestIdempotencyMiddleware_PayloadMismatchReturnsConflict(t *testing.T) {
+// Inquiry and status get no exemption at all: their own tech docs list only
+// "Cannot use the same X-EXTERNAL-ID → 409", so even a repeat that would be a
+// double flag on payment is a conflict here.
+func TestIdempotencyMiddleware_NoPassthroughWithoutTheOption(t *testing.T) {
+	for _, path := range []string{"/openapi/v1.0/transfer-va/inquiry", "/openapi/v2.0/transfer-va/status"} {
+		e := echo.New()
+		store := newFakeIdempotencyStore()
+		mw := IdempotencyMiddleware(store, time.Second, time.Second,
+			WithDoubleFlagPassthroughFor(func(c echo.Context) bool {
+				return strings.HasSuffix(c.Request().URL.Path, "/transfer-va/payment")
+			}))
+
+		calls := 0
+		handler := mw(func(c echo.Context) error {
+			calls++
+			return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+		})
+
+		body := `{"paymentRequestId":"PAY-1"}`
+		req1 := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req1.Header.Set("X-EXTERNAL-ID", "extid-"+path)
+		assert.NoError(t, handler(e.NewContext(req1, httptest.NewRecorder())))
+
+		req2 := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req2.Header.Set("X-EXTERNAL-ID", "extid-"+path)
+		rec2 := httptest.NewRecorder()
+		assert.NoError(t, handler(e.NewContext(req2, rec2)))
+
+		assert.Equal(t, 1, calls, path)
+		assert.Equal(t, http.StatusConflict, rec2.Code, path)
+	}
+}
+
+func TestIdempotencyMiddleware_RepeatWithDifferentBodyIsAConflict(t *testing.T) {
 	e := echo.New()
 	store := newFakeIdempotencyStore()
 	mw := IdempotencyMiddleware(store, time.Second, time.Second)
@@ -374,4 +419,99 @@ func TestIdempotencyMiddleware_CorruptCacheEntryFallsThroughToHandler(t *testing
 	assert.NoError(t, err)
 	assert.True(t, called, "handler should run when the cache entry can't be unmarshalled")
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// "Unique in the same day" is a CALENDAR day, not a rolling twenty-four hours.
+// An X-EXTERNAL-ID spent at 23:50 must be usable again at 00:00 — a window
+// that runs into the next day rejects a re-use BCA is entitled to make, and on
+// the payment endpoint a 409 is what BCA reads as a failed transaction.
+func TestIdempotencyMiddleware_KeyIsFreedByTheCalendarDay(t *testing.T) {
+	e := echo.New()
+	store := newFakeIdempotencyStore()
+
+	day := "20260817"
+	mw := IdempotencyMiddleware(store, time.Second, 24*time.Hour,
+		WithDayStamp(func() string { return day }))
+
+	calls := 0
+	handler := mw(func(c echo.Context) error {
+		calls++
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	hit := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"foo":"bar"}`))
+		r.Header.Set("X-EXTERNAL-ID", "reused-id")
+		rec := httptest.NewRecorder()
+		_ = handler(e.NewContext(r, rec))
+		return rec
+	}
+
+	require.Equal(t, http.StatusOK, hit().Code)
+	assert.Equal(t, http.StatusConflict, hit().Code, "same day, same id → conflict")
+	assert.Equal(t, 1, calls)
+
+	day = "20260818"
+	assert.Equal(t, http.StatusOK, hit().Code, "new calendar day frees the id")
+	assert.Equal(t, 2, calls)
+
+	assert.Equal(t, http.StatusConflict, hit().Code, "and it is spent again for the new day")
+	assert.Equal(t, 2, calls)
+}
+
+// The stored key carries the date, so the boundary is drawn by the key itself
+// rather than by a TTL landing on the right second.
+func TestIdempotencyMiddleware_StoredKeyIsScopedByDay(t *testing.T) {
+	e := echo.New()
+	store := newFakeIdempotencyStore()
+	handler := IdempotencyMiddleware(store, time.Second, 24*time.Hour,
+		WithDayStamp(func() string { return "20260817" }),
+	)(func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{"status": "ok"}) })
+
+	r := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{}`))
+	r.Header.Set("X-EXTERNAL-ID", "abc123")
+	require.NoError(t, handler(e.NewContext(r, httptest.NewRecorder())))
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	_, ok := store.cache["20260817:abc123"]
+	assert.True(t, ok, "record must be scoped by date, got keys: %v", store.cache)
+}
+
+func TestDayTimezone(t *testing.T) {
+	jakarta, err := time.LoadLocation("Asia/Jakarta")
+	require.NoError(t, err, "runtime must ship tzdata for this to be meaningful")
+
+	assert.Equal(t, jakarta, DayTimezone(""), "empty falls back to WIB")
+	assert.Equal(t, jakarta, DayTimezone("Not/AZone"), "unknown falls back to WIB")
+	assert.Equal(t, jakarta, DayTimezone("Asia/Jakarta"))
+
+	utc := DayTimezone("UTC")
+	assert.Equal(t, time.UTC.String(), utc.String(), "an explicit valid zone is honoured")
+
+	// The fallback must land on the same wall clock as WIB, since that is the
+	// whole point of falling back to it.
+	at := time.Date(2026, 8, 17, 17, 30, 0, 0, time.UTC)
+	assert.Equal(t, at.In(jakarta).Format("20060102"),
+		at.In(time.FixedZone("WIB", 7*60*60)).Format("20060102"))
+}
+
+// The middleware must draw the boundary in WIB even when no option is passed,
+// so a deployment that forgets to wire one is not silently measuring days in
+// whatever zone the container happens to run.
+func TestIdempotencyMiddleware_DefaultsToJakartaDayBoundary(t *testing.T) {
+	e := echo.New()
+	store := newFakeIdempotencyStore()
+	handler := IdempotencyMiddleware(store, time.Second, 24*time.Hour)(
+		func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{"status": "ok"}) })
+
+	r := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{}`))
+	r.Header.Set("X-EXTERNAL-ID", "abc123")
+	require.NoError(t, handler(e.NewContext(r, httptest.NewRecorder())))
+
+	wantKey := time.Now().In(DayTimezone("")).Format("20060102") + ":abc123"
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	_, ok := store.cache[wantKey]
+	assert.True(t, ok, "want %s, got keys: %v", wantKey, store.cache)
 }

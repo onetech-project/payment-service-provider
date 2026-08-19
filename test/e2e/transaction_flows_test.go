@@ -298,19 +298,56 @@ func TestE2E_AdviceRetry_ReplaysOriginalSuccess(t *testing.T) {
 
 // --- idempotency --------------------------------------------------------
 
-func TestE2E_SameExternalIDSamePayload_ReplaysCachedResponse(t *testing.T) {
+// A repeat of both the X-EXTERNAL-ID and the paymentRequestId is BCA's
+// double flag, not a conflict: it reaches the usecase, which answers 4042518
+// against the stored payment. The middleware must not shortcut it — neither
+// with a replayed 2002500 (which would read as a second settlement) nor with a
+// 409 (which BCA counts as a failed transaction).
+func TestE2E_DoubleFlag_AnsweredInconsistentRequest(t *testing.T) {
 	s := newServer(t)
 	seedNoBillAccount(s, testPartnerServiceID, "678901234567890160")
 
 	payload := paymentPayload(testPartnerServiceID, "678901234567890160", "PAY-IDEM-1", "12000.00")
 	first := s.call(t, paymentPath, payload, withExternalID("900000000000002"))
 	require.Equal(t, http.StatusOK, first.status, first.raw)
+	require.Equal(t, domain.CodePaymentSuccess, first.code())
 
 	second := s.call(t, paymentPath, payload, withExternalID("900000000000002"))
 
-	assert.Equal(t, first.status, second.status)
-	assert.Equal(t, first.code(), second.code())
-	assert.Equal(t, 1, s.notifier.count(), "a replayed response must not re-run the payment")
+	assert.Equal(t, http.StatusNotFound, second.status, second.raw)
+	assert.Equal(t, domain.CodePaymentInconsistent, second.code())
+	assert.Equal(t, 1, s.notifier.count(), "the double flag must not re-run the payment")
+}
+
+// One X-EXTERNAL-ID, one request. On inquiry and status there is no double-flag
+// carve-out, so even a byte-identical repeat is 409 — the header is typed
+// "unique in the same day".
+func TestE2E_SameExternalIDRepeated_IsConflictOnInquiryAndStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, extID, wantCode string
+		payload                     func(string, string, string) map[string]any
+	}{
+		{"inquiry", inquiryPath, "900000000000010", domain.CodeInquiryConflict, inquiryPayload},
+		{"status", statusPath, "900000000000011", domain.CodeStatusConflict, statusPayload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newServer(t)
+			seedFixedBill(s, testPartnerServiceID, "678901234567890161", "12000.00")
+
+			payload := tc.payload(testPartnerServiceID, "678901234567890161", "INQ-IDEM-1")
+
+			// What the first call answered is beside the point — the key is
+			// spent either way, as long as the request was decided at all (a
+			// 5xx is deliberately not recorded).
+			first := s.call(t, tc.path, payload, withExternalID(tc.extID))
+			require.Less(t, first.status, 500, first.raw)
+
+			second := s.call(t, tc.path, payload, withExternalID(tc.extID))
+
+			assert.Equal(t, http.StatusConflict, second.status, second.raw)
+			assert.Equal(t, tc.wantCode, second.code())
+		})
+	}
 }
 
 func TestE2E_VariableBill_RepeatedInstalmentNotCreditedTwice(t *testing.T) {
