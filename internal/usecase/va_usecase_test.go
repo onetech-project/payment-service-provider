@@ -2485,11 +2485,88 @@ func TestVAUsecase_Payment_PaidBill_RejectionCarriesVAData(t *testing.T) {
 	assert.Equal(t, req.PaymentRequestID, data.PaymentRequestID)
 	assert.Equal(t, req.ReferenceNo, data.ReferenceNo)
 	assert.Equal(t, req.TrxDateTime, data.TrxDateTime)
-	// The stored bill is real; the tendered amount was never accepted.
+	// The stored bill is real, and so is its settlement: paidAmount reports
+	// what the bill was ALREADY paid (2000000.00), never the 50000.00 this
+	// refused request tendered. Reporting it empty — which is what this did
+	// before — left the channel unable to see what its payment collided with.
 	assert.Equal(t, &domain.Amount{Value: "2000000.00", Currency: "IDR"}, data.TotalAmount)
-	assert.Equal(t, &domain.Amount{}, data.PaidAmount)
+	assert.Equal(t, &domain.Amount{Value: "2000000.00", Currency: "IDR"}, data.PaidAmount)
 
 	mockRepo.AssertNotCalled(t, "SavePayment", mock.Anything, mock.Anything)
+}
+
+// A transaction parked at "00" with nothing actually settled against it has no
+// settlement to name, so paidAmount stays empty rather than reporting "0" —
+// which on a "Paid Bill" refusal would read as a contradiction.
+func TestVAUsecase_Payment_PaidBill_ZeroStoredSettlement_ReportsEmptyPaidAmount(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "   15975",
+		CustomerNo:       "06000000000000000004",
+		VirtualAccountNo: "1597506000000000000000004",
+		PaymentRequestID: "PAY-against-zero-paid-bill",
+		PaidAmount:       &domain.Amount{Value: "50000.00", Currency: "IDR"},
+	}
+
+	paid := &domain.VAInquiryRecord{
+		ID:               "zero-paid-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		VAType:           "06",
+		Status:           "00",
+		TotalAmount:      "2000000.00",
+		PaidAmount:       "0",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(paid, nil)
+
+	_, err := usecase.Payment(context.Background(), req)
+
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, domain.CodePaymentPaidBill, domainErr.SNAPCode)
+	require.NotNil(t, domainErr.PaymentData)
+	assert.Equal(t, &domain.Amount{}, domainErr.PaymentData.PaidAmount)
+}
+
+// Only "Paid Bill" names a settlement. An expired bill accepted nothing, so
+// echoing the tendered amount back would read as an acknowledged payment.
+func TestVAUsecase_Payment_ExpiredBill_ReportsEmptyPaidAmount(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	usecase := NewVAUsecase(mockRepo, nil)
+
+	req := &domain.VAPaymentRequest{
+		PartnerServiceID: "   15975",
+		CustomerNo:       "06000000000000000004",
+		VirtualAccountNo: "1597506000000000000000005",
+		PaymentRequestID: "PAY-against-expired-bill",
+		PaidAmount:       &domain.Amount{Value: "50000.00", Currency: "IDR"},
+	}
+
+	expired := &domain.VAInquiryRecord{
+		ID:               "expired-transaction-id",
+		VirtualAccountNo: req.VirtualAccountNo,
+		VAType:           "06",
+		Status:           "02",
+		TotalAmount:      "2000000.00",
+		PaidAmount:       "2000000.00",
+		Currency:         "IDR",
+	}
+
+	mockRepo.On("GetPayment", mock.Anything, req.PaymentRequestID).Return(nil, domain.ErrVAInvalidBill)
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, req.VirtualAccountNo).Return(expired, nil)
+	// Already "02", so UpdateVAStatus's WHERE status='03' guard makes it a no-op.
+	mockRepo.On("UpdateVAStatus", mock.Anything, req.VirtualAccountNo, "02").Return(domain.ErrMerchantVANotFound)
+
+	_, err := usecase.Payment(context.Background(), req)
+
+	var domainErr *domain.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	require.NotNil(t, domainErr.PaymentData)
+	assert.Equal(t, &domain.Amount{}, domainErr.PaymentData.PaidAmount)
 }
 
 // A deleted bill is refused with the "not found" reason, not "already paid".

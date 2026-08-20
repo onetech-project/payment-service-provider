@@ -602,6 +602,14 @@ func vaNotFoundPaymentError(req *domain.VAPaymentRequest) error {
 // same reason as the not-found rejection: nothing was settled, so no amount
 // was accepted, and echoing the tendered figure reads as an acknowledgement.
 // totalAmount comes from the stored bill, which is real.
+//
+// "Paid Bill" is the one rejection where paidAmount is NOT empty. There the
+// bill genuinely was settled, and the figure reported is the STORED
+// settlement (va_transactions.paid_amount), never the amount this request
+// tendered — so it acknowledges nothing about the refused payment while still
+// telling the channel what the bill it collided with was paid. Every other
+// code here (not found, expired, deleted, conflict) has no settlement to
+// name and keeps paidAmount empty.
 func paymentRejectionData(req *domain.VAPaymentRequest, record *domain.VAInquiryRecord, code string) *domain.VAPaymentStatus {
 	currency := record.Currency
 	if currency == "" {
@@ -613,13 +621,29 @@ func paymentRejectionData(req *domain.VAPaymentRequest, record *domain.VAInquiry
 		VirtualAccountNo:   record.VirtualAccountNo,
 		VirtualAccountName: record.CustomerName,
 		PaymentRequestID:   req.PaymentRequestID,
-		PaidAmount:         &domain.Amount{},
+		PaidAmount:         settledPaidAmount(record, currency, code),
 		TotalAmount:        &domain.Amount{Value: record.TotalAmount, Currency: currency},
 		TrxDateTime:        req.TrxDateTime,
 		ReferenceNo:        req.ReferenceNo,
 		PaymentFlagStatus:  domain.FlagStatusForCode(code),
 		PaymentFlagReason:  domain.ReasonForCode(code),
 	}
+}
+
+// settledPaidAmount resolves the paidAmount a rejection reports: the stored
+// settlement for "Paid Bill", empty for every other refusal code.
+//
+// A stored zero is treated as "nothing settled" and still reports empty — a
+// transaction parked at status "00" with paid_amount 0 has no settlement to
+// name, and "0" on a Paid Bill rejection would read as a contradiction.
+func settledPaidAmount(record *domain.VAInquiryRecord, currency, code string) *domain.Amount {
+	if code != domain.CodePaymentPaidBill {
+		return &domain.Amount{}
+	}
+	if record.PaidAmount == "" || amountsEqual(record.PaidAmount, "0") {
+		return &domain.Amount{}
+	}
+	return &domain.Amount{Value: record.PaidAmount, Currency: currency}
 }
 
 // accountRejectionData is paymentRejectionData for a VA answered from its
