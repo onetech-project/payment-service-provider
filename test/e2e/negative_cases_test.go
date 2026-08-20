@@ -342,14 +342,6 @@ func TestE2E_Negative_PaymentFieldFormats(t *testing.T) {
 		{"currency disagrees between amounts", func(p map[string]any) {
 			p["totalAmount"] = map[string]any{"value": "1000.00", "currency": "USD"}
 		}, "totalAmount.currency"},
-		{"amount over 13 integer digits", func(p map[string]any) {
-			p["paidAmount"] = map[string]any{"value": "12345678901234.00", "currency": "IDR"}
-			p["totalAmount"] = map[string]any{"value": "12345678901234.00", "currency": "IDR"}
-		}, "paidAmount.value"},
-		{"amount is not numeric", func(p map[string]any) {
-			p["paidAmount"] = map[string]any{"value": "abc", "currency": "IDR"}
-			p["totalAmount"] = map[string]any{"value": "abc", "currency": "IDR"}
-		}, "paidAmount.value"},
 		{"flagAdvise outside N/Y", func(p map[string]any) { p["flagAdvise"] = "X" }, "flagAdvise"},
 		{"customerNo is not the VA suffix", func(p map[string]any) {
 			p["customerNo"] = "999999999999999999"
@@ -365,6 +357,45 @@ func TestE2E_Negative_PaymentFieldFormats(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, resp.status, resp.raw)
 			assert.Equal(t, "4002501", resp.code(), resp.raw)
 			assert.Contains(t, resp.body["responseMessage"], tc.field)
+		})
+	}
+}
+
+// Every rejection that is ABOUT the value of paidAmount is answered 4042513
+// "Invalid Amount" — not the 4002501 "Invalid Field Format [field]" the rest
+// of the field table gets. One code and one bilingual reason for the whole
+// class, so the channel never has to correlate two outcomes for what is, to
+// the customer, the same problem: the amount is wrong.
+func TestE2E_Negative_PaymentInvalidAmountValues(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"not numeric", "abc"},
+		{"currency prefix", "Rp10000"},
+		{"no decimals", "10000"},
+		{"one decimal", "10000.5"},
+		{"three decimals", "10000.000"},
+		{"zero", "0.00"},
+		{"over 13 integer digits", "12345678901234.00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newServer(t)
+			payload := paymentPayload(testPartnerServiceID, "678901234567890223", "PAY-AMT-1", "1000.00")
+			payload["paidAmount"] = map[string]any{"value": tc.value, "currency": "IDR"}
+
+			resp := s.call(t, paymentPath, payload)
+
+			require.Equal(t, http.StatusNotFound, resp.status, resp.raw)
+			assert.Equal(t, domain.CodePaymentInvalidAmt, resp.code(), resp.raw)
+			assert.Equal(t, "Invalid Amount", resp.body["responseMessage"], resp.raw)
+
+			data := resp.vaData(t)
+			assert.Equal(t, domain.PaymentFlagReject, data["paymentFlagStatus"], resp.raw)
+			assert.Equal(t, map[string]any{
+				"english":   "Invalid Amount",
+				"indonesia": "Jumlah tidak valid",
+			}, data["paymentFlagReason"], resp.raw)
 		})
 	}
 }

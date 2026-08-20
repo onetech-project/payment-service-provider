@@ -1327,7 +1327,7 @@
                         }
                     },
                     "400": {
-                        "description": "4002500 Bad Request (unparseable body), 4002501 Invalid Field Format {field}, 4002502 Invalid Mandatory Field {field}",
+                        "description": "4002500 Bad Request (unparseable body), 4002501 Invalid Field Format {field}, 4002502 Invalid Mandatory Field {field}. Note: a malformed paidAmount.value is the one exception — it is answered 4042513 Invalid Amount instead, see the 404 list",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }
@@ -1339,7 +1339,7 @@
                         }
                     },
                     "404": {
-                        "description": "All with virtualAccountData.paymentFlagStatus=01 unless noted: 4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither the registry nor any transaction; virtualAccountData echoes the request keys with empty paidAmount/totalAmount), 4042513 Invalid Amount, 4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID and paymentRequestId; echoes the FIRST request's paymentFlagStatus and paymentFlagReason, whether that was 00 settled or 01 rejected), 4042519 Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)",
+                        "description": "All with virtualAccountData.paymentFlagStatus=01 unless noted: 4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither the registry nor any transaction; virtualAccountData echoes the request keys with empty paidAmount/totalAmount), 4042513 Invalid Amount (paidAmount.value not String(13.2) with both decimals, zero or negative, not matching a fixed bill, or taking a variable bill past its totalAmount — paymentFlagReason english \\\"Invalid Amount\\\" / indonesia \\\"Jumlah tidak valid\\\"), 4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID and paymentRequestId; echoes the FIRST request's paymentFlagStatus and paymentFlagReason, whether that was 00 settled or 01 rejected), 4042519 Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)",
                         "schema": {
                             "$ref": "#/definitions/domain.VAPaymentResponse"
                         }

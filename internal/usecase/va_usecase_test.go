@@ -1768,7 +1768,11 @@ func TestVAUsecase_Payment_NoBill_NonPositiveAmountRejected(t *testing.T) {
 			assert.Nil(t, resp)
 			var domainErr *domain.DomainError
 			require.ErrorAs(t, err, &domainErr)
-			assert.Equal(t, "4002501", domainErr.SNAPCode)
+			// Reported as 4042513 "Invalid Amount", not 4002501: a nonsense
+			// figure is a statement about the amount, and the integration
+			// reports every such complaint under one code.
+			assert.Equal(t, domain.CodePaymentInvalidAmt, domainErr.SNAPCode)
+			assert.Equal(t, domain.MsgInvalidAmount, domainErr.Message)
 			mockRepo.AssertNotCalled(t, "SaveNoBillPayment", mock.Anything, mock.Anything)
 		})
 	}

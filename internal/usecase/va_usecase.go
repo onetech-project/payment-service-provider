@@ -425,7 +425,7 @@ func (u *VAUsecase) paymentNoBill(ctx context.Context, req *domain.VAPaymentRequ
 	// amount rule left is that the payment must be a positive number.
 	paidValue, convErr := strconv.ParseFloat(req.PaidAmount.Value, 64)
 	if convErr != nil || paidValue <= 0 {
-		return nil, domain.NewDomainError(domain.CodeInvalidField(domain.ServiceCodePayment), "Invalid Field Format [paidAmount]", nil)
+		return nil, domain.NewDomainError(domain.CodePaymentInvalidAmt, domain.MsgInvalidAmount, nil)
 	}
 
 	transactionDate := time.Now()
@@ -950,6 +950,22 @@ func (u *VAUsecase) payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// path below, and is not subject to the exact totalAmount match check since
 	// a partial payment is expected and valid.
 	if paymentBilling(account, merchantVA) == domain.VATypeBillingVariable {
+		// A variable bill takes instalments, but only up to what it billed.
+		// Without this ceiling the branch had no amount rule at all: a single
+		// payment of twice the bill, or an instalment that overshot the
+		// remaining balance, was recorded in full and settled the transaction
+		// with paid_amount above total_amount — money accepted against a debt
+		// that did not exist, and no record of the excess anywhere.
+		//
+		// The check is on the CUMULATIVE figure (what is already settled plus
+		// what this request tenders), which is the only one that can tell an
+		// over-payment from a legitimate final instalment. Replays never reach
+		// here — replayVariableInstalment answers an instalment already on file
+		// above — so an advice retry is not double-counted into the ceiling.
+		if v := variableBillOverpayment(req, merchantVA); v != nil {
+			return nil, v
+		}
+
 		// paymentRequestId is the dedup key. Without it a retried or
 		// double-flagged instalment was inserted a second time and credited
 		// twice — the cumulative total, and therefore whether the bill counted
@@ -1024,7 +1040,7 @@ func (u *VAUsecase) payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// interchangeably, and a string compare rejects the pair as a mismatch.
 	if merchantVA != nil && merchantVA.TotalAmount != "" {
 		if !amountsEqual(req.PaidAmount.Value, merchantVA.TotalAmount) {
-			return nil, domain.NewDomainError(domain.CodePaymentInvalidAmt, "Invalid amount", nil)
+			return nil, domain.NewDomainError(domain.CodePaymentInvalidAmt, domain.MsgInvalidAmount, nil)
 		}
 	}
 	// A totalAmount that disagrees with the paidAmount in the same request is
@@ -1032,7 +1048,7 @@ func (u *VAUsecase) payment(ctx context.Context, req *domain.VAPaymentRequest) (
 	// against ("the totalAmount and paidAmount field value contain the total
 	// amount paid by customer").
 	if req.TotalAmount != nil && !amountsEqual(req.PaidAmount.Value, req.TotalAmount.Value) {
-		return nil, domain.NewDomainError(domain.CodePaymentInvalidAmt, "Invalid amount", nil)
+		return nil, domain.NewDomainError(domain.CodePaymentInvalidAmt, domain.MsgInvalidAmount, nil)
 	}
 
 	if merchantVA.CustomerName != "" {
@@ -1197,6 +1213,36 @@ func amountsEqual(a, b string) bool {
 		return strings.TrimSpace(a) == strings.TrimSpace(b)
 	}
 	return math.Abs(left-right) < amountEpsilon
+}
+
+// variableBillOverpayment refuses an instalment that would take a variable
+// bill past its own totalAmount, and returns nil when the payment fits.
+//
+// A bill with no stored totalAmount has no ceiling to exceed and is left
+// alone: variable VAs that predate the amount being recorded must keep
+// collecting rather than start refusing every payment.
+func variableBillOverpayment(req *domain.VAPaymentRequest, record *domain.VAInquiryRecord) error {
+	if record == nil || strings.TrimSpace(record.TotalAmount) == "" {
+		return nil
+	}
+	total, errTotal := strconv.ParseFloat(strings.TrimSpace(record.TotalAmount), 64)
+	if errTotal != nil || total <= 0 {
+		return nil
+	}
+	tendered, errTendered := strconv.ParseFloat(strings.TrimSpace(req.PaidAmount.Value), 64)
+	if errTendered != nil {
+		return nil
+	}
+	// A blank or unparseable stored figure counts as nothing settled yet — the
+	// tendered amount alone is then what must fit under the bill.
+	settled, errSettled := strconv.ParseFloat(strings.TrimSpace(record.PaidAmount), 64)
+	if errSettled != nil {
+		settled = 0
+	}
+	if settled+tendered > total+amountEpsilon {
+		return domain.NewDomainError(domain.CodePaymentInvalidAmt, domain.MsgInvalidAmount, nil)
+	}
+	return nil
 }
 
 // nonPendingPaymentError maps a non-pending transaction status to the BCA code

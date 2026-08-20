@@ -367,8 +367,40 @@ leaves several of them optional, and this gateway fronts more vendors than BCA.
 **`totalAmount` is checked against the stored bill, not against your own
 request.** Comparing `paidAmount` to the `totalAmount` in the same request
 validates nothing — both come from you. A payment of `1.00` against a
-`250000.00` bill is rejected `4042513 Invalid amount` however the request
+`250000.00` bill is rejected `4042513 Invalid Amount` however the request
 labels itself.
+
+**Everything wrong with `paidAmount.value` comes back as `4042513`.** This is
+a deliberate departure from Appendix A, which would give a malformed field
+`4002501`: one code and one reason for the whole class, so you never have to
+correlate two outcomes for what is the same problem. It covers
+
+- a value that is not `String(13.2)` with **both** decimals present —
+  `"10000"`, `"10000.5"`, `"Rp10000"`, `"10000.000"` are all rejected, only
+  `"10000.00"` is accepted (`totalAmount` stays lenient and still takes
+  `"10000"`),
+- zero or a negative figure,
+- a fixed bill (vaType 03/06) whose stored amount the payment does not match,
+- a variable bill (vaType 02/05) where what is already settled plus this
+  payment would exceed `totalAmount` — instalments are welcome, over-payment
+  is not.
+
+All of them answer
+
+```json
+{
+  "responseCode": "4042513",
+  "responseMessage": "Invalid Amount",
+  "virtualAccountData": {
+    "paymentFlagStatus": "01",
+    "paymentFlagReason": { "english": "Invalid Amount", "indonesia": "Jumlah tidak valid" }
+  }
+}
+```
+
+A `paidAmount` that is **missing** is still `4002502`, and a bad
+`paidAmount.currency` is still `4002501`: neither is a statement about the
+amount itself.
 
 ### Retries (`flagAdvise`)
 

@@ -243,14 +243,21 @@ func TestValidatePaymentRequest_AmountFormat(t *testing.T) {
 		value string
 		valid bool
 	}{
-		{"integer", "250000", true},
+		// paidAmount is held to the STRICT String(13.2) shape: both decimals
+		// present and the figure positive. "250000" and "250000.0" were
+		// accepted before and are now refused — the integration requires every
+		// malformed paidAmount to surface as 4042513 rather than be silently
+		// taken as the bill's own figure.
 		{"two decimals", "250000.00", true},
-		{"one decimal", "250000.0", true},
 		{"13 integer digits", "1234567890123.00", true},
+		{"integer without decimals", "250000", false},
+		{"one decimal", "250000.0", false},
+		{"zero", "0.00", false},
 		{"14 integer digits", "12345678901234.00", false},
 		{"three decimals", "250000.000", false},
 		{"negative", "-1.00", false},
 		{"not a number", "abc", false},
+		{"currency prefix", "Rp250000", false},
 		{"thousand separators", "250,000.00", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -268,6 +275,26 @@ func TestValidatePaymentRequest_AmountFormat(t *testing.T) {
 			assert.Equal(t, ViolationFormat, v.Kind)
 		})
 	}
+}
+
+// The strict shape applies to paidAmount ONLY. totalAmount keeps the lenient
+// amountPattern, so a vendor that has always sent the round figure there is
+// not broken by the paidAmount tightening.
+func TestValidatePaymentRequest_TotalAmountStaysLenient(t *testing.T) {
+	req := validPaymentRequest()
+	req.PaidAmount = &Amount{Value: "250000.00", Currency: "IDR"}
+	req.TotalAmount = &Amount{Value: "250000", Currency: "IDR"}
+
+	assert.Nil(t, ValidatePaymentRequest(req, true))
+}
+
+// A paidAmount that is MISSING is a mandatory-field problem, not a statement
+// about the amount, so it must not be reclassified as 4042513.
+func TestPaidAmountViolationIsInvalidAmount_OnlyValueFormat(t *testing.T) {
+	assert.True(t, PaidAmountViolationIsInvalidAmount(&FieldViolation{Kind: ViolationFormat, Field: "paidAmount.value"}))
+	assert.False(t, PaidAmountViolationIsInvalidAmount(&FieldViolation{Kind: ViolationMandatory, Field: "paidAmount.value"}))
+	assert.False(t, PaidAmountViolationIsInvalidAmount(&FieldViolation{Kind: ViolationFormat, Field: "paidAmount.currency"}))
+	assert.False(t, PaidAmountViolationIsInvalidAmount(nil))
 }
 
 func TestValidatePaymentRequest_Currency(t *testing.T) {

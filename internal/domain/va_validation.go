@@ -2,6 +2,7 @@ package domain
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -117,6 +118,19 @@ const (
 // an optional 1-2 digit fractional part. Length of the integer part is checked
 // separately so the error can name the actual problem.
 var amountPattern = regexp.MustCompile(`^\d+(\.\d{1,2})?$`)
+
+// paidAmountPattern is the STRICT form required of PaymentRequest.paidAmount
+// only: String(13.2) with both decimals present, which is the shape BCA's
+// field table types and every example in Tech. Doc. VA-Payment-Flag v2.3
+// sends. The lenient amountPattern above still governs every other amount —
+// merchant-facing create-va and the vendor's totalAmount keep accepting
+// "10000" — because tightening those would reject callers that have always
+// been allowed to omit the decimals.
+//
+// A paidAmount that misses this shape is answered 4042513 "Invalid Amount"
+// rather than 4002501, per the integration decision recorded in
+// PaidAmountViolationIsInvalidAmount.
+var paidAmountPattern = regexp.MustCompile(`^\d{1,13}\.\d{2}$`)
 
 // allowedCurrencies is BCA's documented set for Virtual Account ("currency
 // field may vary with these values: IDR, SGD, USD").
@@ -268,6 +282,9 @@ func ValidatePaymentRequest(req *VAPaymentRequest, strictMandatory bool) *FieldV
 	if v := validateAmount(req.PaidAmount, "paidAmount"); v != nil {
 		return v
 	}
+	if v := validatePaidAmountValue(req.PaidAmount); v != nil {
+		return v
+	}
 
 	if v := validatePaymentOptionalLengths(req); v != nil {
 		return v
@@ -279,6 +296,40 @@ func ValidatePaymentRequest(req *VAPaymentRequest, strictMandatory bool) *FieldV
 		return nil
 	}
 	return validatePaymentStrictMandatory(req)
+}
+
+// validatePaidAmountValue applies the payment-only rules on paidAmount.value
+// that validateAmount is deliberately too lenient to catch: the decimals must
+// both be there, and the amount must be a positive figure.
+//
+// Zero is refused here rather than left to the per-billing-type checks
+// downstream: a variable bill accepts partial instalments and a no-bill VA
+// accepts any figure, so without this a "0.00" payment would be recorded as an
+// accepted flag against either of them.
+func validatePaidAmountValue(amount *Amount) *FieldViolation {
+	value := strings.TrimSpace(amount.Value)
+	if !paidAmountPattern.MatchString(value) {
+		return badFormat("paidAmount.value")
+	}
+	if parsed, err := strconv.ParseFloat(value, 64); err != nil || parsed <= 0 {
+		return badFormat("paidAmount.value")
+	}
+	return nil
+}
+
+// PaidAmountViolationIsInvalidAmount reports whether a field violation is one
+// the payment service answers 4042513 "Invalid Amount" instead of the 4002501
+// "Invalid Field Format" that Appendix A would give any other malformed field.
+//
+// This is a deliberate, integration-mandated departure from the BCA table:
+// every rejection this service makes on the VALUE of paidAmount — wrong shape,
+// non-numeric, zero, or not matching the bill — is reported under one code and
+// one reason ("Invalid Amount" / "Jumlah tidak valid"), so the channel never
+// has to correlate two different codes for the same class of problem. A
+// MISSING paidAmount stays 4002502 and a bad currency stays 4002501: those are
+// not statements about the amount itself.
+func PaidAmountViolationIsInvalidAmount(v *FieldViolation) bool {
+	return v != nil && v.Kind == ViolationFormat && v.Field == "paidAmount.value"
 }
 
 // validatePaymentStrictMandatory enforces the fields BCA marks Mandatory (Y)

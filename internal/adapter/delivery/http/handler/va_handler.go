@@ -143,9 +143,9 @@ func (h *VAHandler) inquiryError(c echo.Context, err error, echoData domain.VAId
 // @Param CHANNEL-ID header string true "PJP channel id (BCA VA: 95231). Value-checked whenever the vendor config sets VENDOR_CHANNEL_ID"
 // @Param request body domain.VAPaymentRequest true "VA payment notification"
 // @Success 200 {object} domain.VAPaymentResponse "2002500 Successful, paymentFlagStatus=00"
-// @Failure 400 {object} domain.VAPaymentResponse "4002500 Bad Request (unparseable body), 4002501 Invalid Field Format {field}, 4002502 Invalid Mandatory Field {field}"
+// @Failure 400 {object} domain.VAPaymentResponse "4002500 Bad Request (unparseable body), 4002501 Invalid Field Format {field}, 4002502 Invalid Mandatory Field {field}. Note: a malformed paidAmount.value is the one exception — it is answered 4042513 Invalid Amount instead, see the 404 list"
 // @Failure 401 {object} domain.SNAPErrorResponse "4012500 Unauthorized. [reason] (invalid HMAC signature, or X-TIMESTAMP outside the ±5 minute freshness window), 4012501 Invalid Token (B2B)"
-// @Failure 404 {object} domain.VAPaymentResponse "All with virtualAccountData.paymentFlagStatus=01 unless noted: 4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither the registry nor any transaction; virtualAccountData echoes the request keys with empty paidAmount/totalAmount), 4042513 Invalid Amount, 4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID and paymentRequestId; echoes the FIRST request's paymentFlagStatus and paymentFlagReason, whether that was 00 settled or 01 rejected), 4042519 Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)"
+// @Failure 404 {object} domain.VAPaymentResponse "All with virtualAccountData.paymentFlagStatus=01 unless noted: 4042512 Invalid Bill/Virtual Account [Not Found] (the VA exists in neither the registry nor any transaction; virtualAccountData echoes the request keys with empty paidAmount/totalAmount), 4042513 Invalid Amount (paidAmount.value not String(13.2) with both decimals, zero or negative, not matching a fixed bill, or taking a variable bill past its totalAmount — paymentFlagReason english \"Invalid Amount\" / indonesia \"Jumlah tidak valid\"), 4042514 Paid Bill, 4042518 Inconsistent Request (double-flag replay — same X-EXTERNAL-ID and paymentRequestId; echoes the FIRST request's paymentFlagStatus and paymentFlagReason, whether that was 00 settled or 01 rejected), 4042519 Invalid Bill/Virtual Account (expired, feature 007-merchant-expiry-callback)"
 // @Failure 409 {object} domain.VAPaymentResponse "4092500 Conflict — same X-EXTERNAL-ID with a different paymentRequestId, or an in-flight request still holding the key"
 // @Failure 500 {object} domain.VAPaymentResponse "5002500 Internal Server Error"
 // @Router /openapi/v1.0/transfer-va/payment [post]
@@ -170,6 +170,17 @@ func (h *VAHandler) Payment(c echo.Context) error {
 
 	echoData := paymentEcho(&req)
 	if v := domain.ValidatePaymentRequest(&req, h.strictMandatoryFor(c)); v != nil {
+		// A malformed paidAmount VALUE is the one field violation this service
+		// answers 4042513 "Invalid Amount" — the same code and reason the
+		// amount checks inside the usecase use, so every complaint about the
+		// amount reaches the channel as one outcome instead of two. It is a
+		// 404-class code, so the HTTP status comes from mapSNAPCodeToHTTP
+		// rather than the 400 the other violations carry.
+		if domain.PaidAmountViolationIsInvalidAmount(v) {
+			resp := domain.NewPaymentErrorResponse(domain.CodePaymentInvalidAmt, domain.MsgInvalidAmount, echoData)
+			echoPaymentRequestFields(resp.VirtualAccountData, &req)
+			return c.JSON(mapSNAPCodeToHTTP(domain.CodePaymentInvalidAmt), resp)
+		}
 		code, message := violationCode(domain.ServiceCodePayment, v)
 		return c.JSON(http.StatusBadRequest,
 			domain.NewPaymentErrorResponse(code, message, echoData))
@@ -219,16 +230,31 @@ func (h *VAHandler) paymentError(c echo.Context, err error, req *domain.VAPaymen
 	// Otherwise echo the request's own identity/amount fields onto the
 	// rejection — BCA's PaymentResponse marks these Mandatory, and a rejection
 	// that omits them gives the channel nothing to display.
-	resp.VirtualAccountData.VirtualAccountName = req.VirtualAccountName
-	resp.VirtualAccountData.TrxDateTime = req.TrxDateTime
-	resp.VirtualAccountData.ReferenceNo = req.ReferenceNo
+	echoPaymentRequestFields(resp.VirtualAccountData, req)
+	return c.JSON(mapSNAPCodeToHTTP(domainErr.SNAPCode), resp)
+}
+
+// echoPaymentRequestFields copies the request's identity and amount fields
+// onto a rejection that has no stored VA behind it.
+//
+// Shared with the 4042513 raised by validation so both halves of that code —
+// the malformed value caught before the usecase runs, and the mismatch caught
+// inside it — describe the refused payment the same way. Echoing the value
+// back is the point when it is the value being complained about: the channel
+// sees exactly which figure was refused.
+func echoPaymentRequestFields(data *domain.VAPaymentStatus, req *domain.VAPaymentRequest) {
+	if data == nil || req == nil {
+		return
+	}
+	data.VirtualAccountName = req.VirtualAccountName
+	data.TrxDateTime = req.TrxDateTime
+	data.ReferenceNo = req.ReferenceNo
 	if req.PaidAmount != nil {
-		resp.VirtualAccountData.PaidAmount = req.PaidAmount
+		data.PaidAmount = req.PaidAmount
 	}
 	if req.TotalAmount != nil {
-		resp.VirtualAccountData.TotalAmount = req.TotalAmount
+		data.TotalAmount = req.TotalAmount
 	}
-	return c.JSON(mapSNAPCodeToHTTP(domainErr.SNAPCode), resp)
 }
 
 // Status godoc

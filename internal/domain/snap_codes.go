@@ -170,6 +170,12 @@ const (
 	PaymentFlagPending = "03"
 )
 
+// MsgInvalidAmount is the responseMessage every 4042513 carries. BCA's
+// Appendix A spells the code "Invalid Amount"; the reason text in snapReason
+// below is kept identical in English so responseMessage and
+// paymentFlagReason.english never disagree about the same rejection.
+const MsgInvalidAmount = "Invalid Amount"
+
 // snapReason maps a responseCode to the bilingual reason text BCA expects in
 // inquiryReason / paymentFlagReason. BCA reads these fields to display the
 // outcome on the channel screen, and treats an empty reason as a failed
@@ -189,7 +195,7 @@ var snapReason = map[string]BilingualText{
 	CodePaymentExpired: {English: "expired transaction", Indonesia: "transaksi kadaluarsa"},
 	CodePaymentInvalidAmt: {
 		English:   "Invalid Amount",
-		Indonesia: "Nominal pembayaran tidak sesuai",
+		Indonesia: "Jumlah tidak valid",
 	},
 	CodeInquiryConflict: {
 		English:   "Cannot use the same X-EXTERNAL-ID",

@@ -123,14 +123,32 @@ func TestE2E_FixedBill_AmountComparedAgainstStoredBill(t *testing.T) {
 }
 
 func TestE2E_FixedBill_TrailingZerosAccepted(t *testing.T) {
-	// BCA sends "250000" and "250000.00" interchangeably.
+	// The bill may be stored either way — "250000" and "250000.00" are the
+	// same debt — and the comparison against paidAmount is numeric, so a bill
+	// recorded without decimals is still settled by the two-decimal payment
+	// BCA sends.
 	s := newServer(t)
-	seedFixedBill(s, testPartnerServiceID, "678901234567890125", "250000.00")
+	seedFixedBill(s, testPartnerServiceID, "678901234567890125", "250000")
 
-	pay := s.call(t, paymentPath, paymentPayload(testPartnerServiceID, "678901234567890125", "PAY-NUM-1", "250000"))
+	pay := s.call(t, paymentPath, paymentPayload(testPartnerServiceID, "678901234567890125", "PAY-NUM-1", "250000.00"))
 
 	require.Equal(t, http.StatusOK, pay.status, pay.raw)
 	assert.Equal(t, domain.CodePaymentSuccess, pay.code())
+}
+
+// The leniency above stops at the BILL. paidAmount itself must carry both
+// decimals even when the figure is numerically right: "250000" against a
+// 250000.00 bill is refused 4042513 rather than settled.
+func TestE2E_FixedBill_PaidAmountWithoutDecimalsRejected(t *testing.T) {
+	s := newServer(t)
+	seedFixedBill(s, testPartnerServiceID, "678901234567890127", "250000.00")
+
+	pay := s.call(t, paymentPath, paymentPayload(testPartnerServiceID, "678901234567890127", "PAY-NUM-2", "250000"))
+
+	require.Equal(t, http.StatusNotFound, pay.status, pay.raw)
+	assert.Equal(t, domain.CodePaymentInvalidAmt, pay.code(), pay.raw)
+	assert.Equal(t, "Invalid Amount", pay.body["responseMessage"], pay.raw)
+	assert.Equal(t, 0, s.notifier.count(), "a rejected payment must not notify the merchant")
 }
 
 func TestE2E_FixedBill_PaidBillRejectedOnSecondPayment(t *testing.T) {
@@ -205,6 +223,46 @@ func TestE2E_VariableBill_NoExactAmountCheck(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, pay.status, pay.raw)
 	assert.Equal(t, domain.CodePaymentSuccess, pay.code())
+}
+
+// A variable bill takes instalments up to what it billed, and no further. The
+// branch previously had no amount rule at all, so twice the bill was recorded
+// in full and settled the transaction with paid_amount above total_amount.
+func TestE2E_VariableBill_OverpaymentRejected(t *testing.T) {
+	s := newServer(t)
+	seedVariableBill(s, testPartnerServiceID, "678901234567890134", "100000.00")
+
+	pay := s.call(t, paymentPath, paymentPayload(testPartnerServiceID, "678901234567890134", "PAY-VAR-OVER", "200000.00"))
+
+	require.Equal(t, http.StatusNotFound, pay.status, pay.raw)
+	assert.Equal(t, domain.CodePaymentInvalidAmt, pay.code(), pay.raw)
+	assert.Equal(t, "Invalid Amount", pay.body["responseMessage"], pay.raw)
+	assert.Equal(t, map[string]any{
+		"english":   "Invalid Amount",
+		"indonesia": "Jumlah tidak valid",
+	}, pay.vaData(t)["paymentFlagReason"], pay.raw)
+	assert.Equal(t, 0, s.notifier.count(), "a rejected payment must not notify the merchant")
+}
+
+// The ceiling is cumulative, not per-payment: an instalment that fits on its
+// own is still refused when what is already settled leaves no room for it.
+func TestE2E_VariableBill_CumulativeOverpaymentRejected(t *testing.T) {
+	s := newServer(t)
+	seedVariableBill(s, testPartnerServiceID, "678901234567890135", "100000.00")
+
+	first := s.call(t, paymentPath, paymentPayload(testPartnerServiceID, "678901234567890135", "PAY-VAR-C1", "90000.00"))
+	require.Equal(t, http.StatusOK, first.status, first.raw)
+
+	second := s.call(t, paymentPath, paymentPayload(testPartnerServiceID, "678901234567890135", "PAY-VAR-C2", "50000.00"))
+
+	require.Equal(t, http.StatusNotFound, second.status, second.raw)
+	assert.Equal(t, domain.CodePaymentInvalidAmt, second.code(), second.raw)
+
+	// The exact remaining balance still settles it.
+	third := s.call(t, paymentPath, paymentPayload(testPartnerServiceID, "678901234567890135", "PAY-VAR-C3", "10000.00"))
+
+	require.Equal(t, http.StatusOK, third.status, third.raw)
+	assert.Equal(t, "100000.00", third.vaData(t)["paidAmount"].(map[string]any)["value"])
 }
 
 // --- no-bill ------------------------------------------------------------

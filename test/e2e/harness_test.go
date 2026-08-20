@@ -346,17 +346,23 @@ func (r *memRepo) SaveVAPayment(_ context.Context, transactionID, paymentRequest
 	}
 
 	status := "03"
+	cumulative := strconv.FormatFloat(r.cumulative[transactionID], 'f', 2, 64)
 	for _, rec := range r.transactions {
 		if rec.ID != transactionID {
 			continue
 		}
+		// The real repository writes paid_amount back on every instalment, and
+		// GetVAByVirtualAccountNo reads it — the cumulative ceiling on variable
+		// bills is decided from it, so a fake that only tracked its own counter
+		// let over-payments through here that production refuses.
+		rec.PaidAmount = cumulative
 		total, _ := strconv.ParseFloat(rec.TotalAmount, 64)
 		if total > 0 && r.cumulative[transactionID] >= total {
 			status = "00"
 			rec.Status = "00"
 		}
 	}
-	return strconv.FormatFloat(r.cumulative[transactionID], 'f', 2, 64), status, recorded, nil
+	return cumulative, status, recorded, nil
 }
 
 func (r *memRepo) GetVABillDetails(_ context.Context, transactionID string) ([]domain.BillDetail, error) {
