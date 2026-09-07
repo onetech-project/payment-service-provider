@@ -29,8 +29,17 @@
 #   -r  inquiryRequestId (inquiry/status)
 #   -C  channelCode (inquiry/payment, default 6011 = ATM)
 #   -A  flagAdvise (payment, default N; Y = advice/retry)
+#   -R  referenceNo (payment, numeric String(11); default: generated)
+#   -L  language (inquiry, ISO-639-1, default empty)
+#   -B  sourceBankCode (inquiry/payment, default 014 = BCA)
 #   -H  body-hash encoding: hex | base64 (default: the env file's
 #       VENDOR_BODY_HASH_ENCODING, else base64)
+#
+#   Simulator routing headers (inquiry/payment/status only):
+#   -m  company-code (default: partnerServiceId with its padding trimmed)
+#   -K  client-id    (default: the env file's clientId)
+#   -P  product-id   (default: per endpoint, see DEFAULT_PRODUCT_ID below)
+#   -X  xml-response (default N — ask for a JSON reply)
 #
 # The generated X-TIMESTAMP is only accepted within ±5 minutes of server time,
 # and the accessToken expires after 15 minutes. Generate one request at a time,
@@ -52,6 +61,11 @@ AMOUNT="150000.00"
 TRX_ID=""
 PAYMENT_REQUEST_ID=""
 INQUIRY_REQUEST_ID=""
+# Tracks whether -q was passed, as opposed to a paymentRequestId this script
+# generated. The status payload only carries the field when the caller has a
+# real one to quote: VA-Payment-Status V2 v1.0's request table lists four
+# fields and paymentRequestId is not among them.
+PAYMENT_REQUEST_ID_GIVEN=0
 CHANNEL_ID="95231"
 PARTNER_ID="1-MANJO-SNAP"
 # Fields BCA's PaymentRequest table marks Mandatory (Y) that the wider SNAP
@@ -62,10 +76,34 @@ PARTNER_ID="1-MANJO-SNAP"
 # too, so the same value serves both.
 CHANNEL_CODE="6011"
 FLAG_ADVISE="N"
+REFERENCE_NO=""
 BODY_HASH_ENCODING=""
+# The Optional half of BCA's payloads. They are sent — as empty strings, or as
+# the sample's own values — rather than omitted, because BCA's request samples
+# spell every one of them out and a simulator that emits a shorter object
+# teaches an integrator a body shape the real channel never sends. Everything
+# here is Optional (N), so a blank value is as conformant as an absent key.
+LANGUAGE=""
+SOURCE_BANK_CODE="014"
+HASHED_SOURCE_ACCOUNT_NO=""
+PASS_APP=""
+# Sub-company 00000 is BCA's documented default ("the default sub-company code
+# (00000) based on data recorded in BCA", VA-Payment-Flag v2.3), and is what
+# subCompanyForVA falls back to on this side too.
+SUB_COMPANY="00000"
+
+# Headers the ASPI/BCA client simulator routes on. They appear in no BCA field
+# table — the simulator uses them to pick which biller and which service the
+# call belongs to, then generates Authorization/X-TIMESTAMP/X-SIGNATURE itself
+# from the client-id's onboarded key.
+COMPANY_CODE=""
+CLIENT_ID_HEADER=""
+PRODUCT_ID=""
+XML_RESPONSE="N"
+SIM_HEADERS=()
 
 usage() {
-	echo "Usage: $0 -e <token|create-va|inquiry|payment|status|delete-va> -f <env-file> [-u <base-url>] [-s <partnerServiceId>] [-c <customerNo>] [-v <virtualAccountNo>] [-n <name>] [-a <amount>] [-t <trxId>] [-q <paymentRequestId>] [-r <inquiryRequestId>] [-C <channelCode>] [-A <flagAdvise>] [-H <hex|base64>]" >&2
+	echo "Usage: $0 -e <token|create-va|inquiry|payment|status|delete-va> -f <env-file> [-u <base-url>] [-s <partnerServiceId>] [-c <customerNo>] [-v <virtualAccountNo>] [-n <name>] [-a <amount>] [-t <trxId>] [-q <paymentRequestId>] [-r <inquiryRequestId>] [-C <channelCode>] [-A <flagAdvise>] [-R <referenceNo>] [-L <language>] [-B <sourceBankCode>] [-H <hex|base64>] [-m <company-code>] [-K <client-id>] [-P <product-id>] [-X <Y|N>]" >&2
 	exit 1
 }
 
@@ -84,7 +122,7 @@ read_env_var() {
 	printf '%s' "$value"
 }
 
-while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:C:A:H:h" opt; do
+while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:C:A:R:L:B:H:m:K:P:X:h" opt; do
 	case "$opt" in
 	e) ENDPOINT_NAME="$OPTARG" ;;
 	f) ENV_FILE="$OPTARG" ;;
@@ -95,13 +133,20 @@ while getopts "e:f:u:s:c:v:n:a:t:q:r:i:p:C:A:H:h" opt; do
 	n) VA_NAME="$OPTARG" ;;
 	a) AMOUNT="$OPTARG" ;;
 	t) TRX_ID="$OPTARG" ;;
-	q) PAYMENT_REQUEST_ID="$OPTARG" ;;
+	q) PAYMENT_REQUEST_ID="$OPTARG"; PAYMENT_REQUEST_ID_GIVEN=1 ;;
 	r) INQUIRY_REQUEST_ID="$OPTARG" ;;
 	i) CHANNEL_ID="$OPTARG" ;;
 	p) PARTNER_ID="$OPTARG" ;;
 	C) CHANNEL_CODE="$OPTARG" ;;
 	A) FLAG_ADVISE="$OPTARG" ;;
+	R) REFERENCE_NO="$OPTARG" ;;
+	L) LANGUAGE="$OPTARG" ;;
+	B) SOURCE_BANK_CODE="$OPTARG" ;;
 	H) BODY_HASH_ENCODING="$OPTARG" ;;
+	m) COMPANY_CODE="$OPTARG" ;;
+	K) CLIENT_ID_HEADER="$OPTARG" ;;
+	P) PRODUCT_ID="$OPTARG" ;;
+	X) XML_RESPONSE="$OPTARG" ;;
 	h | *) usage ;;
 	esac
 done
@@ -207,10 +252,26 @@ inquiry)
 	# trxDateInit, not txnDateInit — BCA renamed the field at VA-BillPresentment
 	# v1.6 and both it and channelCode are Mandatory (Y) in v2.4, so a vendor
 	# with VENDOR_STRICT_MANDATORY_FIELDS answers 4002402 without them.
+	#
+	# Field ORDER below is BCA's own request sample, verbatim (v2.4 p.14):
+	# identity → trxDateInit → channelCode → language → amount →
+	# hashedSourceAccountNo → sourceBankCode → additionalInfo → passApp →
+	# inquiryRequestId. Order is cosmetic to the server (JSON objects are
+	# unordered, and the signature covers whatever bytes are emitted here) but
+	# not to a human diffing this against the PDF, which is the entire point of
+	# a copy-paste simulator payload.
+	#
+	# amount stays an object here rather than the sample's null: the sample
+	# shows a channel that carries no customer-entered amount, while -a exists
+	# precisely to send one. Pass -a "" for the null form.
 	BODY="$(jq -cn --arg p "$PARTNER_SERVICE_ID" --arg c "$CUSTOMER_NO" --arg v "$VA_NO" \
 		--arg d "$TIMESTAMP" --arg a "$AMOUNT" --arg r "$INQUIRY_REQUEST_ID" \
-		--argjson ch "$CHANNEL_CODE" \
-		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,trxDateInit:$d,channelCode:$ch,amount:{value:$a,currency:"IDR"},inquiryRequestId:$r}')"
+		--argjson ch "$CHANNEL_CODE" --arg lang "$LANGUAGE" \
+		--arg hs "$HASHED_SOURCE_ACCOUNT_NO" --arg sb "$SOURCE_BANK_CODE" \
+		--arg pa "$PASS_APP" \
+		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,trxDateInit:$d,channelCode:$ch,language:$lang}
+		 + {amount:(if $a == "" then null else {value:$a,currency:"IDR"} end)}
+		 + {hashedSourceAccountNo:$hs,sourceBankCode:$sb,additionalInfo:{},passApp:$pa,inquiryRequestId:$r}')"
 	;;
 payment)
 	EP="/openapi/v1.0/transfer-va/payment"
@@ -225,21 +286,61 @@ payment)
 	# fine and is then rejected 4002502, which reads like a spec disagreement
 	# rather than a missing field the simulator never sent.
 	[[ -z "$PAYMENT_REQUEST_ID" ]] && PAYMENT_REQUEST_ID="PAY-$(date +%s)$((RANDOM % 9000 + 1000))"
+	# referenceNo is String(11) Fixed, NUMERIC — "Payment auth code generated by
+	# BCA", Mandatory for a non-multibill transaction. It used to be generated
+	# as "R" + epoch, which is 10 characters and not a number: short enough to
+	# clear the length check here and wrong in exactly the way a channel's own
+	# reference never is. Eleven digits from the clock, zero-padded.
+	[[ -z "$REFERENCE_NO" ]] && REFERENCE_NO="$(printf '%011d' "$(( ($(date +%s) % 100000000) * 100 + RANDOM % 100 ))")"
+	#
+	# Field order follows VA-Payment-Flag v2.3's request sample (p.20-21), which
+	# also sends every Optional field as an empty string rather than omitting
+	# it — trxId included, since BCA's example payment did not come from a
+	# create-VA. Sent the same way here: "" and an absent key both decode to the
+	# empty string, so the create-VA link is carried by -t's VALUE and nothing
+	# is lost by always emitting the key ("Mandatory if payment comes from the
+	# Create VA Request" — domain.ValidatePaymentRequest leaves it optional).
+	#
+	# cumulativePaymentAmount is null, not {} — the sample's own value, and the
+	# shape *Amount unmarshals cleanly from.
+	#
+	# billDetails is [null] rather than [] or a populated array. That is what
+	# the simulator emits for a non-multibill payment, and reproducing it is the
+	# point: a JSON null in a non-pointer struct slice decodes to a zero-value
+	# element, so len() reports 1 where the channel meant 0 — the exact case
+	# VAPaymentRequest.NormalizeBillDetails exists to collapse. Emitting []
+	# would sidestep that path and test a shape real traffic never sends.
+	# Inventing a bill instead is worse still: its billNo would contradict the
+	# bill the PSP actually holds for this VA.
 	BODY="$(jq -cn --arg p "$PARTNER_SERVICE_ID" --arg c "$CUSTOMER_NO" --arg v "$VA_NO" \
 		--arg t "$TRX_ID" --arg q "$PAYMENT_REQUEST_ID" --arg a "$AMOUNT" \
-		--arg d "$TIMESTAMP" --arg n "R$(date +%s | tail -c 10)" \
+		--arg d "$TIMESTAMP" --arg n "$REFERENCE_NO" \
 		--arg vn "$VA_NAME" --argjson ch "$CHANNEL_CODE" --arg fa "$FLAG_ADVISE" \
-		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,virtualAccountName:$vn}
-		 + (if $t == "" then {} else {trxId:$t} end)
-		 + {paymentRequestId:$q,channelCode:$ch,flagAdvise:$fa,paidAmount:{value:$a,currency:"IDR"},totalAmount:{value:$a,currency:"IDR"},trxDateTime:$d,referenceNo:$n}')"
+		--arg hs "$HASHED_SOURCE_ACCOUNT_NO" --arg sb "$SOURCE_BANK_CODE" \
+		--arg sc "$SUB_COMPANY" \
+		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,virtualAccountName:$vn,virtualAccountEmail:"",virtualAccountPhone:"",trxId:$t,
+		    paymentRequestId:$q,channelCode:$ch,hashedSourceAccountNo:$hs,sourceBankCode:$sb,
+		    paidAmount:{value:$a,currency:"IDR"},cumulativePaymentAmount:null,paidBills:"",
+		    totalAmount:{value:$a,currency:"IDR"},trxDateTime:$d,referenceNo:$n,
+		    journalNum:"",paymentType:"",flagAdvise:$fa,subCompany:$sc,
+		    billDetails:[null],freeTexts:[],additionalInfo:{}}')"
 	;;
 status)
 	EP="/openapi/v1.0/transfer-va/status"
 	[[ -z "$INQUIRY_REQUEST_ID" ]] && { echo "!! -r <inquiryRequestId> is required for status" >&2; exit 1; }
-	[[ -z "$PAYMENT_REQUEST_ID" ]] && PAYMENT_REQUEST_ID="$INQUIRY_REQUEST_ID"
+	# VA-Payment-Status V2 v1.0's request table is four fields —
+	# partnerServiceId, customerNo, virtualAccountNo, inquiryRequestId — plus
+	# additionalInfo. paymentRequestId is NOT among them, and
+	# ValidateStatusRequest does not read it, so it is emitted only when -q
+	# named a real one; it used to be defaulted to the inquiryRequestId, which
+	# put a field in the body that no channel sends and that the PSP resolves
+	# for itself.
 	BODY="$(jq -cn --arg p "$PARTNER_SERVICE_ID" --arg c "$CUSTOMER_NO" --arg v "$VA_NO" \
 		--arg r "$INQUIRY_REQUEST_ID" --arg q "$PAYMENT_REQUEST_ID" \
-		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,inquiryRequestId:$r,paymentRequestId:$q}')"
+		--argjson pq "$PAYMENT_REQUEST_ID_GIVEN" \
+		'{partnerServiceId:$p,customerNo:$c,virtualAccountNo:$v,inquiryRequestId:$r}
+		 + (if $pq == 1 then {paymentRequestId:$q} else {} end)
+		 + {additionalInfo:{}}')"
 	;;
 delete-va)
 	METHOD="DELETE"
@@ -263,6 +364,50 @@ BODY_HASH="$(printf '%s' "$BODY" | jq -cj . | openssl dgst -sha256 -binary | ${B
 STRING_TO_SIGN="${METHOD}:${EP}:${ACCESS_TOKEN}:${BODY_HASH}:${TIMESTAMP}"
 SIGNATURE="$(printf '%s' "$STRING_TO_SIGN" | openssl dgst -sha512 -hmac "$CLIENT_SECRET" -binary | openssl base64 -A)"
 
+# ------------------------------------------------- simulator routing headers
+#
+# The ASPI/BCA client simulator needs four headers that appear in no BCA field
+# table and that this PSP never reads: company-code and product-id tell it which
+# biller and which service the call is for, client-id selects the onboarded key
+# it signs with, and xml-response: N asks for a JSON reply rather than XML.
+#
+# They are emitted for the three transfer-va services only. create-va/delete-va
+# are merchant-side routes on this PSP, not services the simulator fronts, and
+# `-e token` returns above before reaching here.
+#
+# Sending them costs nothing on the wire: SNAPAuthMiddleware's mandatory-header
+# check walks the DOCUMENTED set and skips anything outside it
+# (isDocumentedTransferVAHeader), and X-SIGNATURE covers the body and four
+# named components — never the full header set. So one emitted request pastes
+# into the simulator and curls straight at this PSP unchanged.
+#
+# The two values below are transcribed from real simulator calls:
+# OPENAPI.VA-BILLPRESENTMENT for inquiry and OPENAPI.VA-PAYMENT for payment —
+# note the latter is NOT "OPENAPI.VA-PAYMENT-FLAG", even though the document
+# describing that service is called VA-Payment-Flag. The status value has not
+# been seen on the wire and is inferred from the same pattern, so confirm it
+# against a real simulator call before trusting `-e status`; -P overrides it.
+case "$ENDPOINT_NAME" in
+inquiry) DEFAULT_PRODUCT_ID="OPENAPI.VA-BILLPRESENTMENT" ;;
+payment) DEFAULT_PRODUCT_ID="OPENAPI.VA-PAYMENT" ;;
+status)  DEFAULT_PRODUCT_ID="OPENAPI.VA-PAYMENT-STATUS" ;; # unconfirmed
+*)       DEFAULT_PRODUCT_ID="" ;;
+esac
+
+if [[ -n "$DEFAULT_PRODUCT_ID" ]]; then
+	# company-code is the biller's code — partnerServiceId without the 8-char
+	# left space padding that the body keeps.
+	[[ -z "$COMPANY_CODE" ]] && COMPANY_CODE="$(printf '%s' "$PARTNER_SERVICE_ID" | tr -d '[:space:]')"
+	[[ -z "$CLIENT_ID_HEADER" ]] && CLIENT_ID_HEADER="$CLIENT_ID"
+	[[ -z "$PRODUCT_ID" ]] && PRODUCT_ID="$DEFAULT_PRODUCT_ID"
+	SIM_HEADERS=(
+		"xml-response: ${XML_RESPONSE}"
+		"company-code: ${COMPANY_CODE}"
+		"product-id: ${PRODUCT_ID}"
+		"client-id: ${CLIENT_ID_HEADER}"
+	)
+fi
+
 # No X-CLIENT-KEY here. It belongs to the access-token endpoint alone (emitted
 # above for `-e token`); BCA's transfer-va header tables are closed sets and do
 # not list it, so a simulator that emits it teaches an integrator to send a
@@ -274,7 +419,8 @@ emit "$METHOD" "${BASE_URL}${EP}" "$BODY" \
 	"X-SIGNATURE: ${SIGNATURE}" \
 	"X-PARTNER-ID: ${PARTNER_ID}" \
 	"X-EXTERNAL-ID: ${EXTERNAL_ID}" \
-	"CHANNEL-ID: ${CHANNEL_ID}"
+	"CHANNEL-ID: ${CHANNEL_ID}" \
+	"${SIM_HEADERS[@]}"
 
 echo
 echo "stringToSign (for debugging a signature mismatch, body hash encoded as ${BODY_HASH_ENCODING,,}):"
