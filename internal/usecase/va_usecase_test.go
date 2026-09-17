@@ -1425,7 +1425,9 @@ func TestVAUsecase_Status_Success(t *testing.T) {
 	assert.Equal(t, "95000", data.PaidBills)
 	assert.Equal(t, "1", data.PaymentType)
 	assert.Equal(t, "Y", data.FlagAdvise)
-	assert.Equal(t, &trxDateTime, data.TrxDateTime)
+	// TrxDateTime is a domain.SNAPTime (it must survive BCA's blank ""), so the
+	// instant is what is compared, not the wrapper.
+	assert.Equal(t, &trxDateTime, data.TrxDateTime.TimePtr())
 	assert.Equal(t, payment.FreeTexts, data.FreeTexts)
 	assert.Len(t, data.BillDetails, 1)
 	assert.Equal(t, "123456789012345678", data.BillDetails[0].BillNo)
@@ -2010,7 +2012,7 @@ func TestVAUsecase_Status_NoBill_ResolvesIndividualPayment(t *testing.T) {
 			assert.Equal(t, "00", resp.VirtualAccountData.PaymentFlagStatus)
 			assert.Equal(t, want.PaidAmount, resp.VirtualAccountData.PaidAmount.Value)
 			assert.Equal(t, want.ReferenceNo, resp.VirtualAccountData.ReferenceNo)
-			assert.Equal(t, want.TransactionDate, *resp.VirtualAccountData.TransactionDate)
+			assert.Equal(t, want.TransactionDate, resp.VirtualAccountData.TransactionDate.Time)
 			// T058: no bill exists, so totalAmount mirrors the payment.
 			assert.Equal(t, want.PaidAmount, resp.VirtualAccountData.TotalAmount.Value)
 			assert.Empty(t, resp.VirtualAccountData.BillDetails)

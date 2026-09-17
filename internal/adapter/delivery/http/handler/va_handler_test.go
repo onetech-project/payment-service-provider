@@ -388,8 +388,16 @@ func TestVAHandler_Status_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
 
+	// VAStatusRequest.MarshalJSON emits additionalInfo unconditionally (BCA
+	// expects the key on the wire), so the body built above carries "{}" and
+	// the handler decodes it into an empty map rather than a nil one. The
+	// expectation is spelled out instead of reusing req, so what the handler
+	// is asserted to receive stays visible here.
+	want := req
+	want.AdditionalInfo = map[string]interface{}{}
+
 	mockUsecase := new(MockVAUsecase)
-	mockUsecase.On("Status", mock.Anything, &req).Return(&domain.VAStatusResponse{
+	mockUsecase.On("Status", mock.Anything, &want).Return(&domain.VAStatusResponse{
 		ResponseCode:    "2002600",
 		ResponseMessage: "Successful",
 		VirtualAccountData: &domain.VAStatusData{

@@ -148,7 +148,7 @@ func TestStatus_PendingBranchPopulatesMandatoryFields(t *testing.T) {
 	assert.Equal(t, "100000.00", data.TotalAmount.Value)
 
 	require.NotNil(t, data.TransactionDate, "transactionDate is Mandatory; nil renders as JSON null")
-	assert.Equal(t, createdAt, *data.TransactionDate)
+	assert.Equal(t, createdAt, data.TransactionDate.Time)
 
 	// "paymentRequestId ... This value must be same with inquiryRequestId".
 	assert.Equal(t, req.InquiryRequestID, data.PaymentRequestID)

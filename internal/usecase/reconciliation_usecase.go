@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"time"
 
 	"backbone-new/internal/domain"
@@ -112,11 +113,27 @@ func (u *ReconciliationUsecase) Sweep(ctx context.Context) ([]*domain.ReconcileR
 
 // Reconcile inquires the vendor about one VA number on demand.
 func (u *ReconciliationUsecase) Reconcile(ctx context.Context, virtualAccountNo, trigger string) (*domain.ReconcileResult, error) {
+	slog.Info("va_reconcile_start",
+		slog.String("virtualAccountNo", virtualAccountNo),
+		slog.String("trigger", trigger),
+		slog.String("clientId", u.config.ClientID),
+	)
+
 	record, err := u.repo.GetVAByVirtualAccountNo(ctx, virtualAccountNo)
 	if err != nil {
+		slog.Error("va_reconcile_lookup_failed",
+			slog.String("virtualAccountNo", virtualAccountNo),
+			slog.String("trigger", trigger),
+			slog.String("error", err.Error()),
+		)
 		return nil, err
 	}
 	if record == nil {
+		slog.Warn("va_reconcile_lookup_failed",
+			slog.String("virtualAccountNo", virtualAccountNo),
+			slog.String("trigger", trigger),
+			slog.String("error", "transaction not found"),
+		)
 		return nil, domain.ErrMerchantVANotFound
 	}
 	return u.reconcileRecord(ctx, record, trigger)
@@ -158,6 +175,32 @@ func (u *ReconciliationUsecase) reconcileRecord(
 				result.PaidAmount = resp.VirtualAccountData.PaidAmount
 			}
 		}
+		// Every outcome is logged, not just the failures. Two outcomes —
+		// already_settled and the never-inquired not_paid — are decided
+		// before any vendor call is made, so they produce no
+		// vendor_api_request/response pair at all; without a line here they
+		// are indistinguishable in Grafana from a reconcile that never ran.
+		// The audit row alone cannot serve: it is in psql, while the rest of
+		// the outbound trail is in Loki.
+		attrs := []any{
+			slog.String("virtualAccountNo", record.VirtualAccountNo),
+			slog.String("trigger", trigger),
+			slog.String("clientId", u.config.ClientID),
+			slog.String("outcome", outcome),
+			slog.Bool("settled", settled),
+			slog.String("vendorResponseCode", attempt.VendorResponseCode),
+			slog.String("vendorPaymentFlagStatus", attempt.VendorPaymentFlagStatus),
+			slog.Int("durationMs", attempt.DurationMs),
+		}
+		if errDetail != "" {
+			attrs = append(attrs, slog.String("error", errDetail))
+		}
+		if outcome == domain.ReconcileOutcomeError {
+			slog.Error("va_reconcile_result", attrs...)
+		} else {
+			slog.Info("va_reconcile_result", attrs...)
+		}
+
 		// Audit failure must not swallow the reconciliation itself — the money
 		// decision has already been made and acted on by this point.
 		if err := u.repo.CreateStatusInquiryAttempt(ctx, attempt); err != nil {
@@ -268,11 +311,14 @@ func (u *ReconciliationUsecase) settle(
 		currency = defaultCurrency
 	}
 
+	// TimePtr yields nil for the blank BCA sends on a populated-but-empty
+	// envelope, so an absent date falls through to now() instead of settling a
+	// payment against the zero time.
 	transactionDate := u.now()
-	if data.TransactionDate != nil {
-		transactionDate = *data.TransactionDate
-	} else if data.TrxDateTime != nil {
-		transactionDate = *data.TrxDateTime
+	if t := data.TransactionDate.TimePtr(); t != nil {
+		transactionDate = *t
+	} else if t := data.TrxDateTime.TimePtr(); t != nil {
+		transactionDate = *t
 	}
 
 	settled, err := u.repo.SettlePendingFromVendor(ctx, record.VirtualAccountNo, domain.VendorSettlement{

@@ -43,6 +43,12 @@ func init() {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	}
 	Logger = slog.New(handler)
+	// Also install it as the slog default, so packages that must not import
+	// this delivery-layer one (the outbound vendor gateway, the async
+	// workers) still log in the same JSON shape Alloy ships to Loki. Without
+	// this their slog calls would fall back to slog's built-in text handler
+	// on stderr and arrive in Grafana as unparsed lines.
+	slog.SetDefault(Logger)
 }
 
 func TelemetryMiddleware() echo.MiddlewareFunc {

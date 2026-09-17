@@ -311,12 +311,33 @@ func (s VAPaymentStatus) MarshalJSON() ([]byte, error) {
 
 // VAStatusRequest represents inbound status inquiry from vendor
 type VAStatusRequest struct {
-	PartnerServiceID string                 `json:"partnerServiceId"`
-	CustomerNo       string                 `json:"customerNo"`
-	VirtualAccountNo string                 `json:"virtualAccountNo"`
-	InquiryRequestID string                 `json:"inquiryRequestId"`
-	PaymentRequestID string                 `json:"paymentRequestId,omitempty"`
-	AdditionalInfo   map[string]interface{} `json:"additionalInfo,omitempty"`
+	PartnerServiceID string `json:"partnerServiceId"`
+	CustomerNo       string `json:"customerNo"`
+	VirtualAccountNo string `json:"virtualAccountNo"`
+	InquiryRequestID string `json:"inquiryRequestId"`
+	PaymentRequestID string `json:"paymentRequestId,omitempty"`
+	// No omitempty: it would defeat the MarshalJSON below, which substitutes
+	// an empty map — encoding/json drops the field before the replacement can
+	// be seen. VAStatusResponse's equivalent tag is bare for the same reason.
+	AdditionalInfo map[string]interface{} `json:"additionalInfo"`
+}
+
+// MarshalJSON renders additionalInfo as {} rather than omitting it, matching
+// this struct's sibling VAStatusResponse and BCA's own request samples, which
+// send the key unconditionally.
+//
+// It matters only on the OUTBOUND side (the reconciler calling service 26):
+// the body is what stringToSign is hashed over, so a key BCA expects and we
+// omit changes the hash. BCA answers a status request shaped this way with a
+// 504 Timeout rather than a field-format error, which is what made this
+// expensive to find.
+func (r VAStatusRequest) MarshalJSON() ([]byte, error) {
+	type alias VAStatusRequest
+	out := alias(r)
+	if out.AdditionalInfo == nil {
+		out.AdditionalInfo = map[string]interface{}{}
+	}
+	return json.Marshal(out)
 }
 
 // VAStatusResponse represents response to vendor status inquiry
@@ -351,8 +372,12 @@ type VAStatusData struct {
 	PaidAmount        *Amount                `json:"paidAmount"`
 	PaidBills         string                 `json:"paidBills,omitempty"`
 	TotalAmount       *Amount                `json:"totalAmount"`
-	TrxDateTime       *time.Time             `json:"trxDateTime,omitempty"`
-	TransactionDate   *time.Time             `json:"transactionDate"`
+	// SNAPTime, not *time.Time: BCA blanks every field of this envelope on a
+	// 4042601 "Transaction Not Found" — `"transactionDate":""` — and a plain
+	// time.Time cannot decode that, failing the whole response and turning a
+	// clear answer into outcome=error. See domain.SNAPTime.
+	TrxDateTime     *SNAPTime `json:"trxDateTime,omitempty"`
+	TransactionDate *SNAPTime `json:"transactionDate"`
 	ReferenceNo       string                 `json:"referenceNo,omitempty"`
 	PaymentType       string                 `json:"paymentType,omitempty"`
 	FlagAdvise        string                 `json:"flagAdvise,omitempty"`
