@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -64,4 +65,28 @@ func (s *RSASigner) Sign(rawPrivateKey, stringToSign string) (string, error) {
 	}
 
 	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+// PublicKeyFingerprint derives a short, stable identifier for the public half
+// of a PEM-encoded RSA private key: the first 8 bytes of SHA-256 over the
+// DER-encoded public key, hex-encoded.
+//
+// It exists so a log line can say WHICH key signed a request without ever
+// putting key material in the log. A vendor rejecting our signature is the
+// one failure that config alone cannot diagnose — VENDOR_PRIVATE_KEY_PATH
+// tells you which file was read, not whether its public half is the one the
+// vendor registered. Comparing this fingerprint against the registered
+// public key (openssl rsa -pubin -in key.pem -pubout -outform DER | sha256sum)
+// answers that directly.
+func PublicKeyFingerprint(rawPrivateKey string) string {
+	privKey, err := parseRSAPrivateKey(rawPrivateKey)
+	if err != nil {
+		return "unparseable"
+	}
+	der, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
+	if err != nil {
+		return "unmarshalable"
+	}
+	sum := HashSHA256(der)
+	return hex.EncodeToString(sum[:8])
 }

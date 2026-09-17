@@ -36,8 +36,21 @@ type VendorConfig struct {
 
 	// Channel
 	ChannelID string
+	// PartnerID is the X-PARTNER-ID this vendor sends US, used to narrow which
+	// vendor config an inbound request is authenticated against
+	// (middleware.candidateVendors). It is OUR identifier for them.
 	PartnerID string
-	Origin    string
+	// OutboundPartnerID is the X-PARTNER-ID we send THEM. For BCA this is the
+	// String(5) Company Code VA — the same value as partnerServiceId, with no
+	// padding — not the free-form name a vendor uses to address us.
+	//
+	// Separate from PartnerID because the two are different values with the
+	// same header name, and sharing one field silently sent the inbound one
+	// outbound: BCA answered that with a 504 Timeout, never a field error.
+	// Empty falls back to PartnerID, which is the pre-existing behaviour for
+	// any vendor where the two genuinely coincide.
+	OutboundPartnerID string
+	Origin            string
 
 	// Request
 	RequestTimeout     int
@@ -170,6 +183,9 @@ func (l *VendorConfigLoader) applyEnvVars(config *VendorConfig, envVars map[stri
 	if v, ok := envVars["VENDOR_PARTNER_ID"]; ok {
 		config.PartnerID = v
 	}
+	if v, ok := envVars["VENDOR_OUTBOUND_PARTNER_ID"]; ok {
+		config.OutboundPartnerID = v
+	}
 	if v, ok := envVars["VENDOR_ORIGIN"]; ok {
 		config.Origin = v
 	}
@@ -224,6 +240,9 @@ func (l *VendorConfigLoader) applyEnvOverrides(config *VendorConfig) {
 	}
 	if v := os.Getenv("VENDOR_PARTNER_ID"); v != "" {
 		config.PartnerID = v
+	}
+	if v := os.Getenv("VENDOR_OUTBOUND_PARTNER_ID"); v != "" {
+		config.OutboundPartnerID = v
 	}
 	if v := os.Getenv("VENDOR_BODY_HASH_ENCODING"); v != "" {
 		config.BodyHashEncoding = v

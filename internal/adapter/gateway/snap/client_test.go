@@ -180,3 +180,45 @@ func TestClient_PaymentStatus_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2002600", resp.ResponseCode)
 }
+
+// The outbound origin header must be X-ORIGIN, never the bare ORIGIN.
+//
+// "Origin" is a reserved CORS request header: the gateway fronting BCA's API
+// reads it as a cross-origin browser request rather than a vendor field and
+// rejects the call before any SNAP handler runs, answering 5042600 "Timeout"
+// in a couple hundred milliseconds. ASPI names this header X-ORIGIN
+// (aspi-open-api-va.yaml:46); the bare form belongs to the inbound direction,
+// where it is what BCA sends us.
+func TestDoRequest_SendsXOriginNotOrigin(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"responseCode":"4042601","virtualAccountData":{"paymentFlagStatus":""}}`))
+	}))
+	defer srv.Close()
+
+	cfg := &config.VendorConfig{
+		Vendor: "bca", Channel: "va",
+		ClientSecret: "secret", BaseURL: srv.URL,
+		ChannelID: "95231", OutboundPartnerID: "15975",
+		Origin:         "uatbca.manjo.co.id",
+		RequestTimeout: 5, SignatureAlgorithm: "HMAC-SHA512", BodyHashEncoding: "hex",
+	}
+	if _, err := NewClient(cfg, nil).PaymentStatus(context.Background(), &domain.VAStatusRequest{
+		PartnerServiceID: "   15975", CustomerNo: "060000000000000046",
+		VirtualAccountNo: "   15975060000000000000046",
+		InquiryRequestID: "202609031611148444900051593962",
+	}); err != nil {
+		t.Fatalf("PaymentStatus: %v", err)
+	}
+
+	if v := got.Get("X-ORIGIN"); v != "uatbca.manjo.co.id" {
+		t.Errorf("X-ORIGIN = %q, want the configured origin", v)
+	}
+	// http.Header.Get canonicalises, so this checks the bare header is absent
+	// under any casing.
+	if v := got.Get("Origin"); v != "" {
+		t.Errorf("Origin = %q, must not be sent — it is a reserved CORS header", v)
+	}
+}

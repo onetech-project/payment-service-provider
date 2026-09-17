@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"time"
@@ -66,11 +67,31 @@ func NewClient(cfg *config.VendorConfig, tokens domain.VendorTokenProvider) *Cli
 }
 
 // newExternalID builds the "Numeric String ... unique in the same day" that
-// SNAP requires of X-EXTERNAL-ID. Nanosecond time plus a random tail: the
-// timestamp alone collides when two calls land in the same nanosecond bucket,
-// which a sweep reconciling a batch back-to-back can genuinely do.
+// SNAP requires of X-EXTERNAL-ID.
+//
+// Shaped as yyyyMMddHHmmss + a 6-digit random tail — 20 digits, matching the
+// form BCA's own samples use and scripts/bca-payment-status.sh sends
+// successfully. The previous UnixNano()+4 digits produced 23 digits, and BCA
+// answered those with a 504 Timeout rather than a field-format error, which
+// is why this was not obvious from the response: the gateway never says the
+// header is too long, it just stops answering.
+//
+// The random tail is what keeps it unique: second resolution alone collides
+// when a sweep reconciles a batch back-to-back, and a collision inside the
+// same day earns 4092600 Conflict.
 func newExternalID() string {
-	return fmt.Sprintf("%d%04d", time.Now().UnixNano(), rand.IntN(10000))
+	return time.Now().Format("20060102150405") + fmt.Sprintf("%06d", rand.IntN(1000000))
+}
+
+// outboundPartnerID is the X-PARTNER-ID sent to the vendor: its Company Code
+// VA, falling back to the inbound PartnerID for a vendor where the two
+// coincide (and so that a config written before the two were separated keeps
+// behaving as it did).
+func (c *Client) outboundPartnerID() string {
+	if c.config.OutboundPartnerID != "" {
+		return c.config.OutboundPartnerID
+	}
+	return c.config.PartnerID
 }
 
 // Inquiry sends an inquiry request to SNAP VA API
@@ -131,6 +152,41 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body []
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// X-EXTERNAL-ID is Mandatory on every transfer-va service and was simply
+	// absent here: BCA rejects the call outright without it, so this client
+	// could never have completed a request against BCA.
+	//
+	// Generated up here, before anything can fail, so the request log below
+	// and the header carry the same value — it is what correlates the two
+	// halves of one call in Loki.
+	externalID := c.externalID()
+	req.Header.Set("X-EXTERNAL-ID", externalID)
+
+	// Logged before ANY step that can abort the call, so the attempt and its
+	// body are on record even when nothing reaches the vendor.
+	//
+	// This used to sit further down, after the token fetch, which meant the
+	// failure it was most needed for — a 401 on the token, so no request is
+	// ever sent — produced no request log at all. The signature inputs are
+	// added to the response log instead, since they only exist once signing
+	// has happened.
+	//
+	// Debug: this is the full outbound payload on every call, which is more
+	// than a healthy deployment needs in Loki. Failures stay visible without
+	// it — the usecase logs va_reconcile_result at Error with the vendor's own
+	// message — so turning it on is for diagnosing, not monitoring.
+	slog.Debug("vendor_api_request",
+		slog.String("vendor", c.config.Vendor),
+		slog.String("channel", c.config.Channel),
+		slog.String("method", method),
+		slog.String("url", url),
+		slog.String("endpoint", endpoint),
+		slog.String("partnerId", c.outboundPartnerID()),
+		slog.String("channelId", c.config.ChannelID),
+		slog.String("externalId", externalID),
+		slog.String("body", string(body)),
+	)
+
 	// The accessToken is bound into stringToSign, so it must be resolved
 	// BEFORE signing. A vendor with no outbound credentials keeps the legacy
 	// empty-AccessToken convention.
@@ -138,12 +194,31 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body []
 	if c.tokens != nil {
 		accessToken, err = c.tokens.AccessToken(ctx)
 		if err != nil {
+			// Reported as a response so every vendor_api_request has a
+			// matching vendor_api_response, even though no request was sent:
+			// a request logged with nothing after it is indistinguishable
+			// from a call still in flight.
+			//
+			// Debug like the other vendor_api_response sites — one event name
+			// at one level, or a reader filtering for it gets a partial view.
+			// The token failure itself is logged at Error by the token
+			// provider, so this being off loses nothing.
+			slog.Debug("vendor_api_response",
+				slog.String("vendor", c.config.Vendor),
+				slog.String("channel", c.config.Channel),
+				slog.String("method", method),
+				slog.String("url", url),
+				slog.String("externalId", externalID),
+				slog.String("stage", "access_token"),
+				slog.String("error", err.Error()),
+			)
 			return nil, fmt.Errorf("obtain vendor access token: %w", err)
 		}
 	}
 
-	// Generate timestamp
-	timestamp := time.Now().Format(time.RFC3339)
+	// Generate timestamp. snapTimestamp, not time.RFC3339: BCA rejects the
+	// "Z" form Go emits for UTC, and the value is part of stringToSign.
+	timestamp := snapTimestamp(time.Now())
 
 	// Hash the request body per BCA's Signature Symmetric spec:
 	// Lowercase(HexEncode(SHA-256(MinifyJson(RequestBody)))). The encoding
@@ -154,26 +229,91 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body []
 	stringToSign := crypto.BuildStringToSign(method, endpoint, accessToken, bodyHash, timestamp)
 	signature := c.hmacSigner.Sign(stringToSign)
 
+	// The same string with the AccessToken component blanked, for logging.
+	// stringToSign embeds the live bearer token, so logging it verbatim would
+	// publish a working credential to Loki — where it is queryable, retained,
+	// and visible to anyone with Grafana access. The other four components
+	// are what a signature mismatch is actually diagnosed from, and none of
+	// them is secret.
+	loggableStringToSign := crypto.BuildStringToSign(method, endpoint, "<redacted>", bodyHash, timestamp)
+
 	// Set headers from vendor config
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("CHANNEL-ID", c.config.ChannelID)
-	req.Header.Set("X-PARTNER-ID", c.config.PartnerID)
+	req.Header.Set("X-PARTNER-ID", c.outboundPartnerID())
 	req.Header.Set("X-TIMESTAMP", timestamp)
 	req.Header.Set("X-SIGNATURE", signature)
-	// X-EXTERNAL-ID is Mandatory on every transfer-va service and was simply
-	// absent here: BCA rejects the call outright without it, so this client
-	// could never have completed a request against BCA.
-	req.Header.Set("X-EXTERNAL-ID", c.externalID())
 	if accessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
+	// X-ORIGIN, not ORIGIN.
+	//
+	// Two things were wrong with the bare name. It is not what the spec calls
+	// this header — ASPI names it X-ORIGIN (aspi-open-api-va.yaml:46), and BCA
+	// documents ORIGIN only for the inbound direction, where it is what BCA
+	// sends US. And "Origin" is a reserved CORS request header: to the gateway
+	// in front of BCA's API it does not read as a vendor field at all, it reads
+	// as a cross-origin browser request from a host that is not allowed to make
+	// one, which is rejected before any SNAP handler sees it.
+	//
+	// That rejection came back as 5042600 "Timeout" in 251ms — not a timeout,
+	// and not a field error naming the header, which is why this survived three
+	// rounds of looking at the signature instead.
 	if c.config.Origin != "" {
-		req.Header.Set("ORIGIN", c.config.Origin)
+		req.Header.Set("X-ORIGIN", c.config.Origin)
+	}
+
+	// The fully-formed request, logged once the headers exist.
+	//
+	// Separate from vendor_api_request above rather than replacing it: that
+	// one is emitted before the token fetch, so it survives a call that never
+	// gets sent. This one can only exist after signing, and carries what the
+	// vendor will actually receive.
+	//
+	// curl is the field that earns its place. Reproducing a SNAP call by hand
+	// goes wrong in ways the vendor answers with an unexplained 504 —
+	// re-typed JSON changes the body hash, a forgotten X-EXTERNAL-ID is
+	// rejected on unrelated grounds — so a command copied straight out of the
+	// log is what makes "the service fails, my curl works" a comparison of
+	// two identical things. The bearer token is a placeholder; everything
+	// else is verbatim.
+	// Guarded rather than left to the handler's own level filter: slog
+	// evaluates its arguments before deciding to discard them, so without this
+	// every call would render a curl command and a header slice only to throw
+	// both away. Enabled() is the documented way to skip that.
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.DebugContext(ctx, "vendor_api_request_full",
+			slog.String("vendor", c.config.Vendor),
+			slog.String("channel", c.config.Channel),
+			slog.String("method", method),
+			slog.String("url", url),
+			slog.String("externalId", externalID),
+			slog.Any("headers", loggableHeaders(req.Header)),
+			slog.String("stringToSign", loggableStringToSign),
+			slog.String("bodyHash", bodyHash),
+			slog.String("bodyHashEncoding", c.config.BodyHashEncoding),
+			slog.String("body", string(body)),
+			slog.String("curl", curlCommand(method, url, req.Header, body)),
+		)
 	}
 
 	// Execute request
+	started := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		// Debug for the same consistency reason as above. A transport failure
+		// still surfaces: the error is returned to the caller, and
+		// va_reconcile_result logs it at Error with this message inside it.
+		slog.Debug("vendor_api_response",
+			slog.String("vendor", c.config.Vendor),
+			slog.String("channel", c.config.Channel),
+			slog.String("method", method),
+			slog.String("url", url),
+			slog.String("externalId", externalID),
+			slog.String("stage", "transport"),
+			slog.Int64("durationMs", time.Since(started).Milliseconds()),
+			slog.String("error", err.Error()),
+		)
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -182,6 +322,38 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body []
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
+
+	// Logged whole: a SNAP response body is small, and its responseCode plus
+	// the status-specific fields (paymentFlagStatus, paidAmount) are exactly
+	// what an operator reconstructs an outcome from. A 4xx is Warn, not
+	// Error — 4042601 "Transaction Not Found" is an ordinary answer here,
+	// not a fault.
+	respAttrs := []any{
+		slog.String("vendor", c.config.Vendor),
+		slog.String("channel", c.config.Channel),
+		slog.String("method", method),
+		slog.String("url", url),
+		slog.String("externalId", externalID),
+		// The signature inputs ride on the response rather than the request:
+		// they do not exist until signing has run, and they are only ever
+		// interesting once the vendor has said what it made of them.
+		slog.String("timestamp", timestamp),
+		slog.String("stringToSign", loggableStringToSign),
+		slog.Bool("hasAccessToken", accessToken != ""),
+		slog.Int("status", resp.StatusCode),
+		slog.Int64("durationMs", time.Since(started).Milliseconds()),
+		slog.String("body", string(respBody)),
+	}
+	// Debug at every status, including 5xx.
+	//
+	// It reads oddly to log a failure at Debug, but this is the vendor's raw
+	// answer, not the outcome: whoever called the gateway decides what the
+	// answer means and logs that. ReconciliationUsecase already emits
+	// va_reconcile_result at Error carrying the vendor's own message, so a
+	// failure is not lost when this is off — and keeping 5xx at Error here
+	// would have split one call across two levels, which is worse to read than
+	// either.
+	slog.Debug("vendor_api_response", respAttrs...)
 
 	// A 4xx from a SNAP service still carries a meaningful body — 4042601
 	// "Transaction Not Found" is a real answer to a status inquiry, not a
