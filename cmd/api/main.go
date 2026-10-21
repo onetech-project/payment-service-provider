@@ -199,9 +199,10 @@ func main() {
 
 	// 3. Redis Connection
 	redisAddr := getEnvOrDefault("REDIS_ADDR", "localhost:6379")
+	redisUsername := getEnvOrDefault("REDIS_USERNAME", "")
 	redisPassword := getEnvOrDefault("REDIS_PASSWORD", "")
 	redisConnectTimeout := getEnvDurationSeconds("REDIS_CONNECT_TIMEOUT_SECONDS", 1)
-	redisClient, err := redis.NewRedisClient(redisAddr, redisPassword, 0, redisConnectTimeout)
+	redisClient, err := redis.NewRedisClient(redisAddr, redisUsername, redisPassword, 0, redisConnectTimeout)
 	if err != nil {
 		log.Fatalf("Fatal: Redis connection required for Idempotency and Queue: %v", err)
 	}
@@ -249,7 +250,7 @@ func main() {
 	adminAPIKey := getEnvOrDefault("ADMIN_API_KEY", "")
 
 	// Asynq Client for async notifications
-	asynqClient, err := queue.NewClient(redisAddr, redisPassword, 0)
+	asynqClient, err := queue.NewClient(redisAddr, redisUsername, redisPassword, 0)
 	if err != nil {
 		log.Printf("Warning: Asynq client initialization failed: %v", err)
 	} else {
@@ -332,12 +333,12 @@ func main() {
 	adminReconcileHandler := handler.NewAdminReconcileHandler(reconciler)
 	if reconciler != nil {
 		worker.RegisterReconcileWorker(asynqMux, worker.NewReconcileWorker(reconciler))
-		startReconcileScheduler(redisAddr, redisPassword)
+		startReconcileScheduler(redisAddr, redisUsername, redisPassword)
 	}
 
 	// Start Asynq worker in background
 	go func() {
-		srv := queue.NewServer(redisAddr, redisPassword, 0)
+		srv := queue.NewServer(redisAddr, redisUsername, redisPassword, 0)
 		if err := srv.Run(asynqMux); err != nil {
 			log.Printf("Asynq worker error: %v", err)
 		}

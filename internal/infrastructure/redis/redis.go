@@ -16,9 +16,10 @@ type Client struct {
 // misconfiguration. connectTimeout is caller-supplied (sourced from env, e.g.
 // REDIS_CONNECT_TIMEOUT_SECONDS) rather than a hardcoded constant, since the
 // right value depends on the deployment's network latency.
-func NewRedisClient(addr, password string, db int, connectTimeout time.Duration) (*Client, error) {
+func NewRedisClient(addr, username, password string, db int, connectTimeout time.Duration) (*Client, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     addr,
+		Username: username,
 		Password: password,
 		DB:       db,
 	})
