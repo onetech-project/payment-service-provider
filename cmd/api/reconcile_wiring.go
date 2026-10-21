@@ -88,12 +88,12 @@ func findVendorConfig(configs []*config.VendorConfig, vendor, channel string) *c
 // through Redis, so one sweep is enqueued per interval regardless of how many
 // instances are deployed — which is the whole reason this goes through the
 // queue rather than an in-process ticker.
-func startReconcileScheduler(redisAddr, redisPassword string) {
+func startReconcileScheduler(redisAddr, redisUsername, redisPassword string) {
 	intervalMinutes := getEnvIntOrDefault("RECONCILE_INTERVAL_MINUTES", 5)
 	interval := time.Duration(intervalMinutes) * time.Minute
 	spec := "@every " + strconv.Itoa(intervalMinutes) + "m"
 
-	scheduler := queue.NewScheduler(redisAddr, redisPassword, 0)
+	scheduler := queue.NewScheduler(redisAddr, redisUsername, redisPassword, 0)
 	if err := scheduler.RegisterPeriodic(spec, worker.TaskVAStatusReconcile, interval); err != nil {
 		log.Printf("Warning: failed to schedule reconciliation sweep (%s): %v", spec, err)
 		return

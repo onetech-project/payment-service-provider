@@ -17,9 +17,10 @@ type Client struct {
 }
 
 // NewClient creates a new Asynq client connected to Redis
-func NewClient(redisAddr, redisPassword string, db int) (*Client, error) {
+func NewClient(redisAddr, redisUsername, redisPassword string, db int) (*Client, error) {
 	srv := asynq.NewClient(asynq.RedisClientOpt{
 		Addr:     redisAddr,
+		Username: redisUsername,
 		Password: redisPassword,
 		DB:       db,
 	})
@@ -60,9 +61,10 @@ type Server struct {
 }
 
 // NewServer creates a new Asynq server for processing tasks
-func NewServer(redisAddr, redisPassword string, db int) *Server {
+func NewServer(redisAddr, redisUsername, redisPassword string, db int) *Server {
 	srv := asynq.NewServer(asynq.RedisClientOpt{
 		Addr:     redisAddr,
+		Username: redisUsername,
 		Password: redisPassword,
 		DB:       db,
 	}, asynq.Config{
@@ -92,10 +94,11 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a periodic-task scheduler connected to Redis.
-func NewScheduler(redisAddr, redisPassword string, db int) *Scheduler {
+func NewScheduler(redisAddr, redisUsername, redisPassword string, db int) *Scheduler {
 	return &Scheduler{
 		scheduler: asynq.NewScheduler(asynq.RedisClientOpt{
 			Addr:     redisAddr,
+			Username: redisUsername,
 			Password: redisPassword,
 			DB:       db,
 		}, nil),

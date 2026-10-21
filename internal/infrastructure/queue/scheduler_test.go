@@ -19,7 +19,7 @@ import (
 // window to the interval is what makes RECONCILE_INTERVAL_MINUTES mean what it
 // says.
 func TestRegisterPeriodic_RejectsNonPositiveInterval(t *testing.T) {
-	s := NewScheduler("127.0.0.1:6379", "", 0)
+	s := NewScheduler("127.0.0.1:6379", "", "", 0)
 	defer s.Shutdown()
 
 	for _, interval := range []time.Duration{0, -time.Minute} {
@@ -31,7 +31,7 @@ func TestRegisterPeriodic_RejectsNonPositiveInterval(t *testing.T) {
 
 // The guard must not reject a legitimate interval.
 func TestRegisterPeriodic_AcceptsAPositiveInterval(t *testing.T) {
-	s := NewScheduler("127.0.0.1:6379", "", 0)
+	s := NewScheduler("127.0.0.1:6379", "", "", 0)
 	defer s.Shutdown()
 
 	assert.NoError(t, s.RegisterPeriodic("@every 5m", "test:task", 5*time.Minute))

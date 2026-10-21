@@ -79,6 +79,7 @@ The server starts on port `8080` by default.
 | `DB_NAME` | `payment_gateway` | Database name |
 | `DB_SSLMODE` | `disable` | PostgreSQL SSL mode |
 | `REDIS_ADDR` | `localhost:6379` | Redis address |
+| `REDIS_USERNAME` | *(empty)* | Redis ACL username (empty = `default` user) |
 | `REDIS_PASSWORD` | *(empty)* | Redis password |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(empty)* | OpenTelemetry collector endpoint |
 
