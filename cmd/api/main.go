@@ -397,7 +397,7 @@ func main() {
 	// under both the v1.0 and v2.0 base paths.
 	const statusRoute = "/status"
 
-	snapBasePaths := []string{"/openapi/v1.0"}
+	snapBasePaths := []string{"/openapi/v1.0", "/v1.0"}
 	if appEnv == "dev" || appEnv == "uat" {
 		snapBasePaths = []string{"/openapi/v1.0", "/api/v1.0", "/v1.0"}
 	}
