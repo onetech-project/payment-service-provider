@@ -79,6 +79,8 @@ func TelemetryMiddleware() echo.MiddlewareFunc {
 				c.SetRequest(req.WithContext(ctx))
 			}
 
+			logInboundRequest(c, correlationID)
+
 			start := time.Now()
 			err := next(c)
 			latency := time.Since(start)
