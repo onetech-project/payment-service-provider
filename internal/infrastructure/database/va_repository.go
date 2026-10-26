@@ -695,10 +695,21 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 	// string field fails on exactly the rows this lookup exists to serve — and
 	// that scan error surfaces to the vendor as a bare 5002400. Empty string is
 	// the record's own "not claimed yet" marker (see VAUsecase.Inquiry).
+	//
+	// payment_request_id falls back to the newest va_payments instalment: a
+	// variable-bill VA settles there and leaves the transaction row's own
+	// column NULL, yet the resend callback still owes the merchant the id of
+	// the payment it is redelivering.
 	query := `
 		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
 			COALESCE(inquiry_request_id, ''), trx_id, notification_url, status, total_amount, currency,
 			COALESCE(va_type, ''), COALESCE(sub_company, ''), COALESCE(paid_amount, 0)::text,
+			COALESCE(payment_request_id, (
+				SELECT p.payment_request_id FROM va_payments p
+				WHERE p.transaction_id = va_transactions.id AND p.payment_request_id IS NOT NULL
+				ORDER BY p.created_at DESC
+				LIMIT 1
+			), ''),
 			free_texts, expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE virtual_account_no = $1
@@ -730,6 +741,7 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 		&record.VAType,
 		&record.SubCompany,
 		&record.PaidAmount,
+		&record.PaymentRequestID,
 		&freeTexts,
 		&record.ExpiredDate,
 		&record.CreatedAt,

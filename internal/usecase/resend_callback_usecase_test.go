@@ -137,3 +137,33 @@ func TestResendCallbackUsecase_Resend_NeverMutatesVAStatus(t *testing.T) {
 	assert.NoError(t, err)
 	mockRepo.AssertNotCalled(t, "UpdateVAStatus")
 }
+
+// A resent payment.received callback carries the paymentRequestId stored for
+// the transaction, so the merchant can match it to the original payment.
+func TestResendCallbackUsecase_Resend_PaymentReceivedCarriesPaymentRequestID(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	mockNotifier := new(MockNotifier)
+	uc := NewResendCallbackUsecase(mockRepo, mockDelivery, mockNotifier)
+
+	merchantVA := &domain.VAInquiryRecord{
+		VirtualAccountNo: "7000108212221111",
+		NotificationURL:  "https://merchant.example.com/callback",
+		PaymentRequestID: "202610260001",
+		TotalAmount:      "10000.00",
+		Currency:         "IDR",
+	}
+	latest := &domain.NotificationDelivery{VirtualAccountNo: merchantVA.VirtualAccountNo, EventType: domain.NotificationEventPaymentReceived}
+
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, merchantVA.VirtualAccountNo).Return(merchantVA, nil)
+	mockDelivery.On("GetLatestByVirtualAccountNo", mock.Anything, merchantVA.VirtualAccountNo).Return(latest, nil)
+	mockNotifier.On("EnqueuePaymentNotification", mock.Anything, mock.MatchedBy(func(p *domain.PaymentNotificationPayload) bool {
+		return p.PaymentRequestID == merchantVA.PaymentRequestID
+	})).Return(nil)
+	mockDelivery.On("Create", mock.Anything, mock.Anything).Return(nil)
+
+	_, err := uc.Resend(context.Background(), merchantVA.VirtualAccountNo)
+
+	assert.NoError(t, err)
+	mockNotifier.AssertExpectations(t)
+}
