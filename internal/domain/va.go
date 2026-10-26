@@ -672,6 +672,11 @@ type VAInquiryRecord struct {
 	// nothing has been paid. Needed to tell a variable-bill VA that is
 	// genuinely lunas from one whose stored status merely says so.
 	PaidAmount string
+	// PaymentRequestID is the vendor's paymentRequestId of the payment that
+	// last settled this transaction (va_transactions.payment_request_id, or the
+	// newest va_payments instalment for a variable-bill VA). Empty while
+	// unpaid. Populated by GetVAByVirtualAccountNo only.
+	PaymentRequestID string
 	// FreeTexts is the biller's two-language free text, shown on BCA's channel
 	// screen (InquiryResponse.freeTexts). Persisted in va_transactions.free_texts
 	// at create-va time and echoed on inquiry — before this it was only echoed

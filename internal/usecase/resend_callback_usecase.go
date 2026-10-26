@@ -63,6 +63,7 @@ func (u *resendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo str
 	}
 	if latest.EventType == domain.NotificationEventPaymentReceived {
 		payload.PaidAmount = &domain.Amount{Value: merchantVA.TotalAmount, Currency: merchantVA.Currency}
+		payload.PaymentRequestID = merchantVA.PaymentRequestID
 	}
 
 	// 5. Enqueue via the existing NotificationEnqueuer (same signing/delivery
