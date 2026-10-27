@@ -778,10 +778,17 @@ func (r *VARepository) Create(ctx context.Context, delivery *domain.Notification
 	if delivery.ErrorDetail != "" {
 		errorDetail = &delivery.ErrorDetail
 	}
+	var payload []byte
+	if delivery.Payload != nil {
+		var err error
+		if payload, err = json.Marshal(delivery.Payload); err != nil {
+			return err
+		}
+	}
 
 	query := `
-		INSERT INTO va_notification_deliveries (id, virtual_account_no, event_type, trigger, status, attempted_at, error_detail)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+		INSERT INTO va_notification_deliveries (id, virtual_account_no, event_type, trigger, status, attempted_at, error_detail, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 
 	_, err := r.pool.Exec(ctx, query,
 		delivery.ID,
@@ -791,23 +798,49 @@ func (r *VARepository) Create(ctx context.Context, delivery *domain.Notification
 		delivery.Status,
 		delivery.AttemptedAt,
 		errorDetail,
+		payload,
 	)
 	return err
 }
 
-// GetLatestByVirtualAccountNo returns the most recent delivery-attempt row
-// (any event type/trigger) for a virtual account number, used by the resend
-// endpoint to determine which event to redeliver (FR-011/FR-015).
-func (r *VARepository) GetLatestByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.NotificationDelivery, error) {
-	query := `
-		SELECT id, virtual_account_no, event_type, trigger, status, attempted_at, COALESCE(error_detail, '')
-		FROM va_notification_deliveries
-		WHERE virtual_account_no = $1
-		ORDER BY attempted_at DESC
-		LIMIT 1`
+// UpdateDeliveryResult writes one delivery attempt's outcome onto its row.
+// Called by the notification worker after every attempt, so the row always
+// reflects the latest one.
+//
+// A row already "success" is never moved off it: Asynq can run a task again
+// after a successful attempt it failed to acknowledge, and a late failure from
+// that rerun must not hide that the merchant was reached.
+func (r *VARepository) UpdateDeliveryResult(ctx context.Context, id string, result domain.NotificationDeliveryResult) error {
+	var errorDetail *string
+	if result.ErrorDetail != "" {
+		errorDetail = &result.ErrorDetail
+	}
+	var httpStatus *int
+	if result.HTTPStatus != 0 {
+		httpStatus = &result.HTTPStatus
+	}
 
+	query := `
+		UPDATE va_notification_deliveries
+		SET status = $2,
+			attempt_count = GREATEST(attempt_count, $3),
+			http_status = $4,
+			error_detail = $5,
+			last_attempt_at = NOW()
+		WHERE id = $1 AND status <> 'success'`
+
+	_, err := r.pool.Exec(ctx, query, id, result.Status, result.AttemptCount, httpStatus, errorDetail)
+	return err
+}
+
+// deliveryColumns is the column set scanDelivery reads.
+const deliveryColumns = `id, virtual_account_no, event_type, trigger, status, attempted_at, COALESCE(error_detail, ''),
+	payload, attempt_count, COALESCE(http_status, 0), last_attempt_at`
+
+func scanDelivery(row pgx.Row) (*domain.NotificationDelivery, error) {
 	record := &domain.NotificationDelivery{}
-	err := r.pool.QueryRow(ctx, query, virtualAccountNo).Scan(
+	var payload []byte
+	err := row.Scan(
 		&record.ID,
 		&record.VirtualAccountNo,
 		&record.EventType,
@@ -815,7 +848,35 @@ func (r *VARepository) GetLatestByVirtualAccountNo(ctx context.Context, virtualA
 		&record.Status,
 		&record.AttemptedAt,
 		&record.ErrorDetail,
+		&payload,
+		&record.AttemptCount,
+		&record.HTTPStatus,
+		&record.LastAttemptAt,
 	)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > 0 {
+		record.Payload = &domain.PaymentNotificationPayload{}
+		if err := json.Unmarshal(payload, record.Payload); err != nil {
+			return nil, err
+		}
+	}
+	return record, nil
+}
+
+// GetLatestByVirtualAccountNo returns the most recent delivery-attempt row
+// (any event type/trigger) for a virtual account number, used by the resend
+// endpoint to determine which event to redeliver (FR-011/FR-015).
+func (r *VARepository) GetLatestByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.NotificationDelivery, error) {
+	query := `
+		SELECT ` + deliveryColumns + `
+		FROM va_notification_deliveries
+		WHERE virtual_account_no = $1
+		ORDER BY attempted_at DESC
+		LIMIT 1`
+
+	record, err := scanDelivery(r.pool.QueryRow(ctx, query, virtualAccountNo))
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -823,6 +884,42 @@ func (r *VARepository) GetLatestByVirtualAccountNo(ctx context.Context, virtualA
 		return nil, err
 	}
 	return record, nil
+}
+
+// ListForResend returns the original (trigger="auto") callbacks recorded in
+// [filter.From, filter.To), oldest first. Manual rows are excluded: they are
+// themselves resends, and selecting them would resend the same event once per
+// earlier resend.
+func (r *VARepository) ListForResend(ctx context.Context, filter domain.NotificationDeliveryFilter) ([]*domain.NotificationDelivery, error) {
+	query := `
+		SELECT ` + deliveryColumns + `
+		FROM va_notification_deliveries
+		WHERE trigger = 'auto'
+			AND attempted_at >= $1 AND attempted_at < $2
+			AND ($3 = '' OR virtual_account_no = $3)
+			AND (cardinality($4::text[]) = 0 OR status = ANY($4))
+		ORDER BY attempted_at ASC
+		LIMIT $5`
+
+	statuses := filter.Statuses
+	if statuses == nil {
+		statuses = []string{}
+	}
+	rows, err := r.pool.Query(ctx, query, filter.From, filter.To, filter.VirtualAccountNo, statuses, filter.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deliveries []*domain.NotificationDelivery
+	for rows.Next() {
+		record, err := scanDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, record)
+	}
+	return deliveries, rows.Err()
 }
 
 // ExistsByVirtualAccountNoAndEventType reports whether a delivery-attempt row

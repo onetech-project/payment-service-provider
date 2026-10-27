@@ -105,7 +105,7 @@ func statusResponse(code, flag, paidValue string) *domain.VAStatusResponse {
 }
 
 func newReconciler(repo *fakeReconcileRepo, gw *fakeGateway, n *fakeNotifier) *ReconciliationUsecase {
-	return NewReconciliationUsecase(repo, gw, n, ReconcileConfig{ClientID: "vendor-client"})
+	return NewReconciliationUsecase(repo, gw, n, nil, ReconcileConfig{ClientID: "vendor-client"})
 }
 
 // --- the case the feature exists for ------------------------------------
@@ -342,7 +342,7 @@ func TestSweep_NoStaleTransactions_MakesNoCalls(t *testing.T) {
 // ago is new, not stuck.
 func TestSweep_UsesTheConfiguredPendingThreshold(t *testing.T) {
 	repo := &captureCutoffRepo{}
-	uc := NewReconciliationUsecase(repo, &fakeGateway{}, &fakeNotifier{}, ReconcileConfig{
+	uc := NewReconciliationUsecase(repo, &fakeGateway{}, &fakeNotifier{}, nil, ReconcileConfig{
 		PendingAfter: 30 * time.Minute,
 		BatchSize:    7,
 	})
@@ -371,7 +371,7 @@ func (r *captureCutoffRepo) ListStalePendingTransactions(_ context.Context, olde
 // Defaults must be sane rather than zero — a zero threshold would sweep every
 // freshly-created VA, and a zero batch would sweep nothing at all.
 func TestReconcileConfig_ZeroValuesFallBackToDefaults(t *testing.T) {
-	uc := NewReconciliationUsecase(&fakeReconcileRepo{}, &fakeGateway{}, nil, ReconcileConfig{})
+	uc := NewReconciliationUsecase(&fakeReconcileRepo{}, &fakeGateway{}, nil, nil, ReconcileConfig{})
 
 	assert.Equal(t, DefaultReconcileConfig.PendingAfter, uc.config.PendingAfter)
 	assert.Equal(t, DefaultReconcileConfig.BatchSize, uc.config.BatchSize)

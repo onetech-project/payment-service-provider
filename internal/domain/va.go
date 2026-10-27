@@ -1062,7 +1062,20 @@ type PaymentNotificationPayload struct {
 	// ExpiredAt carries the expiry timestamp (ISO 8601), populated only for
 	// "va.expired" events (FR-003).
 	ExpiredAt string `json:"expiredAt,omitempty"`
+
+	// DeliveryID is the va_notification_deliveries row this enqueue is
+	// recorded under. Carried to the worker as a task header, not in the
+	// task body: the body is Asynq's uniqueness key, and a per-enqueue id
+	// would defeat the dedupe of identical auto-triggered callbacks.
+	DeliveryID string `json:"-"`
+	// Trigger is "auto" or "manual". Manual resends are deliberate and are
+	// never deduped against an earlier identical enqueue.
+	Trigger string `json:"-"`
 }
+
+// NotificationDeliveryIDHeader is the Asynq task header carrying
+// PaymentNotificationPayload.DeliveryID to the notification worker.
+const NotificationDeliveryIDHeader = "delivery-id"
 
 // Notification Delivery Attempt (feature 007-merchant-expiry-callback)
 
@@ -1075,8 +1088,17 @@ const (
 	NotificationTriggerAuto   = "auto"
 	NotificationTriggerManual = "manual"
 
-	NotificationDeliveryStatusSuccess = "success"
-	NotificationDeliveryStatusFailed  = "failed"
+	// A delivery row starts "queued" once enqueued; the worker moves it to
+	// "retrying" after a failed attempt with retries left, then to "success"
+	// (merchant answered < 400) or "failed" (enqueue failed, or the last
+	// retry failed). "duplicate" is an auto-triggered enqueue Asynq rejected
+	// as identical to one still in its uniqueness window — not a failure, and
+	// not something to resend.
+	NotificationDeliveryStatusQueued    = "queued"
+	NotificationDeliveryStatusRetrying  = "retrying"
+	NotificationDeliveryStatusSuccess   = "success"
+	NotificationDeliveryStatusFailed    = "failed"
+	NotificationDeliveryStatusDuplicate = "duplicate"
 )
 
 // NotificationDelivery represents a single attempt (auto or manual) to
@@ -1087,17 +1109,51 @@ type NotificationDelivery struct {
 	VirtualAccountNo string
 	EventType        string // "payment.received" | "va.expired"
 	Trigger          string // "auto" | "manual"
-	Status           string // "success" | "failed"
+	Status           string // see NotificationDeliveryStatus*
 	AttemptedAt      time.Time
 	ErrorDetail      string
+	// Payload is the callback exactly as enqueued. Nil on rows recorded
+	// before migration 000018.
+	Payload       *PaymentNotificationPayload
+	AttemptCount  int
+	HTTPStatus    int // merchant's response status; 0 when none was received
+	LastAttemptAt *time.Time
+}
+
+// NotificationDeliveryResult is the outcome of one delivery attempt, written
+// back onto the delivery row.
+type NotificationDeliveryResult struct {
+	Status       string
+	AttemptCount int
+	HTTPStatus   int
+	ErrorDetail  string
+}
+
+// NotificationDeliveryFilter selects original (trigger="auto") callbacks for
+// bulk resend: AttemptedAt in [From, To), optionally one VA, with one of
+// Statuses. At most Limit rows, oldest first.
+type NotificationDeliveryFilter struct {
+	From             time.Time
+	To               time.Time
+	VirtualAccountNo string
+	Statuses         []string
+	Limit            int
+}
+
+// NotificationDeliveryResultRecorder writes a delivery attempt's outcome back
+// onto its row. Used by the notification worker.
+type NotificationDeliveryResultRecorder interface {
+	UpdateDeliveryResult(ctx context.Context, id string, result NotificationDeliveryResult) error
 }
 
 // VANotificationDeliveryRepository defines persistence operations for the
 // notification delivery-attempt audit trail.
 type VANotificationDeliveryRepository interface {
+	NotificationDeliveryResultRecorder
 	Create(ctx context.Context, delivery *NotificationDelivery) error
 	GetLatestByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*NotificationDelivery, error)
 	ExistsByVirtualAccountNoAndEventType(ctx context.Context, virtualAccountNo, eventType, trigger string) (bool, error)
+	ListForResend(ctx context.Context, filter NotificationDeliveryFilter) ([]*NotificationDelivery, error)
 }
 
 // ResendCallbackResult is returned by ResendCallbackUsecase.Resend on
@@ -1106,11 +1162,30 @@ type ResendCallbackResult struct {
 	VirtualAccountNo string
 	EventType        string
 	ResentAt         time.Time
-	DeliveryStatus   string // "success" | "failed"
+	DeliveryStatus   string // "queued" | "failed"
+}
+
+// BulkResendItem is the outcome of resending one original callback.
+type BulkResendItem struct {
+	SourceDeliveryID string
+	DeliveryID       string // the new manual row; empty when skipped
+	VirtualAccountNo string
+	EventType        string
+	Status           string // "queued" | "failed" | "skipped"
+	Error            string
+}
+
+// BulkResendResult is returned by ResendCallbackUsecase.ResendRange.
+type BulkResendResult struct {
+	Items    []BulkResendItem
+	ResentAt time.Time
 }
 
 // ResendCallbackUsecase defines the admin-only manual callback resend
 // operation (feature 007-merchant-expiry-callback, US2).
 type ResendCallbackUsecase interface {
 	Resend(ctx context.Context, virtualAccountNo string) (*ResendCallbackResult, error)
+	// ResendRange redelivers every original callback matching filter, each
+	// with the payload it was first sent with.
+	ResendRange(ctx context.Context, filter NotificationDeliveryFilter) (*BulkResendResult, error)
 }

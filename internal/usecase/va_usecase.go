@@ -1429,23 +1429,7 @@ func (u *VAUsecase) markExpiredAndNotify(ctx context.Context, merchantVA *domain
 		ExpiredAt:        expiredAt,
 	}
 
-	deliveryStatus := domain.NotificationDeliveryStatusSuccess
-	errorDetail := ""
-	if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
-		deliveryStatus = domain.NotificationDeliveryStatusFailed
-		errorDetail = err.Error()
-	}
-
-	if u.deliveryRepo != nil {
-		_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
-			VirtualAccountNo: merchantVA.VirtualAccountNo,
-			EventType:        domain.NotificationEventVAExpired,
-			Trigger:          domain.NotificationTriggerAuto,
-			Status:           deliveryStatus,
-			AttemptedAt:      time.Now(),
-			ErrorDetail:      errorDetail,
-		})
-	}
+	u.enqueueAndAudit(ctx, payload, merchantVA.VirtualAccountNo, domain.NotificationEventVAExpired)
 }
 
 // markRegistrationExpiredAndNotify transitions a VA registration to EXPIRED
@@ -1529,27 +1513,12 @@ func (u *VAUsecase) notifyMerchantForAccount(ctx context.Context, req *domain.VA
 }
 
 // enqueueAndAudit enqueues a merchant callback and records the delivery
-// attempt, swallowing both errors — callback delivery is best-effort and must
-// not affect the caller's response (Constitution: vendor-facing responses are
-// never blocked on merchant reachability).
+// attempt (see dispatchNotification), swallowing both errors — callback
+// delivery is best-effort and must not affect the caller's response
+// (Constitution: vendor-facing responses are never blocked on merchant
+// reachability).
 func (u *VAUsecase) enqueueAndAudit(ctx context.Context, payload *domain.PaymentNotificationPayload, virtualAccountNo, eventType string) {
-	deliveryStatus := domain.NotificationDeliveryStatusSuccess
-	errorDetail := ""
-	if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
-		deliveryStatus = domain.NotificationDeliveryStatusFailed
-		errorDetail = err.Error()
-	}
-
-	if u.deliveryRepo != nil {
-		_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
-			VirtualAccountNo: virtualAccountNo,
-			EventType:        eventType,
-			Trigger:          domain.NotificationTriggerAuto,
-			Status:           deliveryStatus,
-			AttemptedAt:      time.Now(),
-			ErrorDetail:      errorDetail,
-		})
-	}
+	dispatchNotification(ctx, u.notifier, u.deliveryRepo, payload, virtualAccountNo, eventType, domain.NotificationTriggerAuto)
 }
 
 // notifyMerchantWithVA enqueues an async callback carrying the payment
@@ -1583,23 +1552,7 @@ func (u *VAUsecase) notifyMerchantWithVA(ctx context.Context, req *domain.VAPaym
 		NotificationURL:  notificationURL,
 	}
 
-	deliveryStatus := domain.NotificationDeliveryStatusSuccess
-	errorDetail := ""
-	if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
-		deliveryStatus = domain.NotificationDeliveryStatusFailed
-		errorDetail = err.Error()
-	}
-
-	if u.deliveryRepo != nil {
-		_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
-			VirtualAccountNo: req.VirtualAccountNo,
-			EventType:        domain.NotificationEventPaymentReceived,
-			Trigger:          domain.NotificationTriggerAuto,
-			Status:           deliveryStatus,
-			AttemptedAt:      time.Now(),
-			ErrorDetail:      errorDetail,
-		})
-	}
+	u.enqueueAndAudit(ctx, payload, req.VirtualAccountNo, domain.NotificationEventPaymentReceived)
 }
 
 // Status handles VA status inquiry from vendor

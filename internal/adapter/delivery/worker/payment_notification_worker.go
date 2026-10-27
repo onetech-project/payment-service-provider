@@ -7,8 +7,10 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -25,18 +27,86 @@ const (
 type PaymentNotificationWorker struct {
 	httpClient *http.Client
 	secret     string
+	recorder   domain.NotificationDeliveryResultRecorder
 }
 
-// NewPaymentNotificationWorker creates a new worker
-func NewPaymentNotificationWorker(secret string) *PaymentNotificationWorker {
+// NewPaymentNotificationWorker creates a new worker. recorder may be nil, in
+// which case delivery outcomes are not written back to
+// va_notification_deliveries.
+func NewPaymentNotificationWorker(secret string, recorder domain.NotificationDeliveryResultRecorder) *PaymentNotificationWorker {
 	return &PaymentNotificationWorker{
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		secret:     secret,
+		recorder:   recorder,
 	}
 }
 
-// HandlePaymentNotification processes payment notification tasks
+// deliveryError is a delivery failure carrying the merchant's HTTP status,
+// when it answered at all.
+type deliveryError struct {
+	httpStatus int
+	err        error
+}
+
+func (e *deliveryError) Error() string { return e.err.Error() }
+func (e *deliveryError) Unwrap() error { return e.err }
+
+// HandlePaymentNotification processes payment notification tasks and records
+// each attempt's outcome on the task's va_notification_deliveries row.
 func (w *PaymentNotificationWorker) HandlePaymentNotification(ctx context.Context, t *asynq.Task) error {
+	err := w.deliver(ctx, t)
+	w.recordResult(ctx, t, err)
+	return err
+}
+
+// recordResult writes the attempt's outcome onto the delivery row named by the
+// task's delivery-id header. A task without one was enqueued before the header
+// existed and has no row to update.
+//
+// A failure with retries left is "retrying", not "failed": Asynq will try
+// again, and only the last attempt decides. A timeout is recorded with its
+// error text ("context deadline exceeded" / "Client.Timeout exceeded") and no
+// HTTP status, since the merchant never answered.
+func (w *PaymentNotificationWorker) recordResult(ctx context.Context, t *asynq.Task, err error) {
+	if w.recorder == nil {
+		return
+	}
+	deliveryID := t.Headers()[domain.NotificationDeliveryIDHeader]
+	if deliveryID == "" {
+		return
+	}
+
+	retried, _ := asynq.GetRetryCount(ctx)
+	maxRetry, _ := asynq.GetMaxRetry(ctx)
+	result := domain.NotificationDeliveryResult{
+		Status:       domain.NotificationDeliveryStatusSuccess,
+		AttemptCount: retried + 1,
+	}
+	if err != nil {
+		result.Status = domain.NotificationDeliveryStatusFailed
+		if retried < maxRetry {
+			result.Status = domain.NotificationDeliveryStatusRetrying
+		}
+		result.ErrorDetail = err.Error()
+		var de *deliveryError
+		if errors.As(err, &de) {
+			result.HTTPStatus = de.httpStatus
+		}
+	} else {
+		result.HTTPStatus = http.StatusOK
+	}
+
+	// The task context may already be past its deadline — that is exactly
+	// the timeout case worth recording — so the write gets its own.
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if rerr := w.recorder.UpdateDeliveryResult(recordCtx, deliveryID, result); rerr != nil {
+		log.Printf("event=notification_delivery_record_failed delivery_id=%s err=%v", deliveryID, rerr)
+	}
+}
+
+// deliver sends the callback once.
+func (w *PaymentNotificationWorker) deliver(ctx context.Context, t *asynq.Task) error {
 	var payload domain.PaymentNotificationPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("failed to unmarshal payload: %w", err)
@@ -115,8 +185,11 @@ func (w *PaymentNotificationWorker) HandlePaymentNotification(ctx context.Contex
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("notification failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &deliveryError{
+			httpStatus: resp.StatusCode,
+			err:        fmt.Errorf("notification failed with status %d: %s", resp.StatusCode, string(bodyBytes)),
+		}
 	}
 
 	return nil

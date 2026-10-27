@@ -39,7 +39,7 @@ func TestResendCallbackUsecase_Resend_Success(t *testing.T) {
 		return p.EventType == domain.NotificationEventVAExpired && p.VirtualAccountNo == merchantVA.VirtualAccountNo
 	})).Return(nil)
 	mockDelivery.On("Create", mock.Anything, mock.MatchedBy(func(d *domain.NotificationDelivery) bool {
-		return d.Trigger == domain.NotificationTriggerManual && d.Status == domain.NotificationDeliveryStatusSuccess
+		return d.Trigger == domain.NotificationTriggerManual && d.Status == domain.NotificationDeliveryStatusQueued
 	})).Return(nil)
 
 	result, err := uc.Resend(context.Background(), merchantVA.VirtualAccountNo)
@@ -48,7 +48,7 @@ func TestResendCallbackUsecase_Resend_Success(t *testing.T) {
 	assert.NotNil(t, result)
 	assert.Equal(t, merchantVA.VirtualAccountNo, result.VirtualAccountNo)
 	assert.Equal(t, domain.NotificationEventVAExpired, result.EventType)
-	assert.Equal(t, domain.NotificationDeliveryStatusSuccess, result.DeliveryStatus)
+	assert.Equal(t, domain.NotificationDeliveryStatusQueued, result.DeliveryStatus)
 	mockRepo.AssertExpectations(t)
 	mockDelivery.AssertExpectations(t)
 	mockNotifier.AssertExpectations(t)
@@ -166,4 +166,104 @@ func TestResendCallbackUsecase_Resend_PaymentReceivedCarriesPaymentRequestID(t *
 
 	assert.NoError(t, err)
 	mockNotifier.AssertExpectations(t)
+}
+
+// An enqueue failure is recorded on the delivery row it was created under,
+// as "failed" with the error, and reported back to the caller.
+func TestResendCallbackUsecase_Resend_EnqueueFailureRecordedOnRow(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	mockNotifier := new(MockNotifier)
+	uc := NewResendCallbackUsecase(mockRepo, mockDelivery, mockNotifier)
+
+	merchantVA := &domain.VAInquiryRecord{VirtualAccountNo: "7000108212221111", NotificationURL: "https://merchant.example.com/callback"}
+	latest := &domain.NotificationDelivery{VirtualAccountNo: merchantVA.VirtualAccountNo, EventType: domain.NotificationEventPaymentReceived}
+
+	var createdID string
+	mockRepo.On("GetVAByVirtualAccountNo", mock.Anything, merchantVA.VirtualAccountNo).Return(merchantVA, nil)
+	mockDelivery.On("GetLatestByVirtualAccountNo", mock.Anything, merchantVA.VirtualAccountNo).Return(latest, nil)
+	mockDelivery.On("Create", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		createdID = args.Get(1).(*domain.NotificationDelivery).ID
+	}).Return(nil)
+	mockNotifier.On("EnqueuePaymentNotification", mock.Anything, mock.Anything).Return(errors.New("redis down"))
+	mockDelivery.On("UpdateDeliveryResult", mock.Anything, mock.Anything, domain.NotificationDeliveryResult{
+		Status:      domain.NotificationDeliveryStatusFailed,
+		ErrorDetail: "redis down",
+	}).Return(nil)
+
+	result, err := uc.Resend(context.Background(), merchantVA.VirtualAccountNo)
+
+	assert.NoError(t, err)
+	assert.Equal(t, domain.NotificationDeliveryStatusFailed, result.DeliveryStatus)
+	mockDelivery.AssertCalled(t, "UpdateDeliveryResult", mock.Anything, createdID, mock.Anything)
+}
+
+// Bulk resend redelivers each original with the payload it was first sent
+// with — not the VA's current state — as a manual delivery carrying its own
+// row id, and skips originals recorded without a payload.
+func TestResendCallbackUsecase_ResendRange_ReusesOriginalPayload(t *testing.T) {
+	mockRepo := new(MockVARepository)
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	mockNotifier := new(MockNotifier)
+	uc := NewResendCallbackUsecase(mockRepo, mockDelivery, mockNotifier)
+
+	from := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	filter := domain.NotificationDeliveryFilter{From: from, To: from.Add(24 * time.Hour), Statuses: []string{domain.NotificationDeliveryStatusFailed}}
+	withPayload := &domain.NotificationDelivery{
+		ID:               "orig-1",
+		VirtualAccountNo: "7000108212221111",
+		EventType:        domain.NotificationEventPaymentReceived,
+		Trigger:          domain.NotificationTriggerAuto,
+		Status:           domain.NotificationDeliveryStatusFailed,
+		Payload: &domain.PaymentNotificationPayload{
+			EventType:        domain.NotificationEventPaymentReceived,
+			VirtualAccountNo: "7000108212221111",
+			TrxID:            "TRX-OLD",
+			PaymentRequestID: "PRQ-OLD",
+			NotificationURL:  "https://merchant.example.com/callback",
+		},
+	}
+	legacy := &domain.NotificationDelivery{ID: "orig-2", VirtualAccountNo: "7000108212222222", EventType: domain.NotificationEventVAExpired}
+
+	mockDelivery.On("ListForResend", mock.Anything, mock.MatchedBy(func(f domain.NotificationDeliveryFilter) bool {
+		return f.From.Equal(filter.From) && f.To.Equal(filter.To) && f.Limit == MaxBulkResend+1
+	})).Return([]*domain.NotificationDelivery{withPayload, legacy}, nil)
+	mockDelivery.On("Create", mock.Anything, mock.MatchedBy(func(d *domain.NotificationDelivery) bool {
+		return d.Trigger == domain.NotificationTriggerManual && d.Status == domain.NotificationDeliveryStatusQueued
+	})).Return(nil)
+	mockNotifier.On("EnqueuePaymentNotification", mock.Anything, mock.MatchedBy(func(p *domain.PaymentNotificationPayload) bool {
+		return p.TrxID == "TRX-OLD" && p.PaymentRequestID == "PRQ-OLD" &&
+			p.Trigger == domain.NotificationTriggerManual && p.DeliveryID != ""
+	})).Return(nil)
+
+	result, err := uc.ResendRange(context.Background(), filter)
+
+	assert.NoError(t, err)
+	assert.Len(t, result.Items, 2)
+	assert.Equal(t, domain.NotificationDeliveryStatusQueued, result.Items[0].Status)
+	assert.Equal(t, "orig-1", result.Items[0].SourceDeliveryID)
+	assert.NotEmpty(t, result.Items[0].DeliveryID)
+	assert.Equal(t, "skipped", result.Items[1].Status)
+	assert.Empty(t, withPayload.Payload.DeliveryID, "the original row's payload must not be mutated")
+	mockRepo.AssertNotCalled(t, "GetVAByVirtualAccountNo", mock.Anything, mock.Anything)
+	mockNotifier.AssertNumberOfCalls(t, "EnqueuePaymentNotification", 1)
+}
+
+// A range matching more than MaxBulkResend callbacks is refused before
+// anything is sent.
+func TestResendCallbackUsecase_ResendRange_TooLarge(t *testing.T) {
+	mockDelivery := new(MockVANotificationDeliveryRepository)
+	mockNotifier := new(MockNotifier)
+	uc := NewResendCallbackUsecase(new(MockVARepository), mockDelivery, mockNotifier)
+
+	rows := make([]*domain.NotificationDelivery, MaxBulkResend+1)
+	for i := range rows {
+		rows[i] = &domain.NotificationDelivery{}
+	}
+	mockDelivery.On("ListForResend", mock.Anything, mock.Anything).Return(rows, nil)
+
+	_, err := uc.ResendRange(context.Background(), domain.NotificationDeliveryFilter{})
+
+	assert.ErrorIs(t, err, domain.ErrResendRangeTooLarge)
+	mockNotifier.AssertNotCalled(t, "EnqueuePaymentNotification", mock.Anything, mock.Anything)
 }

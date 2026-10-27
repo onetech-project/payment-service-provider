@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,22 @@ func (m *MockResendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*domain.ResendCallbackResult), args.Error(1)
+}
+
+func (m *MockResendCallbackUsecase) ResendRange(ctx context.Context, filter domain.NotificationDeliveryFilter) (*domain.BulkResendResult, error) {
+	args := m.Called(ctx, filter)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.BulkResendResult), args.Error(1)
+}
+
+func newAdminResendRangeRequest(body string) (echo.Context, *httptest.ResponseRecorder) {
+	e := echo.New()
+	httpReq := httptest.NewRequest(http.MethodPost, "/admin/callbacks/resend", strings.NewReader(body))
+	httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	return e.NewContext(httpReq, rec), rec
 }
 
 func newAdminResendRequest(vaNo string) (echo.Context, *httptest.ResponseRecorder) {
@@ -111,5 +128,68 @@ func TestAdminResendHandler_Resend(t *testing.T) {
 		var body map[string]string
 		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		assert.Equal(t, "transaction has no registered notification URL", body["error"])
+	})
+}
+
+func TestAdminResendHandler_ResendRange(t *testing.T) {
+	t.Run("200 passes the parsed filter and summarises the outcome", func(t *testing.T) {
+		c, rec := newAdminResendRangeRequest(`{"startTime":"2026-10-27T00:00:00+07:00","endTime":"2026-10-28T00:00:00+07:00","virtualAccountNo":"7000108212221111","status":["failed"]}`)
+		mockUsecase := new(MockResendCallbackUsecase)
+		mockUsecase.On("ResendRange", mock.Anything, mock.MatchedBy(func(f domain.NotificationDeliveryFilter) bool {
+			return f.From.Equal(time.Date(2026, 10, 26, 17, 0, 0, 0, time.UTC)) &&
+				f.To.Equal(time.Date(2026, 10, 27, 17, 0, 0, 0, time.UTC)) &&
+				f.VirtualAccountNo == "7000108212221111" &&
+				len(f.Statuses) == 1 && f.Statuses[0] == "failed"
+		})).Return(&domain.BulkResendResult{
+			ResentAt: time.Now(),
+			Items: []domain.BulkResendItem{
+				{SourceDeliveryID: "a", DeliveryID: "a2", Status: "queued"},
+				{SourceDeliveryID: "b", Status: "skipped", Error: "original payload not recorded"},
+				{SourceDeliveryID: "c", DeliveryID: "c2", Status: "failed", Error: "redis down"},
+			},
+		}, nil)
+
+		err := NewAdminResendHandler(mockUsecase).ResendRange(c)
+
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]interface{}
+		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		assert.EqualValues(t, 3, body["matched"])
+		assert.EqualValues(t, 1, body["queued"])
+		assert.EqualValues(t, 1, body["skipped"])
+		assert.EqualValues(t, 1, body["failed"])
+		mockUsecase.AssertExpectations(t)
+	})
+
+	for _, tc := range []struct{ name, body, wantErr string }{
+		{"400 on malformed body", `{"startTime":`, "invalid request payload"},
+		{"400 on missing startTime", `{"endTime":"2026-10-28T00:00:00+07:00"}`, "startTime must be RFC 3339"},
+		{"400 on reversed range", `{"startTime":"2026-10-28T00:00:00+07:00","endTime":"2026-10-27T00:00:00+07:00"}`, "startTime must be before endTime"},
+		{"400 on range over 31 days", `{"startTime":"2026-01-01T00:00:00Z","endTime":"2026-03-01T00:00:00Z"}`, "range must not exceed 31 days"},
+		{"400 on unknown status", `{"startTime":"2026-10-27T00:00:00Z","endTime":"2026-10-28T00:00:00Z","status":["timeout"]}`, "unknown status: timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rec := newAdminResendRangeRequest(tc.body)
+			mockUsecase := new(MockResendCallbackUsecase)
+
+			err := NewAdminResendHandler(mockUsecase).ResendRange(c)
+
+			assert.NoError(t, err)
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Contains(t, rec.Body.String(), tc.wantErr)
+			mockUsecase.AssertNotCalled(t, "ResendRange", mock.Anything, mock.Anything)
+		})
+	}
+
+	t.Run("422 when the range matches too many callbacks", func(t *testing.T) {
+		c, rec := newAdminResendRangeRequest(`{"startTime":"2026-10-27T00:00:00Z","endTime":"2026-10-28T00:00:00Z"}`)
+		mockUsecase := new(MockResendCallbackUsecase)
+		mockUsecase.On("ResendRange", mock.Anything, mock.Anything).Return(nil, domain.ErrResendRangeTooLarge)
+
+		err := NewAdminResendHandler(mockUsecase).ResendRange(c)
+
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 	})
 }
