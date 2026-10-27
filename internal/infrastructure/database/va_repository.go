@@ -689,8 +689,28 @@ func (r *VARepository) UpdateVAStatus(ctx context.Context, virtualAccountNo stri
 // newest row of any status is returned, so the paid/expired/deleted rejections
 // keep reporting the VA the vendor actually asked about.
 func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*domain.VAInquiryRecord, error) {
+	// inquiry_request_id is COALESCEd like va_type/sub_company: the column is
+	// nullable and a merchant-created VA has no vendor inquiryRequestId until
+	// the first inquiry claims one, so scanning it raw into VAInquiryRecord's
+	// string field fails on exactly the rows this lookup exists to serve — and
+	// that scan error surfaces to the vendor as a bare 5002400. Empty string is
+	// the record's own "not claimed yet" marker (see VAUsecase.Inquiry).
+	//
+	// payment_request_id falls back to the newest va_payments instalment: a
+	// variable-bill VA settles there and leaves the transaction row's own
+	// column NULL, yet the resend callback still owes the merchant the id of
+	// the payment it is redelivering.
 	query := `
-		SELECT ` + vaRecordColumns + `
+		SELECT id, partner_service_id, customer_no, customer_name, virtual_account_no,
+			COALESCE(inquiry_request_id, ''), trx_id, notification_url, status, total_amount, currency,
+			COALESCE(va_type, ''), COALESCE(sub_company, ''), COALESCE(paid_amount, 0)::text,
+			COALESCE(payment_request_id, (
+				SELECT p.payment_request_id FROM va_payments p
+				WHERE p.transaction_id = va_transactions.id AND p.payment_request_id IS NOT NULL
+				ORDER BY p.created_at DESC
+				LIMIT 1
+			), ''),
+			free_texts, expired_date, created_at, updated_at
 		FROM va_transactions
 		WHERE virtual_account_no = $1
 		ORDER BY
@@ -703,54 +723,10 @@ func (r *VARepository) GetVAByVirtualAccountNo(ctx context.Context, virtualAccou
 			END,
 			created_at DESC
 		LIMIT 1`
-	return r.scanVARecord(ctx, query, virtualAccountNo)
-}
 
-// GetVAByVirtualAccountNoAndTrxID retrieves one specific transaction cycle of
-// a virtual account number, identified by the merchant's trxId. Unlike
-// GetVAByVirtualAccountNo it does not rank by payability: a reused VA's
-// settled cycle stays reachable after a newer bill was opened on it, which is
-// exactly what the resend callback needs to redeliver that cycle's callback.
-// trx_id is not unique, so the newest matching row wins.
-func (r *VARepository) GetVAByVirtualAccountNoAndTrxID(ctx context.Context, virtualAccountNo, trxID string) (*domain.VAInquiryRecord, error) {
-	query := `
-		SELECT ` + vaRecordColumns + `
-		FROM va_transactions
-		WHERE virtual_account_no = $1 AND trx_id = $2
-		ORDER BY created_at DESC
-		LIMIT 1`
-	return r.scanVARecord(ctx, query, virtualAccountNo, trxID)
-}
-
-// vaRecordColumns is the column set scanVARecord reads, shared by the
-// virtualAccountNo lookups.
-//
-// inquiry_request_id is COALESCEd like va_type/sub_company: the column is
-// nullable and a merchant-created VA has no vendor inquiryRequestId until
-// the first inquiry claims one, so scanning it raw into VAInquiryRecord's
-// string field fails on exactly the rows this lookup exists to serve — and
-// that scan error surfaces to the vendor as a bare 5002400. Empty string is
-// the record's own "not claimed yet" marker (see VAUsecase.Inquiry).
-//
-// payment_request_id falls back to the newest va_payments instalment: a
-// variable-bill VA settles there and leaves the transaction row's own
-// column NULL, yet the resend callback still owes the merchant the id of
-// the payment it is redelivering.
-const vaRecordColumns = `id, partner_service_id, customer_no, customer_name, virtual_account_no,
-			COALESCE(inquiry_request_id, ''), trx_id, notification_url, status, total_amount, currency,
-			COALESCE(va_type, ''), COALESCE(sub_company, ''), COALESCE(paid_amount, 0)::text,
-			COALESCE(payment_request_id, (
-				SELECT p.payment_request_id FROM va_payments p
-				WHERE p.transaction_id = va_transactions.id AND p.payment_request_id IS NOT NULL
-				ORDER BY p.created_at DESC
-				LIMIT 1
-			), ''),
-			free_texts, expired_date, created_at, updated_at`
-
-func (r *VARepository) scanVARecord(ctx context.Context, query string, args ...any) (*domain.VAInquiryRecord, error) {
 	record := &domain.VAInquiryRecord{}
 	var freeTexts []byte
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
+	err := r.pool.QueryRow(ctx, query, virtualAccountNo).Scan(
 		&record.ID,
 		&record.PartnerServiceID,
 		&record.CustomerNo,

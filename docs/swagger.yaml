@@ -332,11 +332,6 @@ definitions:
       responseMessage:
         type: string
     type: object
-  domain.SNAPTime:
-    properties:
-      time.Time:
-        type: string
-    type: object
   domain.SNAPTokenRequest:
     properties:
       additionalInfo:
@@ -722,15 +717,9 @@ definitions:
       totalAmount:
         $ref: '#/definitions/domain.Amount'
       transactionDate:
-        $ref: '#/definitions/domain.SNAPTime'
+        type: string
       trxDateTime:
-        allOf:
-        - $ref: '#/definitions/domain.SNAPTime'
-        description: |-
-          SNAPTime, not *time.Time: BCA blanks every field of this envelope on a
-          4042601 "Transaction Not Found" — `"transactionDate":""` — and a plain
-          time.Time cannot decode that, failing the whole response and turning a
-          clear answer into outcome=error. See domain.SNAPTime.
+        type: string
       virtualAccountNo:
         type: string
     type: object
@@ -738,10 +727,6 @@ definitions:
     properties:
       additionalInfo:
         additionalProperties: true
-        description: |-
-          No omitempty: it would defeat the MarshalJSON below, which substitutes
-          an empty map — encoding/json drops the field before the replacement can
-          be seen. VAStatusResponse's equivalent tag is bare for the same reason.
         type: object
       customerNo:
         type: string
@@ -839,13 +824,6 @@ definitions:
       error:
         type: string
     type: object
-  handler.resendCallbackRequest:
-    properties:
-      trx_id:
-        type: string
-      trxId:
-        type: string
-    type: object
   handler.resendCallbackResponse:
     properties:
       deliveryStatus:
@@ -853,8 +831,6 @@ definitions:
       eventType:
         type: string
       resentAt:
-        type: string
-      trxId:
         type: string
       virtualAccountNo:
         type: string
@@ -1165,9 +1141,8 @@ paths:
   /admin/transactions/{virtualAccountNo}/resend-callback:
     post:
       description: 'Admin-only: redelivers the most recent callback event (payment.received
-        or va.expired) on record for the given virtualAccountNo. An optional trxId
-        in the body targets that specific transaction cycle of a reused VA instead
-        of its current one. Does not mutate transaction state.'
+        or va.expired) on record for the given virtualAccountNo. Does not mutate transaction
+        state.'
       parameters:
       - description: Admin API key
         in: header
@@ -1179,20 +1154,11 @@ paths:
         name: virtualAccountNo
         required: true
         type: string
-      - description: 'Optional: trxId of the transaction cycle to resend'
-        in: body
-        name: request
-        schema:
-          $ref: '#/definitions/handler.resendCallbackRequest'
       responses:
         "200":
           description: OK
           schema:
             $ref: '#/definitions/handler.resendCallbackResponse'
-        "400":
-          description: Invalid request payload
-          schema:
-            $ref: '#/definitions/handler.resendCallbackErrorResponse'
         "401":
           description: Unauthorized
           schema:

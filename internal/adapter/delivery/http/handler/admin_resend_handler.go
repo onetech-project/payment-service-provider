@@ -3,7 +3,6 @@ package handler
 import (
 	"errors"
 	"net/http"
-	"strings"
 
 	"backbone-new/internal/domain"
 
@@ -22,17 +21,8 @@ func NewAdminResendHandler(resendUsecase domain.ResendCallbackUsecase) *AdminRes
 	return &AdminResendHandler{resendUsecase: resendUsecase}
 }
 
-// resendCallbackRequest is the optional request body. trxId pins the
-// transaction cycle of a reused virtualAccountNo; trx_id is accepted as an
-// alias for callers that use the column name.
-type resendCallbackRequest struct {
-	TrxID      string `json:"trxId"`
-	TrxIDSnake string `json:"trx_id"`
-}
-
 type resendCallbackResponse struct {
 	VirtualAccountNo string `json:"virtualAccountNo"`
-	TrxID            string `json:"trxId,omitempty"`
 	EventType        string `json:"eventType"`
 	ResentAt         string `json:"resentAt"`
 	DeliveryStatus   string `json:"deliveryStatus"`
@@ -45,13 +35,11 @@ type resendCallbackErrorResponse struct {
 // Resend godoc
 // @Tags Admin
 // @Summary Resend the most recent merchant callback for a transaction
-// @Description Admin-only: redelivers the most recent callback event (payment.received or va.expired) on record for the given virtualAccountNo. An optional trxId in the body targets that specific transaction cycle of a reused VA instead of its current one. Does not mutate transaction state.
+// @Description Admin-only: redelivers the most recent callback event (payment.received or va.expired) on record for the given virtualAccountNo. Does not mutate transaction state.
 // @Security AdminAPIKey
 // @Param X-Admin-API-Key header string true "Admin API key"
 // @Param virtualAccountNo path string true "Virtual account number"
-// @Param request body resendCallbackRequest false "Optional: trxId of the transaction cycle to resend"
 // @Success 200 {object} resendCallbackResponse
-// @Failure 400 {object} resendCallbackErrorResponse "Invalid request payload"
 // @Failure 401 {object} resendCallbackErrorResponse "Unauthorized"
 // @Failure 404 {object} resendCallbackErrorResponse "Transaction not found"
 // @Failure 422 {object} resendCallbackErrorResponse "No callback to resend / no notification URL"
@@ -62,17 +50,8 @@ func (h *AdminResendHandler) Resend(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, resendCallbackErrorResponse{Error: "transaction not found"})
 	}
 
-	var req resendCallbackRequest
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, resendCallbackErrorResponse{Error: "invalid request payload"})
-	}
-	trxID := strings.TrimSpace(req.TrxID)
-	if trxID == "" {
-		trxID = strings.TrimSpace(req.TrxIDSnake)
-	}
-
 	ctx := c.Request().Context()
-	result, err := h.resendUsecase.Resend(ctx, virtualAccountNo, trxID)
+	result, err := h.resendUsecase.Resend(ctx, virtualAccountNo)
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrMerchantVANotFound):
@@ -88,7 +67,6 @@ func (h *AdminResendHandler) Resend(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, resendCallbackResponse{
 		VirtualAccountNo: result.VirtualAccountNo,
-		TrxID:            result.TrxID,
 		EventType:        result.EventType,
 		ResentAt:         result.ResentAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		DeliveryStatus:   result.DeliveryStatus,

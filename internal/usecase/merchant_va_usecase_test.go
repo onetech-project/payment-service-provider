@@ -142,14 +142,6 @@ func (m *MockMerchantVARepository) GetVAByVirtualAccountNo(ctx context.Context, 
 	return args.Get(0).(*domain.VAInquiryRecord), args.Error(1)
 }
 
-func (m *MockMerchantVARepository) GetVAByVirtualAccountNoAndTrxID(ctx context.Context, virtualAccountNo, trxID string) (*domain.VAInquiryRecord, error) {
-	args := m.Called(ctx, virtualAccountNo, trxID)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*domain.VAInquiryRecord), args.Error(1)
-}
-
 func (m *MockMerchantVARepository) NextCustomerNoSequence(ctx context.Context, vaType string) (string, error) {
 	args := m.Called(ctx, vaType)
 	return args.String(0), args.Error(1)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,8 +20,8 @@ type MockResendCallbackUsecase struct {
 	mock.Mock
 }
 
-func (m *MockResendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo, trxID string) (*domain.ResendCallbackResult, error) {
-	args := m.Called(ctx, virtualAccountNo, trxID)
+func (m *MockResendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo string) (*domain.ResendCallbackResult, error) {
+	args := m.Called(ctx, virtualAccountNo)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -30,15 +29,8 @@ func (m *MockResendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo
 }
 
 func newAdminResendRequest(vaNo string) (echo.Context, *httptest.ResponseRecorder) {
-	return newAdminResendRequestWithBody(vaNo, "")
-}
-
-func newAdminResendRequestWithBody(vaNo, body string) (echo.Context, *httptest.ResponseRecorder) {
 	e := echo.New()
-	httpReq := httptest.NewRequest(http.MethodPost, "/admin/transactions/"+vaNo+"/resend-callback", strings.NewReader(body))
-	if body != "" {
-		httpReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
-	}
+	httpReq := httptest.NewRequest(http.MethodPost, "/admin/transactions/"+vaNo+"/resend-callback", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(httpReq, rec)
 	c.SetParamNames("virtualAccountNo")
@@ -57,7 +49,7 @@ func TestAdminResendHandler_Resend(t *testing.T) {
 		c, rec := newAdminResendRequest("7000108212221111")
 		mockUsecase := new(MockResendCallbackUsecase)
 		resentAt := time.Date(2026, 7, 28, 10, 15, 0, 0, time.UTC)
-		mockUsecase.On("Resend", mock.Anything, "7000108212221111", "").Return(&domain.ResendCallbackResult{
+		mockUsecase.On("Resend", mock.Anything, "7000108212221111").Return(&domain.ResendCallbackResult{
 			VirtualAccountNo: "7000108212221111",
 			EventType:        "va.expired",
 			ResentAt:         resentAt,
@@ -79,7 +71,7 @@ func TestAdminResendHandler_Resend(t *testing.T) {
 	t.Run("404 when transaction not found", func(t *testing.T) {
 		c, rec := newAdminResendRequest("does-not-exist")
 		mockUsecase := new(MockResendCallbackUsecase)
-		mockUsecase.On("Resend", mock.Anything, "does-not-exist", "").Return(nil, domain.ErrMerchantVANotFound)
+		mockUsecase.On("Resend", mock.Anything, "does-not-exist").Return(nil, domain.ErrMerchantVANotFound)
 
 		h := NewAdminResendHandler(mockUsecase)
 		err := h.Resend(c)
@@ -94,7 +86,7 @@ func TestAdminResendHandler_Resend(t *testing.T) {
 	t.Run("422 when no delivery record exists", func(t *testing.T) {
 		c, rec := newAdminResendRequest("va-no-delivery")
 		mockUsecase := new(MockResendCallbackUsecase)
-		mockUsecase.On("Resend", mock.Anything, "va-no-delivery", "").Return(nil, domain.ErrResendNoDeliveryRecord)
+		mockUsecase.On("Resend", mock.Anything, "va-no-delivery").Return(nil, domain.ErrResendNoDeliveryRecord)
 
 		h := NewAdminResendHandler(mockUsecase)
 		err := h.Resend(c)
@@ -109,7 +101,7 @@ func TestAdminResendHandler_Resend(t *testing.T) {
 	t.Run("422 when no notification URL registered", func(t *testing.T) {
 		c, rec := newAdminResendRequest("va-no-url")
 		mockUsecase := new(MockResendCallbackUsecase)
-		mockUsecase.On("Resend", mock.Anything, "va-no-url", "").Return(nil, domain.ErrResendNoNotificationURL)
+		mockUsecase.On("Resend", mock.Anything, "va-no-url").Return(nil, domain.ErrResendNoNotificationURL)
 
 		h := NewAdminResendHandler(mockUsecase)
 		err := h.Resend(c)
@@ -119,44 +111,5 @@ func TestAdminResendHandler_Resend(t *testing.T) {
 		var body map[string]string
 		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		assert.Equal(t, "transaction has no registered notification URL", body["error"])
-	})
-
-	for _, tc := range []struct{ name, body string }{
-		{"trxId body is passed to the usecase", `{"trxId":"TRX-001"}`},
-		{"trx_id body is accepted as an alias", `{"trx_id":"TRX-001"}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c, rec := newAdminResendRequestWithBody("7000108212221111", tc.body)
-			mockUsecase := new(MockResendCallbackUsecase)
-			mockUsecase.On("Resend", mock.Anything, "7000108212221111", "TRX-001").Return(&domain.ResendCallbackResult{
-				VirtualAccountNo: "7000108212221111",
-				TrxID:            "TRX-001",
-				EventType:        "payment.received",
-				ResentAt:         time.Now(),
-				DeliveryStatus:   "success",
-			}, nil)
-
-			h := NewAdminResendHandler(mockUsecase)
-			err := h.Resend(c)
-
-			assert.NoError(t, err)
-			assert.Equal(t, http.StatusOK, rec.Code)
-			var body map[string]interface{}
-			assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-			assert.Equal(t, "TRX-001", body["trxId"])
-			mockUsecase.AssertExpectations(t)
-		})
-	}
-
-	t.Run("400 on malformed body", func(t *testing.T) {
-		c, rec := newAdminResendRequestWithBody("7000108212221111", `{"trxId":`)
-		mockUsecase := new(MockResendCallbackUsecase)
-
-		h := NewAdminResendHandler(mockUsecase)
-		err := h.Resend(c)
-
-		assert.NoError(t, err)
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-		mockUsecase.AssertNotCalled(t, "Resend", mock.Anything, mock.Anything, mock.Anything)
 	})
 }

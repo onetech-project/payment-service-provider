@@ -463,9 +463,6 @@ type VARepository interface {
 	SaveBillDetails(ctx context.Context, transactionID string, bills []BillDetail) error
 	UpdateVAStatus(ctx context.Context, virtualAccountNo string, status string) error
 	GetVAByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*VAInquiryRecord, error)
-	// GetVAByVirtualAccountNoAndTrxID resolves one specific transaction cycle
-	// of a (possibly reused) virtual account number by the merchant's trxId.
-	GetVAByVirtualAccountNoAndTrxID(ctx context.Context, virtualAccountNo, trxID string) (*VAInquiryRecord, error)
 	// Static/Dynamic VA methods (feature 006-static-dynamic-va)
 	NextCustomerNoSequence(ctx context.Context, vaType string) (string, error)
 	RegisterStaticCustomerNo(ctx context.Context, partnerServiceID, customerNo string) error
@@ -1107,7 +1104,6 @@ type VANotificationDeliveryRepository interface {
 // success, mapped 1:1 to the resend-callback.md 200 OK response body.
 type ResendCallbackResult struct {
 	VirtualAccountNo string
-	TrxID            string
 	EventType        string
 	ResentAt         time.Time
 	DeliveryStatus   string // "success" | "failed"
@@ -1116,8 +1112,5 @@ type ResendCallbackResult struct {
 // ResendCallbackUsecase defines the admin-only manual callback resend
 // operation (feature 007-merchant-expiry-callback, US2).
 type ResendCallbackUsecase interface {
-	// Resend redelivers the callback for virtualAccountNo. trxID is optional:
-	// empty targets the VA's current transaction cycle, non-empty targets the
-	// cycle created with that trxId.
-	Resend(ctx context.Context, virtualAccountNo, trxID string) (*ResendCallbackResult, error)
+	Resend(ctx context.Context, virtualAccountNo string) (*ResendCallbackResult, error)
 }

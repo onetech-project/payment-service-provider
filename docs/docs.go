@@ -452,7 +452,7 @@ const docTemplate = `{
                         "AdminAPIKey": []
                     }
                 ],
-                "description": "Admin-only: redelivers the most recent callback event (payment.received or va.expired) on record for the given virtualAccountNo. An optional trxId in the body targets that specific transaction cycle of a reused VA instead of its current one. Does not mutate transaction state.",
+                "description": "Admin-only: redelivers the most recent callback event (payment.received or va.expired) on record for the given virtualAccountNo. Does not mutate transaction state.",
                 "tags": [
                     "Admin"
                 ],
@@ -471,14 +471,6 @@ const docTemplate = `{
                         "name": "virtualAccountNo",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "description": "Optional: trxId of the transaction cycle to resend",
-                        "name": "request",
-                        "in": "body",
-                        "schema": {
-                            "$ref": "#/definitions/handler.resendCallbackRequest"
-                        }
                     }
                 ],
                 "responses": {
@@ -486,12 +478,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/handler.resendCallbackResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid request payload",
-                        "schema": {
-                            "$ref": "#/definitions/handler.resendCallbackErrorResponse"
                         }
                     },
                     "401": {
@@ -1975,14 +1961,6 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.SNAPTime": {
-            "type": "object",
-            "properties": {
-                "time.Time": {
-                    "type": "string"
-                }
-            }
-        },
         "domain.SNAPTokenRequest": {
             "type": "object",
             "properties": {
@@ -2526,15 +2504,10 @@ const docTemplate = `{
                     "$ref": "#/definitions/domain.Amount"
                 },
                 "transactionDate": {
-                    "$ref": "#/definitions/domain.SNAPTime"
+                    "type": "string"
                 },
                 "trxDateTime": {
-                    "description": "SNAPTime, not *time.Time: BCA blanks every field of this envelope on a\n4042601 \"Transaction Not Found\" — ` + "`" + `\"transactionDate\":\"\"` + "`" + ` — and a plain\ntime.Time cannot decode that, failing the whole response and turning a\nclear answer into outcome=error. See domain.SNAPTime.",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/domain.SNAPTime"
-                        }
-                    ]
+                    "type": "string"
                 },
                 "virtualAccountNo": {
                     "type": "string"
@@ -2545,7 +2518,6 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "additionalInfo": {
-                    "description": "No omitempty: it would defeat the MarshalJSON below, which substitutes\nan empty map — encoding/json drops the field before the replacement can\nbe seen. VAStatusResponse's equivalent tag is bare for the same reason.",
                     "type": "object",
                     "additionalProperties": true
                 },
@@ -2693,17 +2665,6 @@ const docTemplate = `{
                 }
             }
         },
-        "handler.resendCallbackRequest": {
-            "type": "object",
-            "properties": {
-                "trxId": {
-                    "type": "string"
-                },
-                "trx_id": {
-                    "type": "string"
-                }
-            }
-        },
         "handler.resendCallbackResponse": {
             "type": "object",
             "properties": {
@@ -2714,9 +2675,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "resentAt": {
-                    "type": "string"
-                },
-                "trxId": {
                     "type": "string"
                 },
                 "virtualAccountNo": {
