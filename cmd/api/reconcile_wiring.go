@@ -31,6 +31,7 @@ import (
 func buildReconciler(
 	repo domain.ReconciliationRepository,
 	notifier domain.NotificationEnqueuer,
+	deliveryRepo domain.VANotificationDeliveryRepository,
 	vendorConfigs []*config.VendorConfig,
 ) domain.VAStatusReconciler {
 	if getEnvOrDefault("RECONCILE_ENABLED", "false") != "true" {
@@ -69,7 +70,7 @@ func buildReconciler(
 	log.Printf("Vendor status reconciliation enabled: vendor=%s/%s pending_after=%s batch=%d",
 		vendor, channel, cfg.PendingAfter, cfg.BatchSize)
 
-	return usecase.NewReconciliationUsecase(repo, gateway, notifier, cfg)
+	return usecase.NewReconciliationUsecase(repo, gateway, notifier, deliveryRepo, cfg)
 }
 
 // findVendorConfig locates the config for one vendor/channel pair.

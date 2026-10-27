@@ -66,38 +66,17 @@ func (u *resendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo str
 		payload.PaymentRequestID = merchantVA.PaymentRequestID
 	}
 
-	// 5. Enqueue via the existing NotificationEnqueuer (same signing/delivery
-	// path as auto-triggered notifications).
+	// 5. Record (trigger="manual") and enqueue via the existing
+	// NotificationEnqueuer — same signing/delivery path as auto-triggered
+	// notifications (FR-018). The worker writes the outcome back onto the row.
+	// Does NOT touch va_transactions.status (FR-019).
 	resentAt := time.Now()
 	// TrxDateTime is stamped with the resend time so this payload's bytes
 	// differ from the original auto-triggered delivery (and from any earlier
-	// resend). Without this, a resend of the same event within Asynq's
-	// asynq.Unique(5*time.Minute) window on Client.EnqueuePaymentNotification
-	// hashes identically to the prior enqueue and is silently rejected as a
-	// duplicate ("task already exists") — resends must always go through
-	// (spec.md Edge Cases: "no dedup/rate-limit... each call is a deliberate
-	// resend").
+	// resend) — kept from when manual resends shared the auto-triggered
+	// uniqueness window; harmless now that they skip it.
 	payload.TrxDateTime = resentAt.Format(time.RFC3339)
-	deliveryStatus := domain.NotificationDeliveryStatusSuccess
-	errorDetail := ""
-	if u.notifier == nil {
-		deliveryStatus = domain.NotificationDeliveryStatusFailed
-		errorDetail = "notification enqueuer unavailable"
-	} else if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
-		deliveryStatus = domain.NotificationDeliveryStatusFailed
-		errorDetail = err.Error()
-	}
-
-	// 6. Record this attempt (trigger="manual") for audit (FR-018). Does NOT
-	// touch va_transactions.status (FR-019).
-	_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
-		VirtualAccountNo: virtualAccountNo,
-		EventType:        latest.EventType,
-		Trigger:          domain.NotificationTriggerManual,
-		Status:           deliveryStatus,
-		AttemptedAt:      resentAt,
-		ErrorDetail:      errorDetail,
-	})
+	_, deliveryStatus, _ := dispatchNotification(ctx, u.notifier, u.deliveryRepo, payload, virtualAccountNo, latest.EventType, domain.NotificationTriggerManual)
 
 	log.Printf("event=resend_callback virtual_account_no=%s event_type=%s trigger=manual status=%s", virtualAccountNo, latest.EventType, deliveryStatus)
 
@@ -107,6 +86,55 @@ func (u *resendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo str
 		ResentAt:         resentAt,
 		DeliveryStatus:   deliveryStatus,
 	}, nil
+}
+
+// MaxBulkResend caps how many callbacks one ResendRange call redelivers. A
+// range matching more is refused outright rather than half-sent: the operator
+// narrows it and nothing is left wondering which part went out.
+const MaxBulkResend = 500
+
+// ResendRange redelivers every original (trigger="auto") callback recorded in
+// filter's time range, optionally for one VA.
+//
+// Each resend reuses the payload the original was enqueued with, not the VA's
+// current state: a VA is reusable across transaction cycles, so rebuilding
+// from current state would resend the wrong cycle's data. Rows recorded
+// before payloads were stored (migration 000018) have nothing to resend from
+// and are reported as skipped.
+func (u *resendCallbackUsecase) ResendRange(ctx context.Context, filter domain.NotificationDeliveryFilter) (*domain.BulkResendResult, error) {
+	filter.Limit = MaxBulkResend + 1
+	originals, err := u.deliveryRepo.ListForResend(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	if len(originals) > MaxBulkResend {
+		return nil, domain.ErrResendRangeTooLarge
+	}
+
+	result := &domain.BulkResendResult{Items: make([]domain.BulkResendItem, 0, len(originals)), ResentAt: time.Now()}
+	for _, original := range originals {
+		item := domain.BulkResendItem{
+			SourceDeliveryID: original.ID,
+			VirtualAccountNo: original.VirtualAccountNo,
+			EventType:        original.EventType,
+		}
+		switch {
+		case original.Payload == nil:
+			item.Status = "skipped"
+			item.Error = "original payload not recorded"
+		case original.Payload.NotificationURL == "":
+			item.Status = "skipped"
+			item.Error = domain.ErrResendNoNotificationURL.Error()
+		default:
+			payload := *original.Payload
+			item.DeliveryID, item.Status, item.Error = dispatchNotification(ctx, u.notifier, u.deliveryRepo, &payload, original.VirtualAccountNo, original.EventType, domain.NotificationTriggerManual)
+		}
+		result.Items = append(result.Items, item)
+	}
+
+	log.Printf("event=resend_callback_range from=%s to=%s virtual_account_no=%s matched=%d trigger=manual",
+		filter.From.Format(time.RFC3339), filter.To.Format(time.RFC3339), filter.VirtualAccountNo, len(originals))
+	return result, nil
 }
 
 var _ domain.ResendCallbackUsecase = (*resendCallbackUsecase)(nil)

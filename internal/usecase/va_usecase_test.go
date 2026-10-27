@@ -883,6 +883,19 @@ func (m *MockVANotificationDeliveryRepository) ExistsByVirtualAccountNoAndEventT
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockVANotificationDeliveryRepository) UpdateDeliveryResult(ctx context.Context, id string, result domain.NotificationDeliveryResult) error {
+	args := m.Called(ctx, id, result)
+	return args.Error(0)
+}
+
+func (m *MockVANotificationDeliveryRepository) ListForResend(ctx context.Context, filter domain.NotificationDeliveryFilter) ([]*domain.NotificationDelivery, error) {
+	args := m.Called(ctx, filter)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.NotificationDelivery), args.Error(1)
+}
+
 // T008: expired inquiry returns 4042419, transitions status, enqueues one va.expired notification.
 func TestVAUsecase_Inquiry_Expired_ReturnsExpiredResponseAndNotifies(t *testing.T) {
 	mockRepo := new(MockVARepository)
@@ -916,7 +929,7 @@ func TestVAUsecase_Inquiry_Expired_ReturnsExpiredResponseAndNotifies(t *testing.
 		return p.EventType == domain.NotificationEventVAExpired && p.VirtualAccountNo == merchantVA.VirtualAccountNo
 	})).Return(nil)
 	mockDelivery.On("Create", mock.Anything, mock.MatchedBy(func(d *domain.NotificationDelivery) bool {
-		return d.EventType == domain.NotificationEventVAExpired && d.Trigger == domain.NotificationTriggerAuto && d.Status == domain.NotificationDeliveryStatusSuccess
+		return d.EventType == domain.NotificationEventVAExpired && d.Trigger == domain.NotificationTriggerAuto && d.Status == domain.NotificationDeliveryStatusQueued && d.Payload != nil
 	})).Return(nil)
 
 	mockRepo.On("GetVABillDetails", mock.Anything, merchantVA.ID).Return([]domain.BillDetail(nil), nil)

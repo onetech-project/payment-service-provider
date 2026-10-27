@@ -332,6 +332,11 @@ definitions:
       responseMessage:
         type: string
     type: object
+  domain.SNAPTime:
+    properties:
+      time.Time:
+        type: string
+    type: object
   domain.SNAPTokenRequest:
     properties:
       additionalInfo:
@@ -717,9 +722,15 @@ definitions:
       totalAmount:
         $ref: '#/definitions/domain.Amount'
       transactionDate:
-        type: string
+        $ref: '#/definitions/domain.SNAPTime'
       trxDateTime:
-        type: string
+        allOf:
+        - $ref: '#/definitions/domain.SNAPTime'
+        description: |-
+          SNAPTime, not *time.Time: BCA blanks every field of this envelope on a
+          4042601 "Transaction Not Found" — `"transactionDate":""` — and a plain
+          time.Time cannot decode that, failing the whole response and turning a
+          clear answer into outcome=error. See domain.SNAPTime.
       virtualAccountNo:
         type: string
     type: object
@@ -727,6 +738,10 @@ definitions:
     properties:
       additionalInfo:
         additionalProperties: true
+        description: |-
+          No omitempty: it would defeat the MarshalJSON below, which substitutes
+          an empty map — encoding/json drops the field before the replacement can
+          be seen. VAStatusResponse's equivalent tag is bare for the same reason.
         type: object
       customerNo:
         type: string
@@ -835,6 +850,53 @@ definitions:
       virtualAccountNo:
         type: string
     type: object
+  handler.resendRangeItem:
+    properties:
+      deliveryId:
+        type: string
+      error:
+        type: string
+      eventType:
+        type: string
+      sourceDeliveryId:
+        type: string
+      status:
+        type: string
+      virtualAccountNo:
+        type: string
+    type: object
+  handler.resendRangeRequest:
+    properties:
+      endTime:
+        example: "2026-10-28T00:00:00+07:00"
+        type: string
+      startTime:
+        example: "2026-10-27T00:00:00+07:00"
+        type: string
+      status:
+        items:
+          type: string
+        type: array
+      virtualAccountNo:
+        type: string
+    type: object
+  handler.resendRangeResponse:
+    properties:
+      failed:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/handler.resendRangeItem'
+        type: array
+      matched:
+        type: integer
+      queued:
+        type: integer
+      resentAt:
+        type: string
+      skipped:
+        type: integer
+    type: object
 info:
   contact: {}
   description: |-
@@ -845,6 +907,49 @@ info:
   title: SNAP Payment Integration Gateway API
   version: "1.0"
 paths:
+  /admin/callbacks/resend:
+    post:
+      description: 'Admin-only: redelivers every original (auto-triggered) callback
+        recorded in [startTime, endTime), optionally for one virtualAccountNo and/or
+        only those whose delivery ended in the given statuses (e.g. ["failed"] for
+        undelivered ones, timeouts included). Each callback is resent with the payload
+        it was first sent with. Callbacks recorded before payloads were stored are
+        reported as skipped. Range at most 31 days and 500 callbacks per call. Does
+        not mutate transaction state.'
+      parameters:
+      - description: Admin API key
+        in: header
+        name: X-Admin-API-Key
+        required: true
+        type: string
+      - description: Time range and optional filters
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.resendRangeRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.resendRangeResponse'
+        "400":
+          description: Invalid payload or range
+          schema:
+            $ref: '#/definitions/handler.resendCallbackErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.resendCallbackErrorResponse'
+        "422":
+          description: Too many callbacks in range
+          schema:
+            $ref: '#/definitions/handler.resendCallbackErrorResponse'
+      security:
+      - AdminAPIKey: []
+      summary: Bulk resend merchant callbacks in a time range
+      tags:
+      - Admin
   /admin/clients:
     post:
       description: 'Creates a new client_app trust-anchor record and, if publicKeyPem

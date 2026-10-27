@@ -45,20 +45,24 @@ var DefaultReconcileConfig = ReconcileConfig{
 // service holds no evidence that anything happened. Only the vendor knows, and
 // only service code 26 can ask it.
 type ReconciliationUsecase struct {
-	repo     domain.ReconciliationRepository
-	gateway  domain.VAGateway
-	notifier domain.NotificationEnqueuer
-	config   ReconcileConfig
-	now      func() time.Time
+	repo         domain.ReconciliationRepository
+	gateway      domain.VAGateway
+	notifier     domain.NotificationEnqueuer
+	deliveryRepo domain.VANotificationDeliveryRepository
+	config       ReconcileConfig
+	now          func() time.Time
 }
 
 // NewReconciliationUsecase creates the reconciler. gateway is the outbound
 // vendor client; notifier may be nil, in which case a recovered payment is
-// still recorded but no merchant callback is sent.
+// still recorded but no merchant callback is sent. deliveryRepo may be nil,
+// in which case the recovered callback is sent but not audited in
+// va_notification_deliveries.
 func NewReconciliationUsecase(
 	repo domain.ReconciliationRepository,
 	gateway domain.VAGateway,
 	notifier domain.NotificationEnqueuer,
+	deliveryRepo domain.VANotificationDeliveryRepository,
 	cfg ReconcileConfig,
 ) *ReconciliationUsecase {
 	if cfg.PendingAfter <= 0 {
@@ -68,11 +72,12 @@ func NewReconciliationUsecase(
 		cfg.BatchSize = DefaultReconcileConfig.BatchSize
 	}
 	return &ReconciliationUsecase{
-		repo:     repo,
-		gateway:  gateway,
-		notifier: notifier,
-		config:   cfg,
-		now:      time.Now,
+		repo:         repo,
+		gateway:      gateway,
+		notifier:     notifier,
+		deliveryRepo: deliveryRepo,
+		config:       cfg,
+		now:          time.Now,
 	}
 }
 
@@ -370,8 +375,12 @@ func (u *ReconciliationUsecase) notifyRecovered(
 		NotificationURL:  record.NotificationURL,
 	}
 
-	if err := u.notifier.EnqueuePaymentNotification(ctx, payload); err != nil {
-		log.Printf("event=va_reconcile_notify_failed virtual_account_no=%s err=%v", record.VirtualAccountNo, err)
+	// Audited like every other auto-triggered callback, so a recovered
+	// payment whose callback then times out is visible — and bulk-resendable
+	// — instead of existing only in a log line.
+	_, status, errorDetail := dispatchNotification(ctx, u.notifier, u.deliveryRepo, payload, record.VirtualAccountNo, domain.NotificationEventPaymentReceived, domain.NotificationTriggerAuto)
+	if status == domain.NotificationDeliveryStatusFailed {
+		log.Printf("event=va_reconcile_notify_failed virtual_account_no=%s err=%s", record.VirtualAccountNo, errorDetail)
 	}
 }
 

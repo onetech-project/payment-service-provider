@@ -44,6 +44,12 @@ var (
 	// Resend Callback Error Constants (feature 007-merchant-expiry-callback)
 	ErrResendNoDeliveryRecord  = errors.New("no callback delivery on record for this transaction")
 	ErrResendNoNotificationURL = errors.New("transaction has no registered notification URL")
+	// ErrResendRangeTooLarge reports a bulk resend range matching more
+	// callbacks than one call may redeliver.
+	ErrResendRangeTooLarge = errors.New("too many callbacks in range")
+	// ErrNotificationDuplicate reports an enqueue rejected as identical to a
+	// callback still inside the queue's uniqueness window.
+	ErrNotificationDuplicate = errors.New("identical notification already enqueued")
 
 	// Static/Dynamic VA Error Constants (feature 006-static-dynamic-va)
 	ErrVACustomerNoAlreadyRegistered = errors.New("customerNo already registered for this partnerServiceId")

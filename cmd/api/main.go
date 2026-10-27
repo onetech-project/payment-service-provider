@@ -308,7 +308,7 @@ func main() {
 
 	// Asynq Worker for payment notifications
 	notificationSecret := getEnvOrDefault("NOTIFICATION_SECRET", "default-secret")
-	paymentWorker := worker.NewPaymentNotificationWorker(notificationSecret)
+	paymentWorker := worker.NewPaymentNotificationWorker(notificationSecret, deliveryRepo)
 	asynqMux := asynq.NewServeMux()
 	worker.RegisterWorker(asynqMux, paymentWorker)
 
@@ -329,7 +329,7 @@ func main() {
 	// Off by default: it makes OUTBOUND calls to a vendor, so it must not
 	// start running the moment someone deploys this build. Operations enables
 	// it once the vendor's outbound credentials are provisioned.
-	reconciler := buildReconciler(vaRepo, notifier, vendorConfigs)
+	reconciler := buildReconciler(vaRepo, notifier, deliveryRepo, vendorConfigs)
 	adminReconcileHandler := handler.NewAdminReconcileHandler(reconciler)
 	if reconciler != nil {
 		worker.RegisterReconcileWorker(asynqMux, worker.NewReconcileWorker(reconciler))
@@ -435,6 +435,7 @@ func main() {
 	adminGroup.POST("/clients/:clientId/secret", clientHandler.AddClientSecret)
 	adminGroup.DELETE("/clients/:clientId/secret/:secretId", clientHandler.RevokeClientSecret)
 	adminGroup.POST("/transactions/:virtualAccountNo/resend-callback", adminResendHandler.Resend)
+	adminGroup.POST("/callbacks/resend", adminResendHandler.ResendRange)
 	// On-demand counterpart of the periodic reconciliation sweep: asks the
 	// vendor what really happened to a transaction still recorded as pending.
 	adminGroup.POST("/transactions/:virtualAccountNo/reconcile", adminReconcileHandler.Reconcile)

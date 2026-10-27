@@ -56,3 +56,67 @@ Standard `AdminAuthMiddleware` rejection (no response body change needed — reu
 7. Do not modify `va_transactions.status` (FR-019).
 
 Each call to this endpoint always performs a fresh delivery attempt — no deduplication/rate-limiting of rapid repeated calls (spec Edge Cases).
+
+`deliveryStatus` is `queued` once the callback is handed to the queue, or `failed` if enqueueing failed. Whether the merchant was actually reached is recorded afterwards on the delivery row (see "Delivery outcome" below).
+
+---
+
+# Contract: Admin Bulk Resend Endpoint
+
+**Route**: `POST /admin/callbacks/resend`
+
+**Auth**: same `AdminAuthMiddleware` as above.
+
+## Request
+
+```json
+{
+  "startTime": "2026-10-27T00:00:00+07:00",
+  "endTime": "2026-10-28T00:00:00+07:00",
+  "virtualAccountNo": "7000108212221111",
+  "status": ["failed"]
+}
+```
+
+- `startTime` (inclusive) / `endTime` (exclusive): RFC 3339 with offset, required. Range ≤ 31 days. Matched against the original delivery's `attempted_at`.
+- `virtualAccountNo`: optional, narrows to one VA.
+- `status`: optional, filters on the original delivery's current status (`queued`, `retrying`, `success`, `failed`, `duplicate`). Omitted = every status — both failed and successful callbacks are resent.
+
+## Behavior
+
+1. Select original callbacks (`trigger = "auto"`) in range, oldest first. Manual rows are never selected — they are themselves resends.
+2. More than 500 matches → 422, nothing sent.
+3. Each match is resent with the **payload it was originally enqueued with** (not rebuilt from current VA state — a reused VA's current cycle may not be the one the callback was about), as a new `trigger = "manual"` row.
+4. Matches recorded before payloads were stored (migration 000018), or without a notification URL, are reported `skipped`.
+
+## Response 200
+
+```json
+{
+  "matched": 3, "queued": 1, "failed": 1, "skipped": 1,
+  "resentAt": "2026-10-27T03:15:00Z",
+  "items": [
+    { "sourceDeliveryId": "...", "deliveryId": "...", "virtualAccountNo": "...", "eventType": "payment.received", "status": "queued" },
+    { "sourceDeliveryId": "...", "virtualAccountNo": "...", "eventType": "va.expired", "status": "skipped", "error": "original payload not recorded" },
+    { "sourceDeliveryId": "...", "deliveryId": "...", "virtualAccountNo": "...", "eventType": "payment.received", "status": "failed", "error": "..." }
+  ]
+}
+```
+
+400 on malformed body, bad/missing times, reversed or > 31-day range, unknown status. 422 when > 500 callbacks match.
+
+---
+
+# Delivery outcome (va_notification_deliveries, migration 000018)
+
+Every callback — auto, manual and reconcile-recovered — is recorded **before** enqueue as `queued`, with its full `payload`. The notification worker finds the row through the Asynq task header `delivery-id` and updates it after every attempt:
+
+| status | meaning |
+|---|---|
+| `queued` | enqueued, not yet attempted |
+| `retrying` | an attempt failed (timeout, merchant ≥ 400, connection error); Asynq retries remain |
+| `success` | merchant answered < 400. Never overwritten by a later attempt |
+| `failed` | enqueue failed, or the last retry failed |
+| `duplicate` | auto-triggered enqueue rejected by Asynq's 5-minute uniqueness window as identical to one already queued |
+
+`attempt_count`, `http_status` (NULL when the merchant never answered, e.g. timeout), `error_detail` and `last_attempt_at` describe the latest attempt. A timeout shows up as `error_detail` containing `Client.Timeout exceeded` / `context deadline exceeded`. Manual resends skip the uniqueness window. Rows written before migration 000018 keep their old meaning: `success` = enqueued.
