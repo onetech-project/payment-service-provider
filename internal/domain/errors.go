@@ -50,6 +50,10 @@ var (
 	// ErrNotificationDuplicate reports an enqueue rejected as identical to a
 	// callback still inside the queue's uniqueness window.
 	ErrNotificationDuplicate = errors.New("identical notification already enqueued")
+	// ErrNotificationPayloadUnrecoverable reports a delivery row recorded
+	// without its payload for which no matching transaction state was found
+	// to rebuild it from.
+	ErrNotificationPayloadUnrecoverable = errors.New("original payload not recorded and no matching transaction found to rebuild it")
 
 	// Static/Dynamic VA Error Constants (feature 006-static-dynamic-va)
 	ErrVACustomerNoAlreadyRegistered = errors.New("customerNo already registered for this partnerServiceId")

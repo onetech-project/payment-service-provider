@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -99,8 +100,9 @@ const MaxBulkResend = 500
 // Each resend reuses the payload the original was enqueued with, not the VA's
 // current state: a VA is reusable across transaction cycles, so rebuilding
 // from current state would resend the wrong cycle's data. Rows recorded
-// before payloads were stored (migration 000018) have nothing to resend from
-// and are reported as skipped.
+// before payloads were stored (migration 000018) are rebuilt from the
+// transaction state written alongside them (ReconstructPayload), and skipped
+// only when none can be found.
 func (u *resendCallbackUsecase) ResendRange(ctx context.Context, filter domain.NotificationDeliveryFilter) (*domain.BulkResendResult, error) {
 	filter.Limit = MaxBulkResend + 1
 	originals, err := u.deliveryRepo.ListForResend(ctx, filter)
@@ -118,15 +120,27 @@ func (u *resendCallbackUsecase) ResendRange(ctx context.Context, filter domain.N
 			VirtualAccountNo: original.VirtualAccountNo,
 			EventType:        original.EventType,
 		}
-		switch {
-		case original.Payload == nil:
-			item.Status = "skipped"
-			item.Error = "original payload not recorded"
-		case original.Payload.NotificationURL == "":
+		source := original.Payload
+		if source == nil {
+			rebuilt, err := u.deliveryRepo.ReconstructPayload(ctx, original)
+			if err != nil {
+				item.Status = "skipped"
+				if !errors.Is(err, domain.ErrNotificationPayloadUnrecoverable) {
+					item.Status = domain.NotificationDeliveryStatusFailed
+				}
+				item.Error = err.Error()
+				result.Items = append(result.Items, item)
+				continue
+			}
+			source = rebuilt
+			item.Reconstructed = true
+		}
+
+		if source.NotificationURL == "" {
 			item.Status = "skipped"
 			item.Error = domain.ErrResendNoNotificationURL.Error()
-		default:
-			payload := *original.Payload
+		} else {
+			payload := *source
 			item.DeliveryID, item.Status, item.Error = dispatchNotification(ctx, u.notifier, u.deliveryRepo, &payload, original.VirtualAccountNo, original.EventType, domain.NotificationTriggerManual)
 		}
 		result.Items = append(result.Items, item)

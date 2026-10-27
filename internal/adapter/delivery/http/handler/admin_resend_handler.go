@@ -98,6 +98,9 @@ type resendRangeItem struct {
 	EventType        string `json:"eventType"`
 	Status           string `json:"status"`
 	Error            string `json:"error,omitempty"`
+	// Reconstructed marks a resend whose original was recorded without its
+	// payload and was rebuilt from transaction state.
+	Reconstructed bool `json:"reconstructed,omitempty"`
 }
 
 type resendRangeResponse struct {
@@ -120,7 +123,7 @@ var resendRangeStatuses = map[string]bool{
 // ResendRange godoc
 // @Tags Admin
 // @Summary Bulk resend merchant callbacks in a time range
-// @Description Admin-only: redelivers every original (auto-triggered) callback recorded in [startTime, endTime), optionally for one virtualAccountNo and/or only those whose delivery ended in the given statuses (e.g. ["failed"] for undelivered ones, timeouts included). Each callback is resent with the payload it was first sent with. Callbacks recorded before payloads were stored are reported as skipped. Range at most 31 days and 500 callbacks per call. Does not mutate transaction state.
+// @Description Admin-only: redelivers every original (auto-triggered) callback recorded in [startTime, endTime), optionally for one virtualAccountNo and/or only those whose delivery ended in the given statuses (e.g. ["failed"] for undelivered ones, timeouts included). Each callback is resent with the payload it was first sent with. Callbacks recorded before payloads were stored are rebuilt from the transaction recorded alongside them (marked reconstructed), or skipped when none is found. Range at most 31 days and 500 callbacks per call. Does not mutate transaction state.
 // @Security AdminAPIKey
 // @Param X-Admin-API-Key header string true "Admin API key"
 // @Param request body resendRangeRequest true "Time range and optional filters"
@@ -189,6 +192,7 @@ func (h *AdminResendHandler) ResendRange(c echo.Context) error {
 			EventType:        item.EventType,
 			Status:           item.Status,
 			Error:            item.Error,
+			Reconstructed:    item.Reconstructed,
 		})
 	}
 	return c.JSON(http.StatusOK, resp)

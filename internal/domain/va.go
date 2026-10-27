@@ -1154,6 +1154,11 @@ type VANotificationDeliveryRepository interface {
 	GetLatestByVirtualAccountNo(ctx context.Context, virtualAccountNo string) (*NotificationDelivery, error)
 	ExistsByVirtualAccountNoAndEventType(ctx context.Context, virtualAccountNo, eventType, trigger string) (bool, error)
 	ListForResend(ctx context.Context, filter NotificationDeliveryFilter) ([]*NotificationDelivery, error)
+	// ReconstructPayload rebuilds the callback a delivery row recorded
+	// without its payload (rows written before migration 000018), from the
+	// transaction state written alongside that callback. Returns
+	// ErrNotificationPayloadUnrecoverable when no such state can be found.
+	ReconstructPayload(ctx context.Context, delivery *NotificationDelivery) (*PaymentNotificationPayload, error)
 }
 
 // ResendCallbackResult is returned by ResendCallbackUsecase.Resend on
@@ -1173,6 +1178,9 @@ type BulkResendItem struct {
 	EventType        string
 	Status           string // "queued" | "failed" | "skipped"
 	Error            string
+	// Reconstructed is true when the original row carried no payload and the
+	// resend was rebuilt from transaction state (ReconstructPayload).
+	Reconstructed bool
 }
 
 // BulkResendResult is returned by ResendCallbackUsecase.ResendRange.
