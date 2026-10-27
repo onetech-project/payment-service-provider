@@ -218,6 +218,15 @@ func (r *memRepo) GetVAByVirtualAccountNo(_ context.Context, virtualAccountNo st
 	return nil, domain.ErrMerchantVANotFound
 }
 
+func (r *memRepo) GetVAByVirtualAccountNoAndTrxID(_ context.Context, virtualAccountNo, trxID string) (*domain.VAInquiryRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rec, ok := r.transactions[virtualAccountNo]; ok && rec.TrxID == trxID {
+		return rec, nil
+	}
+	return nil, domain.ErrMerchantVANotFound
+}
+
 func (r *memRepo) GetInquiry(_ context.Context, inquiryRequestID string) (*domain.VAInquiryRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

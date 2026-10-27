@@ -27,9 +27,20 @@ func NewResendCallbackUsecase(repo domain.VARepository, deliveryRepo domain.VANo
 // Resend redelivers the most recent callback event on record for
 // virtualAccountNo. See contracts/resend-callback.md for the full behavior
 // contract (404/422 preconditions, payload rebuild from current VA state).
-func (u *resendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo string) (*domain.ResendCallbackResult, error) {
+//
+// trxID optionally pins the transaction cycle: a virtualAccountNo is reusable
+// (MerchantVAUsecase.CreateVA), and without it the payload is rebuilt from
+// whichever cycle GetVAByVirtualAccountNo ranks first — the open bill, not the
+// settled one whose callback the merchant missed.
+func (u *resendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo, trxID string) (*domain.ResendCallbackResult, error) {
 	// 1. VA must exist (FR-014).
-	merchantVA, err := u.repo.GetVAByVirtualAccountNo(ctx, virtualAccountNo)
+	var merchantVA *domain.VAInquiryRecord
+	var err error
+	if trxID != "" {
+		merchantVA, err = u.repo.GetVAByVirtualAccountNoAndTrxID(ctx, virtualAccountNo, trxID)
+	} else {
+		merchantVA, err = u.repo.GetVAByVirtualAccountNo(ctx, virtualAccountNo)
+	}
 	if err != nil {
 		return nil, domain.ErrMerchantVANotFound
 	}
@@ -50,18 +61,19 @@ func (u *resendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo str
 
 	// 4. Rebuild the payload from CURRENT VA state (not the historical
 	// payload), using the most recent record's event type.
+	eventType := resendEventType(latest.EventType, merchantVA, trxID)
 	payload := &domain.PaymentNotificationPayload{
-		EventType:        latest.EventType,
+		EventType:        eventType,
 		PartnerServiceID: merchantVA.PartnerServiceID,
 		CustomerNo:       merchantVA.CustomerNo,
 		VirtualAccountNo: merchantVA.VirtualAccountNo,
 		TrxID:            merchantVA.TrxID,
 		NotificationURL:  merchantVA.NotificationURL,
 	}
-	if latest.EventType == domain.NotificationEventVAExpired && merchantVA.ExpiredDate != nil {
+	if eventType == domain.NotificationEventVAExpired && merchantVA.ExpiredDate != nil {
 		payload.ExpiredAt = merchantVA.ExpiredDate.Format(time.RFC3339)
 	}
-	if latest.EventType == domain.NotificationEventPaymentReceived {
+	if eventType == domain.NotificationEventPaymentReceived {
 		payload.PaidAmount = &domain.Amount{Value: merchantVA.TotalAmount, Currency: merchantVA.Currency}
 		payload.PaymentRequestID = merchantVA.PaymentRequestID
 	}
@@ -92,21 +104,41 @@ func (u *resendCallbackUsecase) Resend(ctx context.Context, virtualAccountNo str
 	// touch va_transactions.status (FR-019).
 	_ = u.deliveryRepo.Create(ctx, &domain.NotificationDelivery{
 		VirtualAccountNo: virtualAccountNo,
-		EventType:        latest.EventType,
+		EventType:        eventType,
 		Trigger:          domain.NotificationTriggerManual,
 		Status:           deliveryStatus,
 		AttemptedAt:      resentAt,
 		ErrorDetail:      errorDetail,
 	})
 
-	log.Printf("event=resend_callback virtual_account_no=%s event_type=%s trigger=manual status=%s", virtualAccountNo, latest.EventType, deliveryStatus)
+	log.Printf("event=resend_callback virtual_account_no=%s trx_id=%s event_type=%s trigger=manual status=%s", virtualAccountNo, merchantVA.TrxID, eventType, deliveryStatus)
 
 	return &domain.ResendCallbackResult{
 		VirtualAccountNo: virtualAccountNo,
-		EventType:        latest.EventType,
+		TrxID:            merchantVA.TrxID,
+		EventType:        eventType,
 		ResentAt:         resentAt,
 		DeliveryStatus:   deliveryStatus,
 	}, nil
+}
+
+// resendEventType picks the event to redeliver. Without trxID it is the most
+// recent delivery on record for the VA (contract step 4). With trxID that
+// record may belong to a different cycle of the same reused VA — delivery rows
+// carry no trxId — so a cycle whose own status already says paid ('00') or
+// expired ('02') is resent as that event instead; any other status falls back
+// to the most recent record.
+func resendEventType(latestEventType string, merchantVA *domain.VAInquiryRecord, trxID string) string {
+	if trxID == "" {
+		return latestEventType
+	}
+	switch merchantVA.Status {
+	case "00":
+		return domain.NotificationEventPaymentReceived
+	case "02":
+		return domain.NotificationEventVAExpired
+	}
+	return latestEventType
 }
 
 var _ domain.ResendCallbackUsecase = (*resendCallbackUsecase)(nil)
