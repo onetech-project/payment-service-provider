@@ -858,6 +858,11 @@ definitions:
         type: string
       eventType:
         type: string
+      reconstructed:
+        description: |-
+          Reconstructed marks a resend whose original was recorded without its
+          payload and was rebuilt from transaction state.
+        type: boolean
       sourceDeliveryId:
         type: string
       status:
@@ -914,8 +919,9 @@ paths:
         only those whose delivery ended in the given statuses (e.g. ["failed"] for
         undelivered ones, timeouts included). Each callback is resent with the payload
         it was first sent with. Callbacks recorded before payloads were stored are
-        reported as skipped. Range at most 31 days and 500 callbacks per call. Does
-        not mutate transaction state.'
+        rebuilt from the transaction recorded alongside them (marked reconstructed),
+        or skipped when none is found. Range at most 31 days and 500 callbacks per
+        call. Does not mutate transaction state.'
       parameters:
       - description: Admin API key
         in: header

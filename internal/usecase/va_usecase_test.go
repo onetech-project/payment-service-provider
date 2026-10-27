@@ -888,6 +888,14 @@ func (m *MockVANotificationDeliveryRepository) UpdateDeliveryResult(ctx context.
 	return args.Error(0)
 }
 
+func (m *MockVANotificationDeliveryRepository) ReconstructPayload(ctx context.Context, delivery *domain.NotificationDelivery) (*domain.PaymentNotificationPayload, error) {
+	args := m.Called(ctx, delivery)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.PaymentNotificationPayload), args.Error(1)
+}
+
 func (m *MockVANotificationDeliveryRepository) ListForResend(ctx context.Context, filter domain.NotificationDeliveryFilter) ([]*domain.NotificationDelivery, error) {
 	args := m.Called(ctx, filter)
 	if args.Get(0) == nil {

@@ -22,7 +22,7 @@ const docTemplate = `{
                         "AdminAPIKey": []
                     }
                 ],
-                "description": "Admin-only: redelivers every original (auto-triggered) callback recorded in [startTime, endTime), optionally for one virtualAccountNo and/or only those whose delivery ended in the given statuses (e.g. [\"failed\"] for undelivered ones, timeouts included). Each callback is resent with the payload it was first sent with. Callbacks recorded before payloads were stored are reported as skipped. Range at most 31 days and 500 callbacks per call. Does not mutate transaction state.",
+                "description": "Admin-only: redelivers every original (auto-triggered) callback recorded in [startTime, endTime), optionally for one virtualAccountNo and/or only those whose delivery ended in the given statuses (e.g. [\"failed\"] for undelivered ones, timeouts included). Each callback is resent with the payload it was first sent with. Callbacks recorded before payloads were stored are rebuilt from the transaction recorded alongside them (marked reconstructed), or skipped when none is found. Range at most 31 days and 500 callbacks per call. Does not mutate transaction state.",
                 "tags": [
                     "Admin"
                 ],
@@ -2765,6 +2765,10 @@ const docTemplate = `{
                 },
                 "eventType": {
                     "type": "string"
+                },
+                "reconstructed": {
+                    "description": "Reconstructed marks a resend whose original was recorded without its\npayload and was rebuilt from transaction state.",
+                    "type": "boolean"
                 },
                 "sourceDeliveryId": {
                     "type": "string"

@@ -890,13 +890,19 @@ func (r *VARepository) GetLatestByVirtualAccountNo(ctx context.Context, virtualA
 // [filter.From, filter.To), oldest first. Manual rows are excluded: they are
 // themselves resends, and selecting them would resend the same event once per
 // earlier resend.
+//
+// The VA filter ignores leading spaces on both sides. BCA sends
+// virtualAccountNo with partnerServiceId's left space padding
+// ("   15975123123121") and the payment callback row records it as received,
+// while a merchant-created VA is usually stored bare — an operator should not
+// have to know which form a given row happens to hold.
 func (r *VARepository) ListForResend(ctx context.Context, filter domain.NotificationDeliveryFilter) ([]*domain.NotificationDelivery, error) {
 	query := `
 		SELECT ` + deliveryColumns + `
 		FROM va_notification_deliveries
 		WHERE trigger = 'auto'
 			AND attempted_at >= $1 AND attempted_at < $2
-			AND ($3 = '' OR virtual_account_no = $3)
+			AND ($3 = '' OR LTRIM(virtual_account_no) = LTRIM($3))
 			AND (cardinality($4::text[]) = 0 OR status = ANY($4))
 		ORDER BY attempted_at ASC
 		LIMIT $5`
@@ -920,6 +926,161 @@ func (r *VARepository) ListForResend(ctx context.Context, filter domain.Notifica
 		deliveries = append(deliveries, record)
 	}
 	return deliveries, rows.Err()
+}
+
+// reconstructWindow bounds how far a transaction write may sit from the
+// delivery row it is matched to. The callback is enqueued milliseconds after
+// the write that triggered it; the slack only absorbs app/DB clock skew.
+const reconstructWindow = "5 minutes"
+
+// ReconstructPayload rebuilds the callback of a delivery row recorded before
+// payloads were stored (migration 000018), from the transaction state written
+// alongside it.
+//
+// The match is by time, not by "the VA's current transaction": a reusable VA
+// can have several cycles, and only the write that triggered this callback —
+// within reconstructWindow of its attempted_at — describes it. Among several
+// candidates the closest in time wins. Nothing in range means the state has
+// since been overwritten (or never existed), and the row is reported
+// unrecoverable rather than guessed at.
+//
+// virtual_account_no is matched as recorded and with leading spaces removed:
+// a payment callback records BCA's padded form ("   15975…") while the
+// create-va row it settled holds the bare one. Both arms stay index-friendly.
+func (r *VARepository) ReconstructPayload(ctx context.Context, delivery *domain.NotificationDelivery) (*domain.PaymentNotificationPayload, error) {
+	switch delivery.EventType {
+	case domain.NotificationEventPaymentReceived:
+		return r.reconstructPaymentReceived(ctx, delivery)
+	case domain.NotificationEventVAExpired:
+		return r.reconstructVAExpired(ctx, delivery)
+	}
+	return nil, domain.ErrNotificationPayloadUnrecoverable
+}
+
+// reconstructPaymentReceived matches the payment that triggered the callback:
+// a variable-bill instalment (va_payments row, created at payment time) or a
+// settled transaction row — single settlement, no-bill payment or reconcile
+// recovery — whose updated_at is the settlement time. A variable-bill
+// transaction row without its own payment_request_id is left to its
+// instalments: its updated_at is merely the latest instalment's.
+//
+// Fields not persisted anywhere are left empty: an instalment's paidBills,
+// paymentType and flagAdvise, and its trxDateTime falls back to paid_at.
+func (r *VARepository) reconstructPaymentReceived(ctx context.Context, delivery *domain.NotificationDelivery) (*domain.PaymentNotificationPayload, error) {
+	query := `
+		SELECT partner_service_id, customer_no, virtual_account_no, trx_id, COALESCE(notification_url, ''),
+			payment_request_id, paid_value, total_value, currency, reference_no, paid_bills, payment_type, flag_advise, trx_time
+		FROM (
+			SELECT t.partner_service_id, t.customer_no, t.virtual_account_no, t.trx_id, t.notification_url,
+				COALESCE(p.payment_request_id, '') AS payment_request_id,
+				p.amount::text AS paid_value,
+				COALESCE(t.total_amount, p.amount)::text AS total_value,
+				t.currency,
+				COALESCE(p.reference_no, '') AS reference_no,
+				'' AS paid_bills, '' AS payment_type, '' AS flag_advise,
+				p.paid_at AS trx_time,
+				p.created_at AS settled_at
+			FROM va_payments p
+			JOIN va_transactions t ON t.id = p.transaction_id
+			WHERE t.virtual_account_no IN ($1::text, LTRIM($1::text))
+				AND p.created_at BETWEEN $2::timestamptz - INTERVAL '` + reconstructWindow + `' AND $2::timestamptz + INTERVAL '` + reconstructWindow + `'
+			UNION ALL
+			SELECT t.partner_service_id, t.customer_no, t.virtual_account_no, t.trx_id, t.notification_url,
+				COALESCE(t.payment_request_id, NULLIF(t.inquiry_request_id, ''), ''),
+				COALESCE(t.paid_amount, t.total_amount, 0)::text,
+				COALESCE(t.total_amount, t.paid_amount, 0)::text,
+				t.currency,
+				COALESCE(t.reference_no, ''),
+				COALESCE(t.paid_bills, ''), COALESCE(t.payment_type, ''), COALESCE(t.flag_advise, ''),
+				COALESCE(t.trx_date_time, t.transaction_date),
+				t.updated_at
+			FROM va_transactions t
+			WHERE t.virtual_account_no IN ($1::text, LTRIM($1::text))
+				AND t.status = '00'
+				AND (t.payment_request_id IS NOT NULL OR COALESCE(t.va_type, '') NOT IN ('02', '05'))
+				AND t.updated_at BETWEEN $2::timestamptz - INTERVAL '` + reconstructWindow + `' AND $2::timestamptz + INTERVAL '` + reconstructWindow + `'
+		) c
+		ORDER BY ABS(EXTRACT(EPOCH FROM (c.settled_at - $2::timestamptz)))
+		LIMIT 1`
+
+	payload := &domain.PaymentNotificationPayload{EventType: domain.NotificationEventPaymentReceived}
+	var paidValue, totalValue, currency string
+	var trxTime *time.Time
+	err := r.pool.QueryRow(ctx, query, delivery.VirtualAccountNo, delivery.AttemptedAt).Scan(
+		&payload.PartnerServiceID,
+		&payload.CustomerNo,
+		&payload.VirtualAccountNo,
+		&payload.TrxID,
+		&payload.NotificationURL,
+		&payload.PaymentRequestID,
+		&paidValue,
+		&totalValue,
+		&currency,
+		&payload.ReferenceNo,
+		&payload.PaidBills,
+		&payload.PaymentType,
+		&payload.FlagAdvise,
+		&trxTime,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, domain.ErrNotificationPayloadUnrecoverable
+	}
+	if err != nil {
+		return nil, err
+	}
+	payload.PaidAmount = &domain.Amount{Value: paidValue, Currency: currency}
+	payload.TotalAmount = &domain.Amount{Value: totalValue, Currency: currency}
+	if trxTime != nil {
+		payload.TrxDateTime = trxTime.Format(time.RFC3339)
+	}
+	return payload, nil
+}
+
+// reconstructVAExpired matches the expiry that triggered the callback: a
+// transaction row moved to '02', or a no-bill registration moved to EXPIRED,
+// at the delivery's time. A registration since re-activated (new trxId) no
+// longer matches, which is the point — its current data is a different cycle.
+func (r *VARepository) reconstructVAExpired(ctx context.Context, delivery *domain.NotificationDelivery) (*domain.PaymentNotificationPayload, error) {
+	query := `
+		SELECT partner_service_id, customer_no, virtual_account_no, trx_id, COALESCE(notification_url, ''), expired_date
+		FROM (
+			SELECT t.partner_service_id, t.customer_no, t.virtual_account_no, t.trx_id, t.notification_url,
+				t.expired_date, t.updated_at AS changed_at
+			FROM va_transactions t
+			WHERE t.virtual_account_no IN ($1::text, LTRIM($1::text))
+				AND t.status = '02'
+				AND t.updated_at BETWEEN $2::timestamptz - INTERVAL '` + reconstructWindow + `' AND $2::timestamptz + INTERVAL '` + reconstructWindow + `'
+			UNION ALL
+			SELECT a.partner_service_id, a.customer_no, a.virtual_account_no, a.trx_id, a.notification_url,
+				a.expired_date, a.updated_at
+			FROM va_accounts a
+			WHERE a.virtual_account_no IN ($1::text, LTRIM($1::text))
+				AND a.status = 'EXPIRED'
+				AND a.updated_at BETWEEN $2::timestamptz - INTERVAL '` + reconstructWindow + `' AND $2::timestamptz + INTERVAL '` + reconstructWindow + `'
+		) c
+		ORDER BY ABS(EXTRACT(EPOCH FROM (c.changed_at - $2::timestamptz)))
+		LIMIT 1`
+
+	payload := &domain.PaymentNotificationPayload{EventType: domain.NotificationEventVAExpired}
+	var expiredDate *time.Time
+	err := r.pool.QueryRow(ctx, query, delivery.VirtualAccountNo, delivery.AttemptedAt).Scan(
+		&payload.PartnerServiceID,
+		&payload.CustomerNo,
+		&payload.VirtualAccountNo,
+		&payload.TrxID,
+		&payload.NotificationURL,
+		&expiredDate,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, domain.ErrNotificationPayloadUnrecoverable
+	}
+	if err != nil {
+		return nil, err
+	}
+	if expiredDate != nil {
+		payload.ExpiredAt = expiredDate.Format(time.RFC3339)
+	}
+	return payload, nil
 }
 
 // ExistsByVirtualAccountNoAndEventType reports whether a delivery-attempt row

@@ -79,7 +79,7 @@ Each call to this endpoint always performs a fresh delivery attempt — no dedup
 ```
 
 - `startTime` (inclusive) / `endTime` (exclusive): RFC 3339 with offset, required. Range ≤ 31 days. Matched against the original delivery's `attempted_at`.
-- `virtualAccountNo`: optional, narrows to one VA.
+- `virtualAccountNo`: optional, narrows to one VA. Leading spaces are ignored on both sides, so `"15975123123121"` and `"   15975123123121"` (BCA's partnerServiceId-padded form) match the same rows.
 - `status`: optional, filters on the original delivery's current status (`queued`, `retrying`, `success`, `failed`, `duplicate`). Omitted = every status — both failed and successful callbacks are resent.
 
 ## Behavior
@@ -87,7 +87,11 @@ Each call to this endpoint always performs a fresh delivery attempt — no dedup
 1. Select original callbacks (`trigger = "auto"`) in range, oldest first. Manual rows are never selected — they are themselves resends.
 2. More than 500 matches → 422, nothing sent.
 3. Each match is resent with the **payload it was originally enqueued with** (not rebuilt from current VA state — a reused VA's current cycle may not be the one the callback was about), as a new `trigger = "manual"` row.
-4. Matches recorded before payloads were stored (migration 000018), or without a notification URL, are reported `skipped`.
+4. Matches recorded before payloads were stored (migration 000018) are **rebuilt** from the transaction state written alongside that callback, and marked `"reconstructed": true`:
+   - `payment.received`: the `va_payments` instalment (variable bill) or settled `va_transactions` row (single settlement, no-bill, reconcile) whose write time is within 5 minutes of the delivery's `attempted_at`, closest first. Matches the VA number with or without BCA's leading-space padding. Not persisted anywhere, so left empty on an instalment: `paidBills`, `paymentType`, `flagAdvise`; its `trxDateTime` is the instalment's `paid_at`.
+   - `va.expired`: the `va_transactions` row moved to `02`, or the `va_accounts` registration moved to `EXPIRED`, within the same window.
+   - Because the match is by time, a reused VA's newer cycle is never picked up. If that row has since been updated again (moving `updated_at` out of the window), nothing matches and the item is `skipped` with `error` explaining so — never guessed.
+5. Matches without a notification URL are reported `skipped`.
 
 ## Response 200
 
@@ -97,7 +101,8 @@ Each call to this endpoint always performs a fresh delivery attempt — no dedup
   "resentAt": "2026-10-27T03:15:00Z",
   "items": [
     { "sourceDeliveryId": "...", "deliveryId": "...", "virtualAccountNo": "...", "eventType": "payment.received", "status": "queued" },
-    { "sourceDeliveryId": "...", "virtualAccountNo": "...", "eventType": "va.expired", "status": "skipped", "error": "original payload not recorded" },
+    { "sourceDeliveryId": "...", "deliveryId": "...", "virtualAccountNo": "...", "eventType": "va.expired", "status": "queued", "reconstructed": true },
+    { "sourceDeliveryId": "...", "virtualAccountNo": "...", "eventType": "payment.received", "status": "skipped", "error": "original payload not recorded and no matching transaction found to rebuild it" },
     { "sourceDeliveryId": "...", "deliveryId": "...", "virtualAccountNo": "...", "eventType": "payment.received", "status": "failed", "error": "..." }
   ]
 }
